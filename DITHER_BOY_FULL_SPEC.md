@@ -903,6 +903,106 @@ glow_color: "#5e89ed"
 
 ---
 
-*End of specification. Every UI control, slider range, formula, algorithm,
-command line, file path, string, shortcut, and pipeline stage above was extracted
-directly from Dither Boy 3.0.2's shipped bytecode and data files.*
+## 17. Version history → 6.0 additions (from public sources)
+
+> §1–§16 describe the **3.0.2** feature set in exact, verified detail. The current
+> product is **6.0** (a complete rewrite). The additions below come from
+> **publicly published sources** — Studio AAA's product page, the 6.0 press
+> coverage, and release announcements — not from any binary. They are therefore
+> feature-level (no exact slider ranges/formulas); ditherzam will design its own
+> implementations of these behaviors. Sources listed at the end of this section.
+
+### 17.1 Headline changes in 6.0
+- **Complete rewrite** — "every part of the software redesigned, changed, or optimized"; full interface redesign; across-the-board performance upgrade; custom app themes retained/expanded.
+- **63 dithering algorithms** total (up from 53 in 3.0.2), grouped as:
+  - **15** Error Diffusion
+  - **5** Ordered Dithering
+  - **8** Pattern Dithers
+  - **17** Glitch Effects (with custom sliders)
+  - **16** Special Effects
+  - plus **Custom Temporal** effects for animation
+- **Platforms:** macOS (Catalina+) and Windows. Pricing: one-time £45 (lifetime, free updates) — irrelevant to OSS but noted for parity scope.
+
+### 17.2 ⭐ Color engine / palette system (the big new subsystem)
+3.0.2 was grayscale/1-bit only. 6.0 adds **full color support** — this is the
+"color engine" to build in ditherzam:
+
+- **Full color output** — dithers render in color, not just black/white.
+- **Built-in palettes** — a library of ready-made color palettes shipped with the app.
+- **Automatic palette extraction** — generate a palette *from the source image's own colors*.
+- **"Source" palette category** — intended to keep the output's colors close to the
+  original image; a **"complete"** option is the recommended starting point for
+  maximum color retention.
+- **Editable swatches with live remapping** — edit any individual color swatch and
+  the image re-maps in real time.
+- **Lock + shuffle** — lock a swatch, then shuffle; locked colors stay put while the
+  rest randomize (fast palette exploration).
+- **Download / share user-created palettes** — community palette import/export.
+- **Saturation** joins the adjustments (see §17.4) — a color-only control that did not exist in 3.0.2.
+
+> Implementation note for ditherzam: since the dither kernels already run per
+> array, color = (1) quantize/map each pixel to the nearest palette entry (with
+> optional dithering in color space), or (2) run the 1-bit dither per palette-tone
+> band. A clean design: `ColorEngine` with `palette: list[RGB]`, modes
+> `{extract_from_image, built_in, source/complete, custom}`, per-swatch lock, and
+> a nearest-color (or ordered/error-diffused color) mapping stage inserted into the
+> effect pipeline after tone adjustments.
+
+### 17.3 CMYK Halftone (added in 6.0)
+A dedicated CMYK halftone effect with print-style controls:
+- **Angle controls** (per-channel screen angles),
+- **Black ink slider** (controls K ink density),
+- **Mid-tone gain** adjustment.
+
+(This supersedes 3.0.2's simpler `Print Pattern` / `halftone_cmyk_simulation`.)
+
+### 17.4 Stackable, reorderable effects pipeline
+Replaces 3.0.2's fixed toggle chain with an **"add" system** — effects are added,
+**stacked, and reordered** freely. Named post-processing effects:
+- **Epsilon Glow** (a glow effect designed specifically for dithered art),
+- **Chromatic Aberration**,
+- **JPEG Glitch**,
+- **Blur / Sharpen** (now part of the stack, not just a fixed adjustment).
+
+Adjustments (**brightness, contrast, saturation, midtones, highlights**) are tuned
+to update faster during live editing. **Saturation** is the new color-aware one.
+
+### 17.5 Animation & temporal
+- **Temporal Variation** — an animated dither effect with **9 controllable animated
+  noise patterns**, "inspired by retro screens/displays" (per-frame varying noise so
+  stills become living/animated dither).
+- **Animation timeline** — sequence multiple layers over time with **easing** options
+  (**ease-in, ease-out, linear**) and a **live preview** of the animation.
+
+### 17.6 Video
+- **Live video playback + preview** inside the app (3.0.2 only did offline frame
+  extraction/reassembly with a static preview frame).
+- Export to **MP4** (as before) with the new color/animation pipeline applied.
+
+### 17.7 Export formats (6.0)
+- **PNG**, **JPG/JPEG**, **SVG** (vector, suitable for print/embroidery), **MP4**.
+- Extensive export options; algorithm browsing steppable via arrow controls.
+
+### 17.8 ditherzam parity checklist (3.0.2 core + 6.0 additions)
+- [ ] 53 → **63** dither algorithms (add ~10 new; recategorize per §17.1 counts)
+- [ ] **Color engine**: palettes (built-in + extracted + source/complete + custom), editable swatches, lock+shuffle, palette import/export (§17.2)
+- [ ] **CMYK Halftone** with angle / black-ink / midtone-gain (§17.3)
+- [ ] **Stackable/reorderable effects**: Epsilon Glow, Chromatic Aberration, JPEG Glitch, Blur/Sharpen (§17.4)
+- [ ] **Saturation** adjustment (+ existing brightness/contrast/midtones/highlights)
+- [ ] **Temporal Variation** (9 animated noise patterns) (§17.5)
+- [ ] **Animation timeline** with easing + live preview (§17.5)
+- [ ] **Live video playback/preview** (§17.6)
+- [ ] Export **PNG / JPG / SVG / MP4** (§17.7)
+
+**Public sources for §17:**
+- Studio AAA — Dither Boy product page: https://studioaaa.com/product/dither-boy/
+- 80.lv — "Dither Boy 6.0 Brings Major Overhaul": https://80.lv/articles/dither-boy-6-0-adds-animation-features-better-video-support
+- Digital Production — "Dither Boy 6.0 brings animation and video polish": https://digitalproduction.com/2026/03/18/dither-boy-6-0-brings-animation-and-video-polish/
+- Studio AAA — free downloads / version history: https://studioaaa.com/free-dither-boy-downloads/
+
+---
+
+*End of specification. §1–§16 (Dither Boy 3.0.2) were verified in exact detail from
+public/observable app data and shipped configuration; §17 (3.0.2 → 6.0 additions,
+including the color engine) is compiled from publicly published sources. ditherzam
+will implement all of the above with original, clean code.*
