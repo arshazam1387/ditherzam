@@ -1,0 +1,7 @@
+# never commit the proprietary app, its installer, or the patcher
+*.exe
+Dither-Boy-*/
+DBPatcher/
+_internal/
+__pycache__/
+*.pyc
