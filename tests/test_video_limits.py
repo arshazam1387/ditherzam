@@ -34,3 +34,29 @@ def test_just_over_boundary_rejected():
 def test_expert_bypasses_everything():
     assert check_video_limits(120, 600, expert=True) is None
     assert check_video_limits(240, 3600, expert=True) is None
+
+
+from ditherzam.video.ffmpeg import probe_fps, probe_duration, probe_has_audio
+
+
+def test_probe_fps_parses_runner_output():
+    fake = lambda cmd: "30000/1001\n"
+    assert abs(probe_fps("in.mp4", runner=fake) - 29.97) < 0.01
+
+
+def test_probe_duration_parses_runner_output():
+    fake = lambda cmd: "12.480000\n"
+    assert abs(probe_duration("in.mp4", runner=fake) - 12.48) < 1e-6
+
+
+def test_probe_duration_bad_output_is_zero():
+    fake = lambda cmd: "N/A\n"
+    assert probe_duration("in.mp4", runner=fake) == 0.0
+
+
+def test_probe_has_audio_true_when_codec_type_present():
+    assert probe_has_audio("in.mp4", runner=lambda cmd: "audio\n") is True
+
+
+def test_probe_has_audio_false_when_empty():
+    assert probe_has_audio("in.mp4", runner=lambda cmd: "\n") is False
