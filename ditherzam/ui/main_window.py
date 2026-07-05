@@ -28,6 +28,18 @@ from ..export.vector import raster_to_svg
 from ..batch import batch_process
 
 
+# Default parameters for post-effects added from the Effects panel (which stores
+# only names). Every EFFECTS function has a required strength/amount arg, so a
+# param-less add would crash the render — these give each a sensible default.
+_EFFECT_DEFAULTS: dict[str, dict] = {
+    "Blur": {"radius": 2.0},
+    "Sharpen": {"amount": 1.0},
+    "Chromatic Aberration": {"shift": 2},
+    "JPEG Glitch": {"quality": 15},
+    "Epsilon Glow": {"radius": 4.0, "strength": 0.5},
+}
+
+
 class _RenderSignals(QObject):
     finished = Signal(QImage)
 
@@ -181,12 +193,34 @@ class ImageEditor(QMainWindow):
         from ..color.palette import builtin_palettes
         return builtin_palettes().get(self.panel.state.get("palette"))
 
+    def _current_color_engine(self):
+        """ColorEngine reflecting the panel's Palette + Mode, or None when off."""
+        if self._color_mode() == "off":
+            return None
+        palette = self._current_palette()
+        if palette is None:
+            return None
+        from ..color.engine import ColorEngine
+        return ColorEngine(palette, self._color_mode())
+
     def _current_effect_stack(self):
         from ..effects.stack import EffectStack
+        names = self.panel.state.get("effects", []) or []
+        if not names:
+            return None
         stack = EffectStack()
-        for name in self.panel.state.get("effects", []) or []:
-            stack.add(name)
+        for name in names:
+            stack.add(name, **_EFFECT_DEFAULTS.get(name, {}))
         return stack
+
+    def _sync_pipeline(self) -> None:
+        """Refresh the pipeline's color engine + effect stack from panel state.
+
+        The render pipeline reads these attributes at render time, so they must be
+        rebuilt before every render or the Color/Effects controls do nothing.
+        """
+        self.pipeline.color_engine = self._current_color_engine()
+        self.pipeline.effect_stack = self._current_effect_stack()
 
     def _reference_size(self) -> tuple[int, int]:
         if self._base_gray is None:
@@ -197,6 +231,7 @@ class ImageEditor(QMainWindow):
     def _rendered_rgb(self) -> np.ndarray:
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
+        self._sync_pipeline()
         return self.pipeline.render(self._base_gray, self._collect_settings())
 
     def _apply_preset(self, settings, palette, effects) -> None:
@@ -332,6 +367,7 @@ class ImageEditor(QMainWindow):
         """Synchronous render (used by tests and the initial paint)."""
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
+        self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         rgb = self.pipeline.render(self._base_gray, settings)
         qimg = numpy_to_qimage(rgb)
@@ -346,6 +382,7 @@ class ImageEditor(QMainWindow):
     def _do_render(self) -> None:
         if self._base_gray is None:
             return
+        self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         worker = _RenderWorker(self.pipeline, self._base_gray, settings)
         worker.signals.finished.connect(self._on_rendered)
