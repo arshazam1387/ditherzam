@@ -125,3 +125,26 @@ def parse_fps(text) -> float:
         return float(s)
     except (ValueError, ZeroDivisionError):
         return 0.0
+
+
+# --- import limit checks (spec §12.2 / §12.6) ---------------------------------
+
+FPS_LIMIT = 60
+DURATION_LIMIT = 60
+MSG_FPS = "Sorry, videos with a framerate above 60 fps aren't supported."
+MSG_DURATION = "Sorry, videos longer than 60 seconds aren't supported."
+
+
+def check_video_limits(fps: float, duration: float, expert: bool = False) -> str | None:
+    """Enforce the import caps. Returns an error message, or None if allowed.
+
+    Normal mode rejects fps > 60 (checked first) or duration > 60 s. Expert mode
+    bypasses both caps entirely (spec §12.2 / §12.6).
+    """
+    if expert:
+        return None
+    if fps > FPS_LIMIT:
+        return MSG_FPS
+    if duration > DURATION_LIMIT:
+        return MSG_DURATION
+    return None
