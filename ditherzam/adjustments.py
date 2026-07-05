@@ -28,3 +28,17 @@ def apply_blur(img: np.ndarray, value: float) -> np.ndarray:
 
 def apply_invert(img: np.ndarray, enabled: bool) -> np.ndarray:
     return (255.0 - img).astype(np.float32) if enabled else img
+
+
+def apply_saturation(rgb: np.ndarray, value: float) -> np.ndarray:
+    """Scale color saturation about per-pixel luminance.
+
+    value in 0..100; 50 = identity, 0 = grayscale, 100 = 2x saturation.
+    """
+    factor = value / 50.0
+    lum = (
+        0.299 * rgb[..., 0]
+        + 0.587 * rgb[..., 1]
+        + 0.114 * rgb[..., 2]
+    )[..., None]
+    return (lum + (rgb - lum) * factor).astype(np.float32)
