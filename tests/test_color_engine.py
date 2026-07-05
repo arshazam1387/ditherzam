@@ -44,3 +44,28 @@ def test_nearest_indices_helper():
     rgb = np.array([[[10, 10, 10], [200, 200, 200]]], np.float32)
     idx = nearest_indices(rgb, pal)
     assert idx.tolist() == [[0, 1]]
+
+
+def test_ordered_output_only_palette_colors():
+    eng = ColorEngine(QUAD, mode="ordered")
+    img = np.random.RandomState(2).randint(0, 256, (8, 8, 3)).astype(np.float32)
+    out = eng.map(img)
+    uniq = {tuple(c) for c in out.reshape(-1, 3).tolist()}
+    allowed = {tuple(int(round(v)) for v in c) for c in QUAD.colors}
+    assert uniq <= allowed
+
+
+def test_ordered_dithers_flat_midgray():
+    # nearest would make a solid fill; ordered must mix both palette colors
+    eng = ColorEngine(DUO, mode="ordered")
+    gray = np.full((8, 8), 127.0, np.float32)
+    out = eng.map(gray)
+    uniq = {tuple(c) for c in out.reshape(-1, 3).tolist()}
+    assert (0, 0, 0) in uniq
+    assert (255, 255, 255) in uniq
+
+
+def test_ordered_is_deterministic():
+    eng = ColorEngine(DUO, mode="ordered")
+    gray = np.full((8, 8), 127.0, np.float32)
+    np.testing.assert_array_equal(eng.map(gray), eng.map(gray))
