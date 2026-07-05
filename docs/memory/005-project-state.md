@@ -1,33 +1,31 @@
 ---
 type: progress
-phase: 6
-status: in-progress
+phase: 8
+status: done
 date: 2026-07-05
 ---
 
-**Phases 1–6 BUILT, green, and committed on `main`.** Full app code now exists.
-Suite: **258 passed** (`QT_QPA_PLATFORM=offscreen NUMBA_DISABLE_JIT=1 pytest -q`).
+**ALL 8 PHASES BUILT, green, committed, and pushed to origin/main.** The full
+ditherzam app exists and works end-to-end.
 
-- Phase 1 foundation, Phase 2 (66 kernels), Phase 3 color engine, Phase 4
-  effects+`RenderPipeline`, Phase 5 UI shell (`ImageEditor(QMainWindow)`), Phase 6
-  presets+export — all done via TDD, per-task commits.
-- Verified live: `RenderPipeline` renders `uint8 HxWx3`; demo contact sheet in
-  `demo_output/` (gitignored).
+- Full suite: **330 passed** (`QT_QPA_PLATFORM=offscreen NUMBA_DISABLE_JIT=1 pytest -q`).
+- 66 dither kernels; color engine (5 palettes, 4 modes); 5 stackable effects;
+  `RenderPipeline` with frozen stage order; PySide6 `ImageEditor` UI; presets +
+  PNG/JPG/SVG/batch export; video (ffmpeg builders, per-frame dither, mux, Qt
+  workers); animation (9 temporal patterns, keyframe `Timeline`, `render_animation`,
+  MP4 export).
+- Verified live: still + animated demos in `demo_output/` (gitignored) — contact
+  sheet + `temporal_anim.gif` render through the real pipeline.
+- Qt-isolation holds: only `ui/`, `app.py`, `video/workers.py` import PySide6.
+- ffmpeg IS installed on this box, so the guarded video integration test runs (not
+  skipped).
 
-**Remaining: Phase 7 (video) + Phase 8 (animation).** Run them SEQUENTIALLY (both
-wire into `ImageEditor` main_window — no parallel edits to `ui/main_window.py`).
-Phase 7 wrote nothing yet (no `ditherzam/video/` dir). Paused because Opus hit a
-session rate limit (resets 6:10am America/Los_Angeles, 2026-07-05); user chose to
-WAIT for Opus rather than fall back to Sonnet. Resume by dispatching a Phase 7
-Opus agent, then Phase 8.
+**Build env:** full CPython 3.12.13 venv at `.venv/` (gitignored) with
+numpy/numba/pillow/PySide6/pytest/pyyaml. Use `.venv/Scripts/python.exe`; Qt tests
+need `QT_QPA_PLATFORM=offscreen`; all tests `NUMBA_DISABLE_JIT=1`.
 
-**Build env (critical — the memory's old `dbwork/py312` embeddable had NO pip):**
-a full CPython 3.12.13 (python-build-standalone) venv is at **`.venv/`** (gitignored)
-with numpy/numba/pillow/PySide6/pytest/pyyaml. Use `.venv/Scripts/python.exe` for
-everything; Qt tests need `QT_QPA_PLATFORM=offscreen`; all tests `NUMBA_DISABLE_JIT=1`.
-
-Contracts honored across built code: `apply_dither(..., threshold_field=None)`,
-`RenderPipeline.render(base_gray_f32, settings, temporal_field=None)`,
-`ColorEngine(palette, mode).map`, `EffectStack.items`. Only `ui/`, `app.py`,
-`video/workers.py` may import PySide6 (verified clean). See [[002-qt-free-core]],
-[[003-python-and-tests]].
+**Next (optional / not yet done):** JIT-on full-suite run (only fallback-equivalence
+tested so far), packaging/distribution, real-photo QA pass, and the deferred spec
+items (CMYK halftone §17.3, Photoshop/clipboard export §11.4–11.6). See per-phase
+entries [[007-phase3-color-engine-done]]..[[013-phase8-animation-done]] and
+[[002-qt-free-core]], [[003-python-and-tests]].
