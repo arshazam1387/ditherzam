@@ -70,6 +70,14 @@ def extract_palette(rgb_u8: np.ndarray, k: int = 16, name: str = "source") -> "P
     return Palette(name=name, colors=colors)
 
 
+def source_palette(rgb_u8: np.ndarray, completeness: float = 1.0,
+                   name: str = "source") -> "Palette":
+    """Extract a 'source' palette; completeness in [0,1] maps to k in [2,256]."""
+    c = min(1.0, max(0.0, float(completeness)))
+    k = int(round(2 + c * (256 - 2)))
+    return extract_palette(rgb_u8, k=k, name=name)
+
+
 def builtin_palettes() -> dict[str, "Palette"]:
     """Load every bundled palette from ``ditherzam/color/builtin/*.yaml``."""
     directory = Path(__file__).parent / "builtin"

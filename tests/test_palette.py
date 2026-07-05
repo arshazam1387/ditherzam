@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from ditherzam.color.palette import Palette, builtin_palettes, extract_palette
+from ditherzam.color.palette import Palette, builtin_palettes, extract_palette, source_palette
 
 
 def test_from_list_shape_and_dtype():
@@ -92,3 +92,28 @@ def test_extract_k_larger_than_unique_colors():
     p = extract_palette(img, k=4)
     # still returns exactly k rows even when the image has < k distinct colors
     assert p.colors.shape == (4, 3)
+
+
+def test_source_complete_is_256():
+    img = np.random.RandomState(5).randint(0, 256, (48, 48, 3), dtype=np.uint8)
+    p = source_palette(img, completeness=1.0)
+    assert p.colors.shape == (256, 3)
+
+
+def test_source_minimal_is_2():
+    img = np.random.RandomState(6).randint(0, 256, (48, 48, 3), dtype=np.uint8)
+    p = source_palette(img, completeness=0.0)
+    assert p.colors.shape == (2, 3)
+
+
+def test_source_midpoint_between_bounds():
+    img = np.random.RandomState(7).randint(0, 256, (48, 48, 3), dtype=np.uint8)
+    p = source_palette(img, completeness=0.5)
+    k = p.colors.shape[0]
+    assert 2 < k < 256
+
+
+def test_source_clamps_out_of_range():
+    img = np.random.RandomState(8).randint(0, 256, (24, 24, 3), dtype=np.uint8)
+    assert source_palette(img, completeness=5.0).colors.shape == (256, 3)
+    assert source_palette(img, completeness=-1.0).colors.shape == (2, 3)
