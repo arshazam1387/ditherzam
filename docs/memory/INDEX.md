@@ -14,3 +14,4 @@
 - [progress|phase 4|done] Phase 4 effects+render done: 5 effects, EffectStack, RenderPipeline STAGE_ORDER, 185 tests green (009-phase4-effects-render-done.md)
 - [progress|phase 5|done] Phase 5 UI shell done: PySide6 ImageEditor + pure helpers, 227 tests green, Qt-isolation holds (010-phase5-ui-shell-done.md)
 - [progress|phase 6|done] Phase 6 presets & export done: presets/export/batch Qt-free, SVG run-merge, UI menu wired, 258 tests green (011-phase6-presets-export-done.md)
+- [progress|phase 7|done] Phase 7 video done: ffmpeg builders/limits/runner/assemble, per-frame dither, Qt workers + video_controller, 298 tests green (012-phase7-video-done.md)
