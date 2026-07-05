@@ -148,3 +148,49 @@ def check_video_limits(fps: float, duration: float, expert: bool = False) -> str
     if duration > DURATION_LIMIT:
         return MSG_DURATION
     return None
+
+
+# --- subprocess runner + probe wrappers (execution; injectable in tests) -------
+
+# Suppress the flashing console window ffmpeg would otherwise pop on Windows.
+_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
+
+
+def run_command(cmd: list[str]) -> str:
+    """Run an ffmpeg/ffprobe command, returning captured stdout (text).
+
+    Raises FFmpegError on a nonzero exit code, with the exit code and any stderr
+    tail for diagnosis. This is the only place in the module that spawns a process.
+    """
+    try:
+        proc = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=_CREATE_NO_WINDOW,
+            text=True,
+        )
+    except FileNotFoundError as e:
+        raise FFmpegError(f"ffmpeg/ffprobe binary not found: {cmd[0]}") from e
+    if proc.returncode != 0:
+        tail = (proc.stderr or "").strip().splitlines()[-3:]
+        raise FFmpegError(
+            f"FFmpeg failed with exit code {proc.returncode}: " + " | ".join(tail)
+        )
+    return proc.stdout
+
+
+def probe_fps(path, runner=run_command) -> float:
+    return parse_fps(runner(cmd_probe_fps(path)).strip())
+
+
+def probe_duration(path, runner=run_command) -> float:
+    text = runner(cmd_probe_duration(path)).strip()
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
+
+
+def probe_has_audio(path, runner=run_command) -> bool:
+    return "audio" in runner(cmd_probe_has_audio(path)).strip().lower()
