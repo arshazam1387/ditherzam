@@ -1,0 +1,17 @@
+app:
+  name: "ditherzam"
+  version: "0.1.0"
+dither:
+  default_style: "None"
+  default_scale: 5
+style:
+  viewport_bg_color: "#1f1f1f"
+  app_style: "Fusion"
+inertia:
+  enable: true
+  friction: 0.95
+  velocity_scale: 0.5
+  max_velocity: 2000.0
+timing:
+  debounce_ms: 20
+  loading_delay_ms: 400
