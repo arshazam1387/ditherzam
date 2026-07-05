@@ -46,3 +46,82 @@ def ffprobe_bin() -> str:
 def have_ffmpeg() -> bool:
     """True only when BOTH ffmpeg and ffprobe resolve to real files on disk."""
     return _find("ffmpeg") is not None and _find("ffprobe") is not None
+
+
+# --- pure command builders (never spawn a process; every element is a str) ----
+
+def _frame_pattern(frames_dir) -> str:
+    """`<frames_dir>/frame%06d.png` with forward slashes (ffmpeg-safe on Windows)."""
+    return PurePath(frames_dir).as_posix().rstrip("/") + "/frame%06d.png"
+
+
+def cmd_probe_fps(path) -> list[str]:
+    return [
+        ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "stream=r_frame_rate",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    ]
+
+
+def cmd_probe_duration(path) -> list[str]:
+    return [
+        ffprobe_bin(), "-v", "error", "-select_streams", "v:0",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    ]
+
+
+def cmd_probe_has_audio(path) -> list[str]:
+    return [
+        ffprobe_bin(), "-v", "error", "-select_streams", "a",
+        "-show_entries", "stream=codec_type",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+    ]
+
+
+def cmd_extract_frames(video, frames_dir) -> list[str]:
+    return [
+        ffmpeg_bin(), "-y", "-i", str(video),
+        "-qscale:v", "2", _frame_pattern(frames_dir),
+    ]
+
+
+def cmd_encode(frames_dir, fps, out) -> list[str]:
+    return [
+        ffmpeg_bin(), "-y", "-framerate", str(fps),
+        "-i", _frame_pattern(frames_dir),
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", str(out),
+    ]
+
+
+def cmd_extract_audio(video, audio_out) -> list[str]:
+    return [ffmpeg_bin(), "-y", "-i", str(video), "-vn", "-acodec", "copy", str(audio_out)]
+
+
+def cmd_extract_audio_reencode(video, audio_out) -> list[str]:
+    return [ffmpeg_bin(), "-y", "-i", str(video), "-vn", "-c:a", "aac", "-f", "adts", str(audio_out)]
+
+
+def cmd_mux(video, audio, out) -> list[str]:
+    return [ffmpeg_bin(), "-y", "-i", str(video), "-i", str(audio), "-c", "copy", "-shortest", str(out)]
+
+
+def parse_fps(text) -> float:
+    """Parse an ffprobe r_frame_rate token (`"num/den"` or a plain number) to float.
+
+    Returns 0.0 on empty/garbage/zero-denominator input so callers can reject it via
+    the import-limit check rather than crash.
+    """
+    s = str(text).strip()
+    if not s:
+        return 0.0
+    try:
+        if "/" in s:
+            num, den = s.split("/", 1)
+            den_f = float(den)
+            if den_f == 0.0:
+                return 0.0
+            return float(num) / den_f
+        return float(s)
+    except (ValueError, ZeroDivisionError):
+        return 0.0
