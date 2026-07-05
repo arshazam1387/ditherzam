@@ -7,7 +7,7 @@
 - [constraint|phase -|n/a] Core is Qt-free; only ui/app/video-workers import PySide6 (002-qt-free-core.md)
 - [constraint|phase -|n/a] Python 3.12 only; tests use NUMBA_DISABLE_JIT=1 (003-python-and-tests.md)
 - [reference|phase -|n/a] Key files: spec, plans, roadmap, handoff, repo URL (004-key-references.md)
-- [progress|phase 0|done] Planning complete: spec + roadmap + 8 plans + handoff; no app code yet (005-project-state.md)
+- [progress|phase 6|in-progress] MASTER STATUS + resume: Phases 1-6 built & green (258 passed), Phase 7+8 remain; .venv at repo root; paused on Opus limit til 6:10am (005-project-state.md)
 - [reference|phase -|n/a] Fallback when stuck: may consult decompiled Dither Boy for inspiration, then implement our own (006-fallback-inspiration.md)
 - [progress|phase 3|done] Phase 3 color engine done: saturation, Palette+YAML, 5 builtins, median-cut, ColorEngine 4 modes, shuffle (007-phase3-color-engine-done.md)
 - [progress|phase 2|done] Phase 2 kernel library done: 66 kernels across 5 modules, golden fixtures, 154 tests green (008-phase2-kernel-library-done.md)
