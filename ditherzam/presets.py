@@ -111,3 +111,53 @@ def preset_to_settings(preset: dict) -> tuple[RenderSettings, Palette | None, li
             effects.append((str(item["name"]), dict(item.get("params", {}) or {})))
 
     return settings, palette, effects
+
+
+class PresetManager:
+    """Filesystem-backed store of preset YAML files (spec §10)."""
+
+    def __init__(self, presets_dir) -> None:
+        self.presets_dir = Path(presets_dir)
+        self.presets_dir.mkdir(parents=True, exist_ok=True)
+
+    def _path(self, name: str) -> Path:
+        return self.presets_dir / f"{name}.yaml"
+
+    def save(self, name: str, preset: dict) -> Path:
+        path = self._path(name)
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(preset, f, sort_keys=False, allow_unicode=True)
+        return path
+
+    def load(self, name: str) -> dict:
+        path = self._path(name)
+        if not path.is_file():
+            raise FileNotFoundError(f"Preset not found: {name}")
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Not a valid preset file.")
+        return data
+
+    def list(self) -> list[str]:
+        return sorted(p.stem for p in self.presets_dir.glob("*.yaml"))
+
+    def delete(self, name: str) -> bool:
+        path = self._path(name)
+        if path.is_file():
+            path.unlink()
+            return True
+        return False
+
+    def import_file(self, src) -> str:
+        src = Path(src)
+        if src.suffix.lower() not in (".yaml", ".yml"):
+            raise ValueError("Not a valid preset file.")
+        try:
+            data = yaml.safe_load(src.read_text(encoding="utf-8"))
+        except yaml.YAMLError as e:
+            raise ValueError("Not a valid preset file.") from e
+        if not isinstance(data, dict):
+            raise ValueError("Not a valid preset file.")
+        name = src.stem
+        self.save(name, data)
+        return name
