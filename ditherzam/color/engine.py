@@ -13,6 +13,20 @@ def nearest_indices(rgb_f32: np.ndarray, palette_f32: np.ndarray) -> np.ndarray:
     return dist.argmin(axis=-1)
 
 
+def _bayer_matrix(n: int) -> np.ndarray:
+    if n == 1:
+        return np.zeros((1, 1), dtype=np.float32)
+    smaller = _bayer_matrix(n // 2)
+    return np.block([
+        [4 * smaller + 0, 4 * smaller + 2],
+        [4 * smaller + 3, 4 * smaller + 1],
+    ]).astype(np.float32)
+
+
+# 4x4 Bayer thresholds normalized to the range [-0.5, 0.5)
+_BAYER4 = (_bayer_matrix(4) + 0.5) / 16.0 - 0.5
+
+
 def _to_rgb(img: np.ndarray) -> np.ndarray:
     arr = np.asarray(img, dtype=np.float32)
     if arr.ndim == 2:
@@ -32,5 +46,15 @@ class ColorEngine:
         pal = self.palette.colors.astype(np.float32)
         if self.mode == "nearest":
             idx = nearest_indices(rgb, pal)
+            return clamp_u8(pal[idx])
+        if self.mode == "ordered":
+            k = pal.shape[0]
+            spread = 255.0 / max(1, k - 1)
+            h, w = rgb.shape[:2]
+            mh, mw = _BAYER4.shape
+            offset = _BAYER4[np.arange(h)[:, None] % mh,
+                             np.arange(w)[None, :] % mw]
+            biased = rgb + offset[:, :, None] * spread
+            idx = nearest_indices(biased.astype(np.float32), pal)
             return clamp_u8(pal[idx])
         raise ValueError(f"unknown ColorEngine mode: {self.mode!r}")
