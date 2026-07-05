@@ -11,3 +11,6 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 .numba_cache/
+
+# local demo renders (not committed)
+demo_output/
