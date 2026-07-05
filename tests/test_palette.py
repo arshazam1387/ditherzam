@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from ditherzam.color.palette import Palette, builtin_palettes
+from ditherzam.color.palette import Palette, builtin_palettes, extract_palette
 
 
 def test_from_list_shape_and_dtype():
@@ -58,3 +58,37 @@ def test_builtin_exact_values():
     np.testing.assert_array_equal(b["pico8"].colors[8], np.array([255, 0, 77], np.float32))
     # CGA index 14 is yellow
     np.testing.assert_array_equal(b["cga"].colors[14], np.array([255, 255, 85], np.float32))
+
+
+def test_extract_returns_k_colors():
+    img = np.random.RandomState(0).randint(0, 256, (32, 32, 3), dtype=np.uint8)
+    p = extract_palette(img, k=8)
+    assert p.colors.shape == (8, 3)
+    assert p.colors.dtype == np.float32
+    assert p.name == "source"
+
+
+def test_extract_default_name_and_k():
+    img = np.random.RandomState(3).randint(0, 256, (16, 16, 3), dtype=np.uint8)
+    p = extract_palette(img)
+    assert p.colors.shape == (16, 3)
+
+
+def test_extract_two_color_image():
+    img = np.zeros((10, 10, 3), np.uint8)
+    img[:, :5] = [255, 0, 0]
+    img[:, 5:] = [0, 0, 255]
+    p = extract_palette(img, k=2)
+    got = [tuple(int(round(v)) for v in c) for c in p.colors]
+    reds = [c for c in got if c[0] > 200 and c[2] < 55]
+    blues = [c for c in got if c[2] > 200 and c[0] < 55]
+    assert reds and blues
+
+
+def test_extract_k_larger_than_unique_colors():
+    img = np.zeros((8, 8, 3), np.uint8)
+    img[:, :4] = [10, 10, 10]
+    img[:, 4:] = [200, 200, 200]
+    p = extract_palette(img, k=4)
+    # still returns exactly k rows even when the image has < k distinct colors
+    assert p.colors.shape == (4, 3)
