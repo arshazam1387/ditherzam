@@ -38,6 +38,38 @@ class Palette:
         return cls.from_list(name, data["colors"])
 
 
+def _median_cut(pixels: np.ndarray, depth: int) -> list[np.ndarray]:
+    """Recursively split ``pixels`` (N,3 float) into 2**depth buckets."""
+    if depth == 0 or pixels.shape[0] <= 1:
+        return [pixels]
+    ranges = pixels.max(axis=0) - pixels.min(axis=0)
+    axis = int(np.argmax(ranges))
+    order = np.argsort(pixels[:, axis], kind="stable")
+    pixels = pixels[order]
+    mid = pixels.shape[0] // 2
+    left = _median_cut(pixels[:mid], depth - 1)
+    right = _median_cut(pixels[mid:], depth - 1)
+    return left + right
+
+
+def extract_palette(rgb_u8: np.ndarray, k: int = 16, name: str = "source") -> "Palette":
+    """Median-cut palette extraction. Returns exactly ``k`` colors."""
+    k = max(1, int(k))
+    pixels = np.asarray(rgb_u8, dtype=np.float32).reshape(-1, 3)
+    depth = 0
+    while (1 << depth) < k:
+        depth += 1
+    buckets = [b for b in _median_cut(pixels, depth) if b.shape[0] > 0]
+    means = [b.mean(axis=0) for b in buckets]
+    # normalize to exactly k rows (pad by repeating the last, or trim)
+    if len(means) >= k:
+        means = means[:k]
+    else:
+        means = means + [means[-1]] * (k - len(means))
+    colors = np.asarray(means, dtype=np.float32).reshape(k, 3)
+    return Palette(name=name, colors=colors)
+
+
 def builtin_palettes() -> dict[str, "Palette"]:
     """Load every bundled palette from ``ditherzam/color/builtin/*.yaml``."""
     directory = Path(__file__).parent / "builtin"
