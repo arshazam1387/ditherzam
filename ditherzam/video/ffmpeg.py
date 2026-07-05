@@ -194,3 +194,36 @@ def probe_duration(path, runner=run_command) -> float:
 
 def probe_has_audio(path, runner=run_command) -> bool:
     return "audio" in runner(cmd_probe_has_audio(path)).strip().lower()
+
+
+# --- assemble frames + preserve audio (spec §12.5) ----------------------------
+
+def assemble_video(frames_dir, fps, orig_video, out, runner=run_command) -> None:
+    """Encode dithered frames to MP4, preserving original audio when present.
+
+    Steps (spec §12.5):
+      1. Encode frames_dir/frame%06d.png -> temp_video.mp4 (libx264, yuv420p).
+      2. If orig_video has an audio stream: extract it (stream copy, else AAC/ADTS
+         re-encode) and mux with `-c copy -shortest` into `out`.
+      3. Otherwise move temp_video.mp4 -> out.
+    """
+    out_path = Path(out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    work = out_path.parent
+    temp_video = work / "temp_video.mp4"
+
+    runner(cmd_encode(frames_dir, fps, str(temp_video)))
+
+    has_audio = bool(orig_video) and probe_has_audio(orig_video, runner=runner)
+    if has_audio:
+        audio = work / "audio.m4a"
+        try:
+            runner(cmd_extract_audio(orig_video, str(audio)))
+        except FFmpegError:
+            audio = work / "audio.aac"
+            runner(cmd_extract_audio_reencode(orig_video, str(audio)))
+        runner(cmd_mux(str(temp_video), str(audio), str(out_path)))
+        if temp_video.exists():
+            temp_video.unlink()
+    else:
+        shutil.move(str(temp_video), str(out_path))
