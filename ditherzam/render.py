@@ -30,6 +30,14 @@ class RenderSettings:
 class RenderPipeline:
     """Compose adjustments -> dither -> color -> saturation -> effects -> invert."""
 
+    # FROZEN stage order (spec §8.1 + color/saturation/effects insert). The
+    # render() body MUST call stages in exactly this sequence; test_render_order
+    # spies on each stage and asserts the recorded call order equals this tuple.
+    STAGE_ORDER: tuple[str, ...] = (
+        "contrast", "midtones", "highlights", "blur", "dither",
+        "color", "saturation", "effects", "invert",
+    )
+
     def __init__(self, registry, color_engine=None, effect_stack=None) -> None:
         self.registry = registry
         self.color_engine = color_engine
