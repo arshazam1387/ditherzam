@@ -1,6 +1,6 @@
 import numpy as np
 import pytest
-from ditherzam.color.palette import Palette
+from ditherzam.color.palette import Palette, builtin_palettes
 
 
 def test_from_list_shape_and_dtype():
@@ -29,3 +29,32 @@ def test_roundtrip_yaml(tmp_path):
 def test_load_missing_file_raises(tmp_path):
     with pytest.raises(FileNotFoundError):
         Palette.load(tmp_path / "nope.yaml")
+
+
+def test_builtins_all_present():
+    b = builtin_palettes()
+    for name in ("grayscale", "gameboy", "cga", "pico8", "sepia"):
+        assert name in b, f"missing built-in palette: {name}"
+
+
+def test_builtin_counts_and_shape():
+    b = builtin_palettes()
+    assert b["grayscale"].colors.shape == (4, 3)
+    assert b["gameboy"].colors.shape == (4, 3)
+    assert b["cga"].colors.shape == (16, 3)
+    assert b["pico8"].colors.shape == (16, 3)
+    assert b["sepia"].colors.shape == (4, 3)
+    for p in b.values():
+        assert p.colors.dtype == np.float32
+
+
+def test_builtin_exact_values():
+    b = builtin_palettes()
+    np.testing.assert_array_equal(
+        b["gameboy"].colors,
+        np.array([[15, 56, 15], [48, 98, 48], [139, 172, 15], [155, 188, 15]], np.float32),
+    )
+    # PICO-8 index 8 is the signature red (#FF004D)
+    np.testing.assert_array_equal(b["pico8"].colors[8], np.array([255, 0, 77], np.float32))
+    # CGA index 14 is yellow
+    np.testing.assert_array_equal(b["cga"].colors[14], np.array([255, 255, 85], np.float32))

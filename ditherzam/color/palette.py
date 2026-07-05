@@ -36,3 +36,12 @@ class Palette:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
         name = data.get("name", path.stem)
         return cls.from_list(name, data["colors"])
+
+
+def builtin_palettes() -> dict[str, "Palette"]:
+    """Load every bundled palette from ``ditherzam/color/builtin/*.yaml``."""
+    directory = Path(__file__).parent / "builtin"
+    out: dict[str, Palette] = {}
+    for f in sorted(directory.glob("*.yaml")):
+        out[f.stem] = Palette.load(f)
+    return out
