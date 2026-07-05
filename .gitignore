@@ -5,3 +5,9 @@ DBPatcher/
 _internal/
 __pycache__/
 *.pyc
+
+# local build environment / caches
+.venv/
+.pytest_cache/
+*.egg-info/
+.numba_cache/
