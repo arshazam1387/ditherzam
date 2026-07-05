@@ -17,6 +17,17 @@ def _build_param(entry, params: dict):
     return tuple(vals)
 
 
+def _resize_field_nearest(field: np.ndarray, target_hw: tuple[int, int]) -> np.ndarray:
+    """Float-safe nearest-neighbour resize that preserves negative values."""
+    th, tw = int(target_hw[0]), int(target_hw[1])
+    fh, fw = field.shape[:2]
+    if (fh, fw) == (th, tw):
+        return field
+    ys = np.minimum((np.arange(th) * fh) // max(th, 1), fh - 1)
+    xs = np.minimum((np.arange(tw) * fw) // max(tw, 1), fw - 1)
+    return field[ys][:, xs]
+
+
 def apply_dither(gray_f32, *, style, scale, luminance_threshold,
                  params, registry, preview_disabled=False,
                  threshold_field=None) -> np.ndarray:
@@ -29,8 +40,14 @@ def apply_dither(gray_f32, *, style, scale, luminance_threshold,
     h, w = gray_f32.shape[:2]
 
     small = nearest_downscale(gray_f32, factor)
+
+    if threshold_field is not None:
+        fld = _resize_field_nearest(
+            np.asarray(threshold_field, dtype=np.float32), small.shape[:2])
+        # per-pixel threshold tval + fld  <=>  compare (small - fld) against tval
+        small = (small - fld).astype(np.float32)
+
     param = _build_param(entry, params)
     out = entry.func(small, param, tval)
 
-    # threshold_field is accepted for the frozen contract; Phase 8 (temporal) wires it.
     return nearest_upscale_to(out, (w, h))
