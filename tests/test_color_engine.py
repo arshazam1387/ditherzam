@@ -69,3 +69,34 @@ def test_ordered_is_deterministic():
     eng = ColorEngine(DUO, mode="ordered")
     gray = np.full((8, 8), 127.0, np.float32)
     np.testing.assert_array_equal(eng.map(gray), eng.map(gray))
+
+
+def test_diffused_output_only_palette_colors():
+    eng = ColorEngine(QUAD, mode="diffused")
+    img = np.random.RandomState(4).randint(0, 256, (8, 8, 3)).astype(np.float32)
+    out = eng.map(img)
+    uniq = {tuple(c) for c in out.reshape(-1, 3).tolist()}
+    allowed = {tuple(int(round(v)) for v in c) for c in QUAD.colors}
+    assert uniq <= allowed
+
+
+def test_diffused_dithers_flat_midgray():
+    eng = ColorEngine(DUO, mode="diffused")
+    gray = np.full((8, 8), 127.0, np.float32)
+    out = eng.map(gray)
+    uniq = {tuple(c) for c in out.reshape(-1, 3).tolist()}
+    assert (0, 0, 0) in uniq and (255, 255, 255) in uniq
+
+
+def test_diffused_preserves_average():
+    # error diffusion of mid-gray on a black/white palette ~= 50% each
+    eng = ColorEngine(DUO, mode="diffused")
+    gray = np.full((16, 16), 127.0, np.float32)
+    out = eng.map(gray).astype(np.float32)
+    assert 100.0 < out.mean() < 155.0
+
+
+def test_diffused_shape_and_dtype():
+    eng = ColorEngine(QUAD, mode="diffused")
+    out = eng.map(np.full((5, 6), 60.0, np.float32))
+    assert out.shape == (5, 6, 3) and out.dtype == np.uint8

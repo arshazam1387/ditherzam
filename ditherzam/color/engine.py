@@ -13,6 +13,29 @@ def nearest_indices(rgb_f32: np.ndarray, palette_f32: np.ndarray) -> np.ndarray:
     return dist.argmin(axis=-1)
 
 
+def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+    h, w = rgb.shape[:2]
+    work = rgb.astype(np.float32).copy()
+    out = np.empty((h, w, 3), dtype=np.float32)
+    for y in range(h):
+        for x in range(w):
+            old = work[y, x].copy()
+            diff = pal - old
+            idx = int((diff * diff).sum(axis=1).argmin())
+            new = pal[idx]
+            out[y, x] = new
+            err = old - new
+            if x + 1 < w:
+                work[y, x + 1] += err * (7.0 / 16.0)
+            if y + 1 < h:
+                if x - 1 >= 0:
+                    work[y + 1, x - 1] += err * (3.0 / 16.0)
+                work[y + 1, x] += err * (5.0 / 16.0)
+                if x + 1 < w:
+                    work[y + 1, x + 1] += err * (1.0 / 16.0)
+    return out
+
+
 def _bayer_matrix(n: int) -> np.ndarray:
     if n == 1:
         return np.zeros((1, 1), dtype=np.float32)
@@ -57,4 +80,6 @@ class ColorEngine:
             biased = rgb + offset[:, :, None] * spread
             idx = nearest_indices(biased.astype(np.float32), pal)
             return clamp_u8(pal[idx])
+        if self.mode == "diffused":
+            return clamp_u8(_floyd_steinberg_rgb(rgb, pal))
         raise ValueError(f"unknown ColorEngine mode: {self.mode!r}")
