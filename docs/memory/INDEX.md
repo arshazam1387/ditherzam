@@ -13,3 +13,4 @@
 - [progress|phase 2|done] Phase 2 kernel library done: 66 kernels across 5 modules, golden fixtures, 154 tests green (008-phase2-kernel-library-done.md)
 - [progress|phase 4|done] Phase 4 effects+render done: 5 effects, EffectStack, RenderPipeline STAGE_ORDER, 185 tests green (009-phase4-effects-render-done.md)
 - [progress|phase 5|done] Phase 5 UI shell done: PySide6 ImageEditor + pure helpers, 227 tests green, Qt-isolation holds (010-phase5-ui-shell-done.md)
+- [progress|phase 6|done] Phase 6 presets & export done: presets/export/batch Qt-free, SVG run-merge, UI menu wired, 258 tests green (011-phase6-presets-export-done.md)
