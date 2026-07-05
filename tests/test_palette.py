@@ -117,3 +117,36 @@ def test_source_clamps_out_of_range():
     img = np.random.RandomState(8).randint(0, 256, (24, 24, 3), dtype=np.uint8)
     assert source_palette(img, completeness=5.0).colors.shape == (256, 3)
     assert source_palette(img, completeness=-1.0).colors.shape == (2, 3)
+
+
+def test_shuffle_keeps_locked_and_shape():
+    p = Palette.from_list("t", [[0, 0, 0], [64, 64, 64], [128, 128, 128], [255, 255, 255]])
+    rng = np.random.default_rng(0)
+    q = p.shuffle(locked={0, 3}, rng=rng)
+    assert q.colors.shape == (4, 3)
+    assert q.name == "t"
+    # locked rows identical
+    np.testing.assert_array_equal(q.colors[0], p.colors[0])
+    np.testing.assert_array_equal(q.colors[3], p.colors[3])
+
+
+def test_shuffle_changes_unlocked():
+    p = Palette.from_list("t", [[0, 0, 0], [64, 64, 64], [128, 128, 128], [255, 255, 255]])
+    rng = np.random.default_rng(1)
+    q = p.shuffle(locked={0}, rng=rng)
+    # at least one unlocked row differs from the original
+    changed = any(not np.array_equal(q.colors[i], p.colors[i]) for i in (1, 2, 3))
+    assert changed
+
+
+def test_shuffle_is_immutable_on_original():
+    p = Palette.from_list("t", [[0, 0, 0], [64, 64, 64]])
+    before = p.colors.copy()
+    p.shuffle(locked=set(), rng=np.random.default_rng(2))
+    np.testing.assert_array_equal(p.colors, before)
+
+
+def test_shuffle_values_in_range():
+    p = Palette.from_list("t", [[0, 0, 0], [64, 64, 64], [128, 128, 128]])
+    q = p.shuffle(locked=set(), rng=np.random.default_rng(3))
+    assert q.colors.min() >= 0 and q.colors.max() <= 255
