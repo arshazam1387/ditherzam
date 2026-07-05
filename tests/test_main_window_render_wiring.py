@@ -43,6 +43,22 @@ def test_palette_and_mode_are_applied(app):
     assert colors <= palette, f"non-palette colors leaked: {colors - palette}"
 
 
+def test_default_state_does_not_blur_the_image(app):
+    """With nothing touched (Style='None', all adjustments at their neutral), the
+    preview must equal the source. Regression: Blur defaulted to 50, which is a
+    25px Gaussian blur applied to every render (blur's neutral is 0, not 50)."""
+    win = ImageEditor()
+    # a sharp image: any blur destroys the hard black/white edges
+    sharp = np.zeros((40, 60), dtype=np.float32)
+    sharp[:, ::2] = 255.0  # 1px vertical stripes
+    win.load_array(sharp)
+
+    out = win._rendered_rgb()  # Style='None' default, nothing touched
+    # None style + neutral adjustments => output is the source broadcast to RGB
+    assert np.array_equal(out[..., 0], sharp.astype("uint8")), \
+        "default render altered a sharp image (blur applied by default?)"
+
+
 def test_adding_effect_changes_output_without_crashing(app):
     win = ImageEditor()
     win.load_array(_gradient())

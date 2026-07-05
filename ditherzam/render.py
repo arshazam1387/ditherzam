@@ -17,7 +17,7 @@ class RenderSettings:
     contrast: float = 50
     midtones: float = 50
     highlights: float = 50
-    blur: float = 50
+    blur: float = 0  # blur's identity is 0 (value=50 == 25px Gaussian blur)
     luminance_threshold: float = 50
     invert: bool = False
     saturation: float = 50

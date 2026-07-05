@@ -18,13 +18,15 @@ from .widgets import (
     ResettableGlowSlider,
 )
 
-# Adjustment sliders: (state_key, label, spin_display_max). All range 0..100, default 50.
+# Adjustment sliders: (state_key, label, spin_display_max, neutral_default).
+# Range 0..100. Neutral is 50 for tonal sliders (50 == identity), but Blur's
+# identity is 0 — value=50 is a 25px Gaussian blur, so it must start at 0.
 _ADJUSTMENTS = [
-    ("contrast", "Contrast", 250),
-    ("midtones", "Midtones", 10),
-    ("highlights", "Highlights", 50),
-    ("luminance_threshold", "Luminance Threshold", 100),
-    ("blur", "Blur", 100),
+    ("contrast", "Contrast", 250, 50),
+    ("midtones", "Midtones", 10, 50),
+    ("highlights", "Highlights", 50, 50),
+    ("luminance_threshold", "Luminance Threshold", 100, 50),
+    ("blur", "Blur", 100, 0),
 ]
 
 _PALETTES = ["grayscale", "gameboy", "cga", "pico8", "sepia"]
@@ -43,7 +45,7 @@ class ControlPanel(QWidget):
         self.setObjectName("control_panel")
         self.state: dict = {
             "contrast": 50, "midtones": 50, "highlights": 50,
-            "luminance_threshold": 50, "blur": 50, "saturation": 50,
+            "luminance_threshold": 50, "blur": 0, "saturation": 50,
             "invert": False, "preview_disabled": False,
             "style": "None", "scale": 5, "params": {},
             "palette": "grayscale", "color_mode": "off", "effects": [],
@@ -86,11 +88,11 @@ class ControlPanel(QWidget):
         self.invert_toggle.toggled.connect(self._on_invert_toggle)
         layout.addWidget(self.invert_toggle)
 
-        for key, label, disp_max in _ADJUSTMENTS:
-            slider = ResettableGlowSlider(default=50, glow_color="#5e89ed")
+        for key, label, disp_max, default in _ADJUSTMENTS:
+            slider = ResettableGlowSlider(default=default, glow_color="#5e89ed")
             slider.setRange(0, 100)
             spin = InvisibleSpinBox(max_display=disp_max)
-            spin.setValue(50)
+            spin.setValue(default)
             slider.valueChanged.connect(self._make_slider_handler(key))
             self._sliders[key] = slider
             layout.addWidget(_labeled(label, slider, spin))
