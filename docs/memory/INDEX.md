@@ -9,3 +9,4 @@
 - [reference|phase -|n/a] Key files: spec, plans, roadmap, handoff, repo URL (004-key-references.md)
 - [progress|phase 0|done] Planning complete: spec + roadmap + 8 plans + handoff; no app code yet (005-project-state.md)
 - [reference|phase -|n/a] Fallback when stuck: may consult decompiled Dither Boy for inspiration, then implement our own (006-fallback-inspiration.md)
+- [progress|phase 3|done] Phase 3 color engine done: saturation, Palette+YAML, 5 builtins, median-cut, ColorEngine 4 modes, shuffle (007-phase3-color-engine-done.md)
