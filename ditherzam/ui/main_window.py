@@ -87,8 +87,21 @@ class ImageEditor(QMainWindow):
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._do_render)
 
+        self.expert_mode = False
         self._install_shortcuts()
         self._wire_export()
+        self._wire_video()
+
+    # ---- video (Phase 7, UI layer only) -------------------------------------
+    def _wire_video(self) -> None:
+        from .video_controller import VideoController
+        self.video_controller = VideoController(
+            self,
+            self.pipeline,
+            settings_provider=self._collect_settings,
+            expert_provider=lambda: self.expert_mode,
+        )
+        self.menuBar().addMenu(self.video_controller.build_menu())
 
     # ---- presets & export (Phase 6, UI layer only) --------------------------
     def _wire_export(self) -> None:
