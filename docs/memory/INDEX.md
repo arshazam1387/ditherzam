@@ -7,7 +7,7 @@
 - [constraint|phase -|n/a] Core is Qt-free; only ui/app/video-workers import PySide6 (002-qt-free-core.md)
 - [constraint|phase -|n/a] Python 3.12 only; tests use NUMBA_DISABLE_JIT=1 (003-python-and-tests.md)
 - [reference|phase -|n/a] Key files: spec, plans, roadmap, handoff, repo URL (004-key-references.md)
-- [progress|phase 8|done] MASTER STATUS: ALL 8 phases built, green (330 passed), pushed; .venv at repo root; demos in demo_output/ (005-project-state.md)
+- [progress|phase 8|done] MASTER STATUS: ALL 8 phases built + 2 live-app fixes, green (333 passed), pushed; .venv at repo root; next=optimize (005-project-state.md)
 - [reference|phase -|n/a] Fallback when stuck: may consult decompiled Dither Boy for inspiration, then implement our own (006-fallback-inspiration.md)
 - [progress|phase 3|done] Phase 3 color engine done: saturation, Palette+YAML, 5 builtins, median-cut, ColorEngine 4 modes, shuffle (007-phase3-color-engine-done.md)
 - [progress|phase 2|done] Phase 2 kernel library done: 66 kernels across 5 modules, golden fixtures, 154 tests green (008-phase2-kernel-library-done.md)
@@ -16,3 +16,4 @@
 - [progress|phase 6|done] Phase 6 presets & export done: presets/export/batch Qt-free, SVG run-merge, UI menu wired, 258 tests green (011-phase6-presets-export-done.md)
 - [progress|phase 7|done] Phase 7 video done: ffmpeg builders/limits/runner/assemble, per-frame dither, Qt workers + video_controller, 298 tests green (012-phase7-video-done.md)
 - [progress|phase 8|done] Phase 8 animation done: 9 temporal patterns, threshold-field backward-compat, Timeline+ease, render_animation, 330 tests green (013-phase8-animation-done.md)
+- [gotcha|phase 5|done] Live-app bugs fixed: blur-by-default (neutral is 0 not 50) + Palette/Effects not wired to pipeline; 333 tests (014-live-app-bugs-fixed.md)
