@@ -71,3 +71,57 @@ def test_palette_and_effects_roundtrip():
     assert pal2 is not None and pal2.name == "mini"
     assert pal2.colors.shape == (2, 3) and pal2.colors.dtype == np.float32
     assert fx == [("Blur", {"radius": 2}), ("Sharpen", {"amount": 1})]
+
+
+from ditherzam.presets import PresetManager
+
+
+def test_preset_manager_save_list_load(tmp_path):
+    m = PresetManager(tmp_path)
+    p = m.save("mine", {"adjustments": {}, "dither": {"style": "None"}})
+    assert p.exists() and p.suffix == ".yaml"
+    assert "mine" in m.list()
+    assert m.load("mine")["dither"]["style"] == "None"
+
+
+def test_preset_manager_list_is_sorted(tmp_path):
+    m = PresetManager(tmp_path)
+    m.save("zeta", {"dither": {}})
+    m.save("alpha", {"dither": {}})
+    assert m.list() == ["alpha", "zeta"]
+
+
+def test_preset_manager_delete(tmp_path):
+    m = PresetManager(tmp_path)
+    m.save("temp", {"dither": {}})
+    assert m.delete("temp") is True
+    assert "temp" not in m.list()
+    assert m.delete("temp") is False          # already gone
+
+
+def test_load_missing_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        PresetManager(tmp_path).load("nope")
+
+
+def test_import_valid_yaml_returns_name(tmp_path):
+    src = tmp_path / "cool.yaml"
+    src.write_text("dither:\n  style: Atkinson\n", encoding="utf-8")
+    m = PresetManager(tmp_path / "store")
+    name = m.import_file(src)
+    assert name == "cool"
+    assert m.load("cool")["dither"]["style"] == "Atkinson"
+
+
+def test_import_invalid_raises(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("just a string", encoding="utf-8")
+    with pytest.raises(ValueError):
+        PresetManager(tmp_path / "store2").import_file(bad)
+
+
+def test_import_wrong_extension_raises(tmp_path):
+    bad = tmp_path / "notpreset.txt"
+    bad.write_text("dither: {}", encoding="utf-8")
+    with pytest.raises(ValueError):
+        PresetManager(tmp_path / "store3").import_file(bad)
