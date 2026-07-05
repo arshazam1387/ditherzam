@@ -8,6 +8,9 @@ def _luminance_to_255(luminance_threshold: float) -> float:
 
 
 def _build_param(entry, params: dict):
+    # Spec §8.2 step 3: param_func takes precedence over param_sliders extraction.
+    if entry.param_func is not None:
+        return entry.param_func(params)
     vals = [params[name] for name in entry.param_sliders if name in params]
     if len(vals) <= 1:
         return vals[0] if vals else 0
@@ -15,7 +18,8 @@ def _build_param(entry, params: dict):
 
 
 def apply_dither(gray_f32, *, style, scale, luminance_threshold,
-                 params, registry, preview_disabled=False) -> np.ndarray:
+                 params, registry, preview_disabled=False,
+                 threshold_field=None) -> np.ndarray:
     entry = registry.get_entry(style)
     if style == "None" or entry is None or preview_disabled:
         return gray_f32
@@ -28,4 +32,5 @@ def apply_dither(gray_f32, *, style, scale, luminance_threshold,
     param = _build_param(entry, params)
     out = entry.func(small, param, tval)
 
+    # threshold_field is accepted for the frozen contract; Phase 8 (temporal) wires it.
     return nearest_upscale_to(out, (w, h))
