@@ -8,3 +8,4 @@
 - [constraint|phase -|n/a] Python 3.12 only; tests use NUMBA_DISABLE_JIT=1 (003-python-and-tests.md)
 - [reference|phase -|n/a] Key files: spec, plans, roadmap, handoff, repo URL (004-key-references.md)
 - [progress|phase 0|done] Planning complete: spec + roadmap + 8 plans + handoff; no app code yet (005-project-state.md)
+- [reference|phase -|n/a] Fallback when stuck: may consult decompiled Dither Boy for inspiration, then implement our own (006-fallback-inspiration.md)
