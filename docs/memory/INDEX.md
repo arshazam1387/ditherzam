@@ -10,3 +10,4 @@
 - [progress|phase 0|done] Planning complete: spec + roadmap + 8 plans + handoff; no app code yet (005-project-state.md)
 - [reference|phase -|n/a] Fallback when stuck: may consult decompiled Dither Boy for inspiration, then implement our own (006-fallback-inspiration.md)
 - [progress|phase 3|done] Phase 3 color engine done: saturation, Palette+YAML, 5 builtins, median-cut, ColorEngine 4 modes, shuffle (007-phase3-color-engine-done.md)
+- [progress|phase 2|done] Phase 2 kernel library done: 66 kernels across 5 modules, golden fixtures, 154 tests green (008-phase2-kernel-library-done.md)
