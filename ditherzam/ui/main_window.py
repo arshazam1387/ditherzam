@@ -91,6 +91,52 @@ class ImageEditor(QMainWindow):
         self._install_shortcuts()
         self._wire_export()
         self._wire_video()
+        self._wire_animation()
+
+    # ---- animation (Phase 8, UI layer only) ---------------------------------
+    def _wire_animation(self) -> None:
+        from PySide6.QtWidgets import QDockWidget
+        from ..animation.timeline import Timeline
+        from .timeline_panel import TimelinePanel, AnimationController
+
+        self.timeline = Timeline(length=30)
+        self.timeline_panel = TimelinePanel(length=30, parent=self)
+        dock = QDockWidget("Animation", self)
+        dock.setWidget(self.timeline_panel)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+
+        self.anim_controller = AnimationController(
+            self.timeline_panel, self.pipeline,
+            self._provide_animation_base, self.timeline, seed=0)
+        self.anim_controller.on_frame = self._show_animation_frame
+        self.timeline_panel.keyframe_requested.connect(self._add_keyframe_at)
+        self.timeline_panel.export_requested.connect(self._export_animation)
+
+    def _provide_animation_base(self):
+        if self._base_gray is None:          # no image loaded yet
+            return None
+        return self._base_gray, self._collect_settings()
+
+    def _show_animation_frame(self, rgb_u8) -> None:
+        qimg = numpy_to_qimage(rgb_u8)
+        self.last_qimage = qimg
+        self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+
+    def _add_keyframe_at(self, frame_index: int) -> None:
+        from ..animation.timeline import Keyframe
+        s = self._collect_settings()
+        self.timeline.add(
+            Keyframe(int(frame_index), "luminance_threshold", s.luminance_threshold))
+
+    def _export_animation(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+        if self._base_gray is None:
+            return
+        out, _ = QFileDialog.getSaveFileName(self, "Export Animation", "animation.mp4",
+                                             "MP4 Video (*.mp4)")
+        if not out:
+            return
+        self.anim_controller.export(out, fps=24)
 
     # ---- video (Phase 7, UI layer only) -------------------------------------
     def _wire_video(self) -> None:
