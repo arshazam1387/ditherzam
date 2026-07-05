@@ -88,3 +88,43 @@ def _ordered(img, thresholds):
 @registry.register("Bayer-Matrix 4x4", "Ordered Dither", dims=2)
 def bayer_4(image_array, parameter, luminance_threshold_value):
     return _ordered(image_array.astype(np.float32), _BAYER4)
+
+
+@njit(cache=True)
+def _diffuse(img, thr, offsets, weights, divisor):
+    h, w = img.shape
+    out = img.copy()
+    n = offsets.shape[0]
+    for y in range(h):
+        for x in range(w):
+            old = out[y, x]
+            new = 255.0 if old >= thr else 0.0
+            out[y, x] = new
+            err = old - new
+            for k in range(n):
+                ny = y + offsets[k, 0]
+                nx = x + offsets[k, 1]
+                if 0 <= ny < h and 0 <= nx < w:
+                    out[ny, nx] += err * weights[k] / divisor
+    for y in range(h):
+        for x in range(w):
+            out[y, x] = 255.0 if out[y, x] >= 128.0 else 0.0
+    return out
+
+
+@njit(cache=True)
+def _diffuse_row(img, thr, w_right):
+    h, w = img.shape
+    out = img.copy()
+    for y in range(h):
+        for x in range(w):
+            old = out[y, x]
+            new = 255.0 if old >= thr else 0.0
+            out[y, x] = new
+            err = old - new
+            if x + 1 < w:
+                out[y, x + 1] += err * w_right
+    for y in range(h):
+        for x in range(w):
+            out[y, x] = 255.0 if out[y, x] >= 128.0 else 0.0
+    return out
