@@ -15,10 +15,11 @@ implement our own version.
   `db_tools.pyc` (dumped as `dis_main.txt` ~3.2MB, `dis_dither_registry.txt` ~1MB),
   plus complete string/const/docstring tables. Behavior is already distilled in
   `DITHER_BOY_FULL_SPEC.md`.
-- **Where it lives:** a temporary session scratchpad (`.../scratchpad/dbwork/`),
-  which is ephemeral and may be gone in a new session. If long-term reference is
-  wanted, keep it OUTSIDE the repo (never commit it — `.gitignore` blocks `*.exe`
-  and `*.pyc`).
+- **Where it lives (persistent):** `C:\Users\arsha\Desktop\ditherboy-reference\`
+  — a folder OUTSIDE this repo (repo is `Desktop\custom dither`), so it can never
+  be committed. Contains `bytecode/` (main.pyc, dither_registry.pyc, db_tools.pyc),
+  `disassembly/` (full dis_*.txt), `analysis/` (trees, strings, x_*.txt method
+  extracts), and its own README. Never move it into the repo or commit it.
 - **Caveat (see [[001-clean-room]]):** consulting their decompiled code for
   "inspiration" weakens the clean-room claim. Preferred use: read it to understand
   *what* behavior/approach is needed, then write our own implementation from
