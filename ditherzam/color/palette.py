@@ -37,6 +37,15 @@ class Palette:
         name = data.get("name", path.stem)
         return cls.from_list(name, data["colors"])
 
+    def shuffle(self, locked, rng) -> "Palette":
+        """Return a copy where every swatch not in ``locked`` is randomized."""
+        locked = set(locked)
+        new = self.colors.copy()
+        for i in range(new.shape[0]):
+            if i not in locked:
+                new[i] = rng.integers(0, 256, size=3).astype(np.float32)
+        return Palette(name=self.name, colors=new)
+
 
 def _median_cut(pixels: np.ndarray, depth: int) -> list[np.ndarray]:
     """Recursively split ``pixels`` (N,3 float) into 2**depth buckets."""
