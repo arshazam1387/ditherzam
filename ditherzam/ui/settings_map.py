@@ -19,6 +19,8 @@ def settings_from_controls(state: dict) -> RenderSettings:
         saturation=int(state.get("saturation", 50)),
         style=state.get("style", "None"),
         scale=int(state.get("scale", 5)),
+        depth=int(state.get("depth", 2)),
+        color_mapping=state.get("color_mapping", "match"),
         preview_disabled=bool(state.get("preview_disabled", False)),
         params=dict(state.get("params", {}) or {}),
     )
