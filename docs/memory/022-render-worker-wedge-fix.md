@@ -23,9 +23,17 @@ the image updates again.
 a terminal signal on EVERY path incl. exceptions, or the state machine deadlocks silently
 (Qt only prints "Error calling Python override of QRunnable::run()").
 
-**Still open (not fixed, lower priority):** what actually throws is not pinned down — the pure
-pipeline is exception-free across a wide setting/palette/effect/size matrix. Suspected latent
-trigger is a thread race: `render_now()` (GUI thread) can run concurrently with an in-flight
-background worker; the proxy path `render()` reads `pipeline.color_engine`/`effect_stack`
-without the cache lock while `_sync_pipeline()` reassigns them. The wedge fix makes any such
-throw recoverable regardless of cause. Related: [[021-color-palette-library-c-shipped]].
+**Throwing input FOUND + FIXED (2026-07-08, session 2):** it was a TOCTOU race, confirmed by
+headless repro (`sys.setswitchinterval(1e-6)` + a thread reassigning `pipeline.color_engine`
+while another loops `render()` → `AttributeError("'NoneType' object has no attribute 'map'")`).
+`render()`/`render_cached()` each read `self.color_engine` and `self.effect_stack` **multiple
+times** per call (the `is not None` check, then deref). The GUI thread's `_sync_pipeline()`
+reassigns those attrs (to a fresh engine/stack, or `None` when Color/Effects is toggled off)
+with no lock, so a reassignment landing between two reads deref'd `None` on the render worker.
+The `_cache_lock` never covered it (proxy `render()` skips the lock; and it guards the cache
+dict, not the attribute reads). **Fix:** snapshot each attr into a local **once** at the top of
+its stage and use the local throughout — both methods. Atomic read under the GIL ⇒ a concurrent
+reassignment can't split a single render. Output byte-identical (STAGE_ORDER + `test_render_cache`
+still green). Regression: `tests/test_render_thread_safety.py` (4 read-count tests, deterministic,
+no timing). Full suite **584 green** JIT-off. `render()` was edited but only to bind locals —
+STAGE_ORDER and RenderSettings fields untouched. Related: [[021-color-palette-library-c-shipped]].

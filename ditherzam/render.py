@@ -90,12 +90,16 @@ class RenderPipeline:
             levels=settings.depth,
         )
 
-        # 6: color — palette map, or broadcast grayscale to RGB
-        if self.color_engine is not None:
-            if getattr(self.color_engine, "mode", None) == "ramp":
-                self.color_engine.depth = settings.depth
-                self.color_engine.mapping = settings.color_mapping
-            rgb = self.color_engine.map(d).astype(np.float32)
+        # 6: color — palette map, or broadcast grayscale to RGB. Snapshot the
+        # engine once: the GUI thread can reassign self.color_engine (via
+        # ImageEditor._sync_pipeline) while this runs on a render worker, and a
+        # split read would dereference None mid-render.
+        engine = self.color_engine
+        if engine is not None:
+            if getattr(engine, "mode", None) == "ramp":
+                engine.depth = settings.depth
+                engine.mapping = settings.color_mapping
+            rgb = engine.map(d).astype(np.float32)
         else:
             rgb = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
 
@@ -103,9 +107,10 @@ class RenderPipeline:
         rgb = apply_saturation(rgb, settings.saturation)
         rgb_u8 = clamp_u8(rgb)
 
-        # 8: effects stack (RGB uint8)
-        if self.effect_stack is not None:
-            rgb_u8 = self.effect_stack.apply(rgb_u8)
+        # 8: effects stack (RGB uint8) — snapshot once, same reassignment race.
+        stack = self.effect_stack
+        if stack is not None:
+            rgb_u8 = stack.apply(rgb_u8)
 
         # 9: invert LAST (on RGB)
         if settings.invert:
@@ -180,14 +185,16 @@ class RenderPipeline:
                     dirty = True
             d = c["d"]
 
-            # L3: color map (or grayscale->RGB broadcast)
-            col_sig = _color_sig(self.color_engine) + (settings.depth, settings.color_mapping)
+            # L3: color map (or grayscale->RGB broadcast). Snapshot the engine
+            # once — a concurrent GUI-thread reassignment must not split reads.
+            engine = self.color_engine
+            col_sig = _color_sig(engine) + (settings.depth, settings.color_mapping)
             if dirty or c.get("col_sig") != col_sig or "colored" not in c:
-                if self.color_engine is not None:
-                    if getattr(self.color_engine, "mode", None) == "ramp":
-                        self.color_engine.depth = settings.depth
-                        self.color_engine.mapping = settings.color_mapping
-                    colored = self.color_engine.map(d).astype(np.float32)
+                if engine is not None:
+                    if getattr(engine, "mode", None) == "ramp":
+                        engine.depth = settings.depth
+                        engine.mapping = settings.color_mapping
+                    colored = engine.map(d).astype(np.float32)
                 else:
                     colored = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
                 c["col_sig"] = col_sig
@@ -203,10 +210,11 @@ class RenderPipeline:
                 dirty = True
             satout = c["satout"]
 
-            # L5: effects stack
-            fx_sig = _effect_sig(self.effect_stack)
+            # L5: effects stack — snapshot once (same reassignment race).
+            stack = self.effect_stack
+            fx_sig = _effect_sig(stack)
             if dirty or c.get("fx_sig") != fx_sig or "fx" not in c:
-                fx = self.effect_stack.apply(satout) if self.effect_stack is not None else satout
+                fx = stack.apply(satout) if stack is not None else satout
                 c["fx_sig"] = fx_sig
                 c["fx"] = fx
                 dirty = True
