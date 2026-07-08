@@ -150,3 +150,26 @@ def test_shuffle_values_in_range():
     p = Palette.from_list("t", [[0, 0, 0], [64, 64, 64], [128, 128, 128]])
     q = p.shuffle(locked=set(), rng=np.random.default_rng(3))
     assert q.colors.min() >= 0 and q.colors.max() <= 255
+
+
+def test_generate_palette_k_gives_exact_count():
+    from ditherzam.color.palette import generate_palette
+    img = np.random.default_rng(0).integers(0, 256, size=(32, 32, 3), dtype=np.uint8)
+    p = generate_palette(img, "k", 8)
+    assert p.colors.shape == (8, 3)
+    assert p.name == "from image"
+
+
+def test_generate_palette_pct_maps_to_source_palette():
+    from ditherzam.color.palette import generate_palette, source_palette
+    img = np.random.default_rng(1).integers(0, 256, size=(32, 32, 3), dtype=np.uint8)
+    got = generate_palette(img, "pct", 50)
+    expect = source_palette(img, completeness=0.5)
+    assert got.colors.shape == expect.colors.shape
+
+
+def test_generate_palette_bad_unit_raises():
+    from ditherzam.color.palette import generate_palette
+    img = np.zeros((4, 4, 3), np.uint8)
+    with pytest.raises(ValueError):
+        generate_palette(img, "nonsense", 4)
