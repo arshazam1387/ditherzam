@@ -64,6 +64,21 @@ def main() -> None:
         ms = cached_after(change)
         print(f"  {label:>32}: {ms:8.1f} ms")
 
+    # preview proxy: full render vs downscaled proxy, for upstream-control drags
+    # (which the cache can't help). Measured at 1080p and 4K.
+    from ditherzam.ui.preview import render_preview
+    print("\n== preview proxy (max_side=640): full vs proxy (upstream-control drag) ==")
+    for size_label in ("1080p", "4K"):
+        hh, ww = SIZES[size_label]
+        b = make_gray(hh, ww)
+        p2 = RenderPipeline(REGISTRY, gameboy_engine(), heavy_effects())
+        sp = RenderSettings(style="Floyd-Steinberg", scale=5, saturation=50)
+        p2.render(b, sp)                          # warm
+        render_preview(p2, b, sp, 640)            # warm proxy kernels
+        full_ms = _median_ms(lambda: p2.render(b, sp))
+        proxy_ms = _median_ms(lambda: render_preview(p2, b, sp, 640))
+        print(f"  {size_label:>6}: full {full_ms:8.1f} ms   proxy {proxy_ms:8.1f} ms")
+
     # effects-only change: baseline stack (untimed) then a mutated stack (timed).
     base_stack = heavy_effects()
     alt_stack = heavy_effects()
