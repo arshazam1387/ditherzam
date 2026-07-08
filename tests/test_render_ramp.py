@@ -44,3 +44,20 @@ def test_render_cached_invalidates_on_depth_change():
     eng.depth = 6
     b = p.render_cached(GRAD, _settings(depth=6))
     assert not np.array_equal(a, b)
+
+
+def test_render_cached_invalidates_on_mapping_change_only():
+    # depth stays fixed at 5 for both renders; only color_mapping differs, so
+    # this isolates color_mapping's presence in render_cached's col_sig
+    # (depth-change tests above would pass even if mapping were absent).
+    eng = ColorEngine(QUAD, mode="ramp", depth=5, mapping="match")
+    p = RenderPipeline(R, color_engine=eng)
+    s_match = _settings(depth=5, color_mapping="match")
+    s_glitch = _settings(depth=5, color_mapping="glitch")
+
+    a = p.render_cached(GRAD, s_match)
+    b = p.render_cached(GRAD, s_glitch)  # depth unchanged; only mapping differs
+    assert not np.array_equal(a, b)  # col_sig must include color_mapping
+
+    np.testing.assert_array_equal(b, p.render(GRAD, s_glitch))
+    np.testing.assert_array_equal(p.render_cached(GRAD, s_match), p.render(GRAD, s_match))
