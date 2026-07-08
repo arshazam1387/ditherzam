@@ -87,6 +87,16 @@ def source_palette(rgb_u8: np.ndarray, completeness: float = 1.0,
     return extract_palette(rgb_u8, k=k, name=name)
 
 
+def generate_palette(rgb_u8: np.ndarray, unit: str, value: int,
+                     name: str = "from image") -> "Palette":
+    """Extract a palette from an image. ``unit`` is 'k' (exact colors) or 'pct'."""
+    if unit == "k":
+        return extract_palette(rgb_u8, k=max(1, int(value)), name=name)
+    if unit == "pct":
+        return source_palette(rgb_u8, completeness=float(value) / 100.0, name=name)
+    raise ValueError(f"unknown unit: {unit!r}")
+
+
 def builtin_palettes() -> dict[str, "Palette"]:
     """Load every bundled palette from ``ditherzam/color/builtin/*.yaml``."""
     directory = Path(__file__).parent / "builtin"
