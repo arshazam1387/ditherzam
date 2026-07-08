@@ -78,3 +78,29 @@ def test_set_working_palette_pushes_to_strip(qapp_fixture, tmp_path):
     assert panel.working_palette.name == "from image"
     assert panel.swatch_strip.palette().colors.shape[0] == 2
     assert seen
+
+
+def test_set_working_palette_syncs_combo(qapp_fixture, tmp_path):
+    from ditherzam.color.palette import Palette
+    panel = _panel(tmp_path)
+    panel.set_working_palette(Palette.from_list("from image", [[1, 1, 1], [2, 2, 2]]))
+    assert panel.palette_combo.currentText() == "from image"
+    assert panel.palette_combo.findText("from image") >= 0
+
+
+def test_autosave_toggle_widget_sets_state(qapp_fixture, tmp_path):
+    panel = _panel(tmp_path)
+    panel.autosave_toggle.setChecked(True)
+    assert panel.state["palette_autosave"] is True
+    panel.autosave_toggle.setChecked(False)
+    assert panel.state["palette_autosave"] is False
+
+
+def test_extract_unit_widget_switches_range(qapp_fixture, tmp_path):
+    panel = _panel(tmp_path)
+    panel.extract_unit_combo.setCurrentText("%")
+    assert panel.state["extract_unit"] == "pct"
+    assert panel.extract_slider.maximum() == 100
+    panel.extract_unit_combo.setCurrentText("k")
+    assert panel.state["extract_unit"] == "k"
+    assert panel.extract_slider.maximum() == 64
