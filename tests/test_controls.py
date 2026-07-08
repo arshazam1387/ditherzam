@@ -30,6 +30,20 @@ def test_set_style_updates_state(qapp_fixture):
     assert p.state["style"] == "Atkinson"
 
 
+def test_slider_updates_its_number_display(qapp_fixture):
+    from ditherzam.ui.controls import ControlPanel
+    p = ControlPanel()
+    # adjustment spin shows round(value/100 * max_display); contrast max_display=250
+    p.contrast_slider.setValue(70)
+    assert p._spins["contrast"].text() == str(round(70 / 100 * 250))   # "175"
+    # saturation spin is a plain 0..100 display
+    p.saturation_slider.setValue(80)
+    assert p.saturation_spin.text() == "80"
+    # scale slider (1..20) shows its own value
+    p.scale_slider.setValue(12)
+    assert p.scale_spin.text() == "12"
+
+
 def test_invert_and_preview_toggles(qapp_fixture):
     from ditherzam.ui.controls import ControlPanel
     p = ControlPanel()

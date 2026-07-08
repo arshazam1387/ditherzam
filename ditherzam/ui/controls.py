@@ -51,6 +51,7 @@ class ControlPanel(QWidget):
             "palette": "grayscale", "color_mode": "off", "effects": [],
         }
         self._sliders: dict[str, ResettableGlowSlider] = {}
+        self._spins: dict[str, InvisibleSpinBox] = {}
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
@@ -79,6 +80,10 @@ class ControlPanel(QWidget):
         self.scale_spin = InvisibleSpinBox(max_display=20)
         self.scale_spin.setValue(round(5 / 20 * 100))
         self.scale_slider.valueChanged.connect(self._on_scale_changed)
+        # Scale slider is 1..20; the 0..100 spin displays that value directly.
+        self.scale_slider.valueChanged.connect(
+            lambda v: self.scale_spin.setValue(round(v / 20 * 100)))
+        self._spins["scale"] = self.scale_spin
         layout.addWidget(_labeled("Scale", self.scale_slider, self.scale_spin))
 
     def _build_adjustments_section(self, layout: QVBoxLayout) -> None:
@@ -94,7 +99,9 @@ class ControlPanel(QWidget):
             spin = InvisibleSpinBox(max_display=disp_max)
             spin.setValue(default)
             slider.valueChanged.connect(self._make_slider_handler(key))
+            slider.valueChanged.connect(spin.setValue)   # keep the number in sync
             self._sliders[key] = slider
+            self._spins[key] = spin
             layout.addWidget(_labeled(label, slider, spin))
 
         # expose the Contrast slider by name for the tests / window
@@ -115,10 +122,12 @@ class ControlPanel(QWidget):
 
         self.saturation_slider = ResettableGlowSlider(default=50, glow_color="#5e89ed")
         self.saturation_slider.setRange(0, 100)
-        sat_spin = InvisibleSpinBox(max_display=100)
-        sat_spin.setValue(50)
+        self.saturation_spin = InvisibleSpinBox(max_display=100)
+        self.saturation_spin.setValue(50)
         self.saturation_slider.valueChanged.connect(self._make_slider_handler("saturation"))
-        layout.addWidget(_labeled("Saturation", self.saturation_slider, sat_spin))
+        self.saturation_slider.valueChanged.connect(self.saturation_spin.setValue)
+        self._spins["saturation"] = self.saturation_spin
+        layout.addWidget(_labeled("Saturation", self.saturation_slider, self.saturation_spin))
 
     def _build_effects_section(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_header("Effects"))
