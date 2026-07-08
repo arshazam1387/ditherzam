@@ -57,6 +57,7 @@ def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
             "mode": str(color_mode),
             "palette": {
                 "name": str(palette.name),
+                "category": str(getattr(palette, "category", "") or ""),
                 "colors": np.asarray(palette.colors, dtype=np.float32)
                             .round().astype(int).reshape(-1, 3).tolist(),
             },
@@ -111,7 +112,8 @@ def preset_to_settings(preset: dict) -> tuple[RenderSettings, Palette | None, li
             colors = colors.reshape(-1, 3)
         else:
             colors = colors.reshape(0, 3)
-        palette = Palette(name=str(pdata.get("name", "preset")), colors=colors)
+        palette = Palette(name=str(pdata.get("name", "preset")), colors=colors,
+                          category=str(pdata.get("category", "")))
 
     effects: list[tuple[str, dict]] = []
     for item in preset.get("effects", []) or []:
