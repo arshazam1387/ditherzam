@@ -7,6 +7,7 @@ import yaml
 
 from .render import RenderSettings
 from .color.palette import Palette
+from .color.ramp import RAMP_MODES
 
 # Allowed ranges used to clamp presets on load (spec §10.2).
 _ADJ_RANGE: dict[str, tuple[int, int]] = {
@@ -18,6 +19,7 @@ _ADJ_RANGE: dict[str, tuple[int, int]] = {
     "saturation": (0, 100),
 }
 _SCALE_RANGE: tuple[int, int] = (1, 20)
+_DEPTH_RANGE: tuple[int, int] = (1, 64)
 
 
 def _clamp_int(value, lo: int, hi: int) -> int:
@@ -44,6 +46,8 @@ def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
         "dither": {
             "style": str(settings.style),
             "scale": int(settings.scale),
+            "depth": int(settings.depth),
+            "color_mapping": str(settings.color_mapping),
             "preview_disabled": bool(settings.preview_disabled),
             "params": dict(settings.params),
         },
@@ -90,6 +94,10 @@ def preset_to_settings(preset: dict) -> tuple[RenderSettings, Palette | None, li
         invert=bool(adj.get("invert", defaults.invert)),
         style=str(dit.get("style", defaults.style)),
         scale=_clamp_int(dit.get("scale", defaults.scale), *_SCALE_RANGE),
+        depth=_clamp_int(dit.get("depth", defaults.depth), *_DEPTH_RANGE),
+        color_mapping=(str(dit.get("color_mapping", defaults.color_mapping))
+                       if dit.get("color_mapping", defaults.color_mapping) in RAMP_MODES
+                       else defaults.color_mapping),
         preview_disabled=bool(dit.get("preview_disabled", defaults.preview_disabled)),
         params=dict(dit.get("params", {}) or {}),
     )
