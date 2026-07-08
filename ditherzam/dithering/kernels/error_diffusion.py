@@ -46,7 +46,7 @@ def _floyd_steinberg(img, thr, levels=2):
     return out
 
 
-@registry.register("Floyd-Steinberg", "Error Diffusion", dims=2)
+@registry.register("Floyd-Steinberg", "Error Diffusion", dims=2, supports_levels=True)
 def floyd_steinberg(image_array, parameter, luminance_threshold_value, levels=2):
     return _floyd_steinberg(image_array.astype(np.float32),
                             luminance_threshold_value, levels)
@@ -86,7 +86,7 @@ def _atkinson(img, thr, levels=2):
     return out
 
 
-@registry.register("Atkinson", "Error Diffusion", dims=2)
+@registry.register("Atkinson", "Error Diffusion", dims=2, supports_levels=True)
 def atkinson(image_array, parameter, luminance_threshold_value, levels=2):
     return _atkinson(image_array.astype(np.float32), luminance_threshold_value, levels)
 
@@ -124,7 +124,7 @@ def _ordered(img, thresholds, levels=2):
     return out
 
 
-@registry.register("Bayer-Matrix 4x4", "Ordered Dither", dims=2)
+@registry.register("Bayer-Matrix 4x4", "Ordered Dither", dims=2, supports_levels=True)
 def bayer_4(image_array, parameter, luminance_threshold_value, levels=2):
     return _ordered(image_array.astype(np.float32), _BAYER4, levels)
 
@@ -233,67 +233,67 @@ _ATK_LIGHT_OFF = np.array([[0, 1], [0, 2], [1, 0], [1, 1]], dtype=np.int64)
 _ATK_LIGHT_W = np.array([1, 1, 1, 1], dtype=np.float32)  # /8 (Atkinson-style bleed)
 
 
-@registry.register("Jarvis-Judice-Ninke", "Error Diffusion", dims=2)
+@registry.register("Jarvis-Judice-Ninke", "Error Diffusion", dims=2, supports_levels=True)
 def jjn(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _JJN_OFF, _JJN_W, _JJN_DIV, levels)
 
 
-@registry.register("Stucki", "Error Diffusion", dims=2)
+@registry.register("Stucki", "Error Diffusion", dims=2, supports_levels=True)
 def stucki(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _STUCKI_OFF, _STUCKI_W, 42.0, levels)
 
 
-@registry.register("Burkes", "Error Diffusion", dims=2)
+@registry.register("Burkes", "Error Diffusion", dims=2, supports_levels=True)
 def burkes(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _BURKES_OFF, _BURKES_W, 32.0, levels)
 
 
-@registry.register("Sierra", "Error Diffusion", dims=2)
+@registry.register("Sierra", "Error Diffusion", dims=2, supports_levels=True)
 def sierra(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _SIERRA_OFF, _SIERRA_W, 32.0, levels)
 
 
-@registry.register("Sierra-Lite", "Error Diffusion", dims=2)
+@registry.register("Sierra-Lite", "Error Diffusion", dims=2, supports_levels=True)
 def sierra_lite(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _SIERRA_LITE_OFF, _SIERRA_LITE_W, 4.0, levels)
 
 
-@registry.register("Two-Row-Sierra", "Error Diffusion", dims=2)
+@registry.register("Two-Row-Sierra", "Error Diffusion", dims=2, supports_levels=True)
 def two_row_sierra(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _TWO_ROW_OFF, _TWO_ROW_W, 16.0, levels)
 
 
-@registry.register("Stevenson-Arce", "Error Diffusion", dims=2)
+@registry.register("Stevenson-Arce", "Error Diffusion", dims=2, supports_levels=True)
 def stevenson_arce(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _STEVENSON_OFF, _STEVENSON_W, 200.0, levels)
 
 
-@registry.register("Fan", "Error Diffusion", dims=2)
+@registry.register("Fan", "Error Diffusion", dims=2, supports_levels=True)
 def fan(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _FAN_OFF, _FAN_W, 16.0, levels)
 
 
-@registry.register("Shiau-Fan", "Error Diffusion", dims=2)
+@registry.register("Shiau-Fan", "Error Diffusion", dims=2, supports_levels=True)
 def shiau_fan(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _SHIAU_OFF, _SHIAU_W, 16.0, levels)
 
 
-@registry.register("False Floyd-Steinberg", "Error Diffusion", dims=2)
+@registry.register("False Floyd-Steinberg", "Error Diffusion", dims=2, supports_levels=True)
 def false_floyd_steinberg(image_array, parameter, luminance_threshold_value, levels=2):
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,
                     _FALSE_FS_OFF, _FALSE_FS_W, 8.0, levels)
 
 
-@registry.register("Atkinson-Light", "Error Diffusion", dims=2)
+@registry.register("Atkinson-Light", "Error Diffusion", dims=2, supports_levels=True)
 def atkinson_light(image_array, parameter, luminance_threshold_value, levels=2):
     # Atkinson-style: only 4/8 of the error propagates (softer than full Atkinson).
     return _diffuse(image_array.astype(np.float32), luminance_threshold_value,

@@ -149,25 +149,25 @@ def _dot_screen(img, cell):
 
 
 # ── Kernel: Bayer-Matrix 2x2 · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Bayer-Matrix 2x2", "Ordered Dither", dims=2)
+@registry.register("Bayer-Matrix 2x2", "Ordered Dither", dims=2, supports_levels=True)
 def bayer_2(image_array, parameter, luminance_threshold_value, levels=2):
     return _ordered(image_array.astype(np.float32), _BAYER2, levels)
 
 
 # ── Kernel: Bayer-Matrix 8x8 · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Bayer-Matrix 8x8", "Ordered Dither", dims=2)
+@registry.register("Bayer-Matrix 8x8", "Ordered Dither", dims=2, supports_levels=True)
 def bayer_8(image_array, parameter, luminance_threshold_value, levels=2):
     return _ordered(image_array.astype(np.float32), _BAYER8, levels)
 
 
 # ── Kernel: Bayer-Matrix 16x16 · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Bayer-Matrix 16x16", "Ordered Dither", dims=2)
+@registry.register("Bayer-Matrix 16x16", "Ordered Dither", dims=2, supports_levels=True)
 def bayer_16(image_array, parameter, luminance_threshold_value, levels=2):
     return _ordered(image_array.astype(np.float32), _BAYER16, levels)
 
 
 # ── Kernel: Bayer-Ordered · Ordered Dither · dims=2 · alias of 4x4 ──
-@registry.register("Bayer-Ordered", "Ordered Dither", dims=2)
+@registry.register("Bayer-Ordered", "Ordered Dither", dims=2, supports_levels=True)
 def bayer_ordered(image_array, parameter, luminance_threshold_value, levels=2):
     return _ordered(image_array.astype(np.float32), _BAYER4, levels)
 
@@ -214,7 +214,7 @@ def modulated_bayer(image_array, parameter, luminance_threshold_value):
 
 
 # ── Kernel: Cluster-Dot · Ordered Dither · dims=2 · no sliders (extra) ──
-@registry.register("Cluster-Dot", "Ordered Dither", dims=2)
+@registry.register("Cluster-Dot", "Ordered Dither", dims=2, supports_levels=True)
 def cluster_dot(image_array, parameter, luminance_threshold_value, levels=2):
     return _ordered(image_array.astype(np.float32), _CLUSTER4, levels)
 
