@@ -21,7 +21,7 @@ def _params_sig(params: dict):
 
 def _color_sig(engine):
     if engine is None:
-        return None
+        return (None,)
     return (engine.mode, engine.palette.name, engine.palette.colors.tobytes())
 
 
@@ -43,6 +43,8 @@ class RenderSettings:
     saturation: float = 50
     style: str = "None"
     scale: int = 5
+    depth: int = 2
+    color_mapping: str = "match"
     preview_disabled: bool = False
     params: dict = field(default_factory=dict)
 
@@ -85,10 +87,14 @@ class RenderPipeline:
             registry=self.registry,
             preview_disabled=settings.preview_disabled,
             threshold_field=temporal_field,
+            levels=settings.depth,
         )
 
         # 6: color — palette map, or broadcast grayscale to RGB
         if self.color_engine is not None:
+            if getattr(self.color_engine, "mode", None) == "ramp":
+                self.color_engine.depth = settings.depth
+                self.color_engine.mapping = settings.color_mapping
             rgb = self.color_engine.map(d).astype(np.float32)
         else:
             rgb = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
@@ -151,30 +157,36 @@ class RenderPipeline:
                     luminance_threshold=settings.luminance_threshold,
                     params=settings.params, registry=self.registry,
                     preview_disabled=settings.preview_disabled,
-                    threshold_field=temporal_field)
+                    threshold_field=temporal_field,
+                    levels=settings.depth)
                 c.pop("dith_sig", None)
                 c["d"] = d
                 dirty = True
             else:
                 dith_sig = (settings.style, settings.scale,
                             settings.luminance_threshold,
-                            _params_sig(settings.params), settings.preview_disabled)
+                            _params_sig(settings.params), settings.preview_disabled,
+                            settings.depth)
                 if dirty or c.get("dith_sig") != dith_sig or "d" not in c:
                     d = apply_dither(
                         g, style=settings.style, scale=settings.scale,
                         luminance_threshold=settings.luminance_threshold,
                         params=settings.params, registry=self.registry,
                         preview_disabled=settings.preview_disabled,
-                        threshold_field=None)
+                        threshold_field=None,
+                        levels=settings.depth)
                     c["dith_sig"] = dith_sig
                     c["d"] = d
                     dirty = True
             d = c["d"]
 
             # L3: color map (or grayscale->RGB broadcast)
-            col_sig = _color_sig(self.color_engine)
+            col_sig = _color_sig(self.color_engine) + (settings.depth, settings.color_mapping)
             if dirty or c.get("col_sig") != col_sig or "colored" not in c:
                 if self.color_engine is not None:
+                    if getattr(self.color_engine, "mode", None) == "ramp":
+                        self.color_engine.depth = settings.depth
+                        self.color_engine.mapping = settings.color_mapping
                     colored = self.color_engine.map(d).astype(np.float32)
                 else:
                     colored = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
