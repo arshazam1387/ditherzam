@@ -5,6 +5,7 @@ from numba import njit, prange
 
 from ..imaging import clamp_u8
 from .palette import Palette
+from .ramp import build_ramp
 
 
 @njit(cache=True, parallel=True)
@@ -93,14 +94,39 @@ def _to_rgb(img: np.ndarray) -> np.ndarray:
 
 
 class ColorEngine:
-    def __init__(self, palette: Palette, mode: str = "nearest") -> None:
+    def __init__(self, palette: Palette, mode: str = "nearest", *,
+                 depth: int = 2, mapping: str = "match", phase: float = 0.0) -> None:
         self.palette = palette
         self.mode = mode
+        self.depth = depth
+        self.mapping = mapping
+        self.phase = phase
+        self._ramp = None
+        self._ramp_key = None
+
+    def _get_ramp(self) -> np.ndarray:
+        key = (self.palette.colors.tobytes(), int(self.depth),
+               self.mapping, float(self.phase))
+        if self._ramp_key != key:
+            self._ramp = build_ramp(self.palette, self.depth, self.mapping, self.phase)
+            self._ramp_key = key
+        return self._ramp
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
         rgb = _to_rgb(gray_or_rgb_f32)
         if self.mode == "off":
             return clamp_u8(rgb)
+        if self.mode == "ramp":
+            ramp = self._get_ramp()
+            depth = ramp.shape[0]
+            gray = rgb[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32) \
+                if rgb.ndim == 3 else rgb
+            if depth == 1:
+                level = np.zeros(gray.shape, dtype=np.int64)
+            else:
+                level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1)
+                level = level.astype(np.int64)
+            return clamp_u8(ramp[level])
         pal = self.palette.colors.astype(np.float32)
         if self.mode == "nearest":
             idx = nearest_indices(rgb, pal)

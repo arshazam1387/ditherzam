@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..color.ramp import RAMP_MODES
 from .delegates import populate_dither_combo
 from .widgets import (
     InvisibleSpinBox,
@@ -30,7 +31,7 @@ _ADJUSTMENTS = [
 ]
 
 _PALETTES = ["grayscale", "gameboy", "cga", "pico8", "sepia"]
-_COLOR_MODES = ["off", "nearest", "ordered", "diffused"]
+_COLOR_MODES = ["off", "nearest", "ordered", "diffused", "ramp"]
 _EFFECTS = ["Blur", "Sharpen", "Chromatic Aberration", "JPEG Glitch", "Epsilon Glow"]
 
 
@@ -49,6 +50,7 @@ class ControlPanel(QWidget):
             "invert": False, "preview_disabled": False,
             "style": "None", "scale": 5, "params": {},
             "palette": "grayscale", "color_mode": "off", "effects": [],
+            "depth": 2, "color_mapping": "match",
         }
         self._sliders: dict[str, ResettableGlowSlider] = {}
         self._spins: dict[str, InvisibleSpinBox] = {}
@@ -119,6 +121,23 @@ class ControlPanel(QWidget):
         self.mode_combo.addItems(_COLOR_MODES)
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         layout.addWidget(_labeled("Mode", self.mode_combo))
+
+        self.mapping_combo = NoScrollComboBox()
+        self.mapping_combo.addItems(list(RAMP_MODES))
+        self.mapping_combo.currentTextChanged.connect(self._on_mapping_changed)
+        layout.addWidget(_labeled("Mapping", self.mapping_combo))
+
+        self.depth_slider = ResettableGlowSlider(default=2, glow_color="#5e89ed")
+        self.depth_slider.setRange(1, 64)
+        self.depth_spin = InvisibleSpinBox(max_display=64)
+        self.depth_spin.setValue(round(2 / 64 * 100))
+        self.depth_slider.valueChanged.connect(self._make_slider_handler("depth"))
+        # Depth slider is 1..64; the 0..100 spin displays that value directly.
+        self.depth_slider.valueChanged.connect(
+            lambda v: self.depth_spin.setValue(round(v / 64 * 100)))
+        self._sliders["depth"] = self.depth_slider
+        self._spins["depth"] = self.depth_spin
+        layout.addWidget(_labeled("Depth", self.depth_slider, self.depth_spin))
 
         self.saturation_slider = ResettableGlowSlider(default=50, glow_color="#5e89ed")
         self.saturation_slider.setRange(0, 100)
@@ -192,6 +211,10 @@ class ControlPanel(QWidget):
 
     def _on_mode_changed(self, text: str) -> None:
         self.state["color_mode"] = text
+        self.changed.emit()
+
+    def _on_mapping_changed(self, text: str) -> None:
+        self.state["color_mapping"] = text
         self.changed.emit()
 
     def _make_slider_handler(self, key: str):

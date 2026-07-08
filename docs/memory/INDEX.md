@@ -19,3 +19,5 @@
 - [gotcha|phase 5|done] Live-app bugs fixed: blur-by-default (neutral is 0 not 50) + Palette/Effects not wired to pipeline; 333 tests (014-live-app-bugs-fixed.md)
 - [progress|phase 8|done] Optimization pass MERGED+pushed: 5 wins (color njit, coalescing, staged cache, preview proxy, JIT warmup); 374 green both JIT modes (015-optimization-progress.md)
 - [gotcha|phase 5|done] Slider number displays weren't wired to sliders (frozen); fixed HEAD c95ad00, 375 green — display widgets need explicit signal connect (016-slider-number-display-fix.md)
+- [progress|phase 8|done] Depth-ramp color system (Dither Boy 6.0 style) shipped on branch feat/color-depth-ramp: N-level dither + palette tone ramp, 6 mappings, 511 green both JIT (017-color-depth-ramp-shipped.md)
+- [gotcha|phase 8|done] N-level (depth≥3) dither: luminance_threshold slider becomes a tone BIAS not a binary threshold; levels<=2 path is byte-identical (018-nlevel-threshold-is-tone-bias.md)

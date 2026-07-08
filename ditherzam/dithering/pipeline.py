@@ -30,7 +30,7 @@ def _resize_field_nearest(field: np.ndarray, target_hw: tuple[int, int]) -> np.n
 
 def apply_dither(gray_f32, *, style, scale, luminance_threshold,
                  params, registry, preview_disabled=False,
-                 threshold_field=None) -> np.ndarray:
+                 threshold_field=None, levels=2) -> np.ndarray:
     entry = registry.get_entry(style)
     if style == "None" or entry is None or preview_disabled:
         return gray_f32
@@ -48,6 +48,9 @@ def apply_dither(gray_f32, *, style, scale, luminance_threshold,
         small = (small - fld).astype(np.float32)
 
     param = _build_param(entry, params)
-    out = entry.func(small, param, tval)
+    if entry.supports_levels:
+        out = entry.func(small, param, tval, int(levels))
+    else:
+        out = entry.func(small, param, tval)
 
     return nearest_upscale_to(out, (w, h))
