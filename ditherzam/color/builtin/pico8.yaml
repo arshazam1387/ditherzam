@@ -1,4 +1,5 @@
 name: pico8
+category: retro
 colors:
   - [0, 0, 0]
   - [29, 43, 83]
