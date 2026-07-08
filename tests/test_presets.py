@@ -125,3 +125,11 @@ def test_import_wrong_extension_raises(tmp_path):
     bad.write_text("dither: {}", encoding="utf-8")
     with pytest.raises(ValueError):
         PresetManager(tmp_path / "store3").import_file(bad)
+
+
+def test_preset_roundtrips_palette_category():
+    from ditherzam.color.palette import Palette
+    pal = Palette.from_list("mine", [[1, 2, 3], [4, 5, 6]], category="retro")
+    preset = settings_to_preset(RenderSettings(), pal, None, "ramp")
+    _settings, out_pal, _effects = preset_to_settings(preset)
+    assert out_pal.category == "retro"

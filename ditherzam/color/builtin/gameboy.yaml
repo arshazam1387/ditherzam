@@ -1,4 +1,5 @@
 name: gameboy
+category: retro
 colors:
   - [15, 56, 15]
   - [48, 98, 48]

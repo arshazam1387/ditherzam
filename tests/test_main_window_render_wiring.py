@@ -32,7 +32,7 @@ def test_palette_and_mode_are_applied(app):
     win.load_array(_gradient())
     # user picks a Game Boy palette in nearest mode + a dither style
     win.panel.set_style("Floyd-Steinberg")
-    win.panel.palette_combo.setCurrentText("gameboy")
+    win.panel._on_palette_changed("gameboy")
     win.panel.state["color_mode"] = "nearest"
     win.render_now()  # exercises the viewport path (must not raise, must sync pipeline)
 

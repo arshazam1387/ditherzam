@@ -15,6 +15,7 @@ from ..color.palette_store import PaletteStore
 from ..color.ramp import RAMP_MODES
 from .delegates import populate_dither_combo
 from .palette_editor import SwatchStrip
+from .palette_picker import PalettePicker
 from .widgets import (
     InvisibleSpinBox,
     NoScrollComboBox,
@@ -42,6 +43,7 @@ class ControlPanel(QWidget):
 
     changed = Signal()
     from_image_requested = Signal()
+    palette_preview = Signal(object)
 
     def __init__(self, parent=None, store: PaletteStore | None = None):
         super().__init__(parent)
@@ -55,6 +57,7 @@ class ControlPanel(QWidget):
             "palette": "grayscale", "color_mode": "off", "effects": [],
             "depth": 2, "color_mapping": "match",
             "palette_autosave": False, "extract_unit": "k",
+            "palette_preview": True, "palette_wheel_cycle": False,
         }
         self._sliders: dict[str, ResettableGlowSlider] = {}
         self._spins: dict[str, InvisibleSpinBox] = {}
@@ -117,11 +120,12 @@ class ControlPanel(QWidget):
     def _build_color_section(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_header("Color"))
 
-        self.palette_combo = NoScrollComboBox()
-        self.palette_combo.addItems(self.store.list())
-        self.palette_combo.setCurrentText(self.state["palette"])
-        self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
-        layout.addWidget(_labeled("Palette", self.palette_combo))
+        self.palette_picker = PalettePicker()
+        self.palette_picker.populate(self.store)
+        self.palette_picker.select(self.state["palette"])
+        self.palette_picker.selected.connect(self._on_palette_changed)
+        self.palette_picker.preview.connect(self.palette_preview.emit)
+        layout.addWidget(_labeled("Palette", self.palette_picker))
 
         self.swatch_strip = SwatchStrip()
         self.swatch_strip.set_palette(self.working_palette)
@@ -144,6 +148,11 @@ class ControlPanel(QWidget):
         pal_container.setLayout(pal_btns)
         layout.addWidget(pal_container)
 
+        self.category_combo = NoScrollComboBox()
+        self.category_combo.setEditable(True)
+        self.category_combo.addItems(sorted(self.store.list_by_category().keys()))
+        layout.addWidget(_labeled("Category", self.category_combo))
+
         self.extract_slider = ResettableGlowSlider(default=8, glow_color="#5e89ed")
         self.extract_slider.setRange(2, 64)
         layout.addWidget(_labeled("From-Image Colors", self.extract_slider))
@@ -156,6 +165,15 @@ class ControlPanel(QWidget):
         self.autosave_toggle = QCheckBox("Autosave palette")
         self.autosave_toggle.toggled.connect(self._on_autosave_toggled)
         layout.addWidget(self.autosave_toggle)
+
+        self.palette_preview_toggle = QCheckBox("Preview on hover")
+        self.palette_preview_toggle.setChecked(True)
+        self.palette_preview_toggle.toggled.connect(self._on_palette_preview_toggled)
+        layout.addWidget(self.palette_preview_toggle)
+
+        self.wheel_cycle_toggle = QCheckBox("Wheel cycles palettes")
+        self.wheel_cycle_toggle.toggled.connect(self._on_wheel_cycle_toggled)
+        layout.addWidget(self.wheel_cycle_toggle)
 
         self._update_reset_enabled()
 
@@ -251,6 +269,8 @@ class ControlPanel(QWidget):
         self.state["palette"] = text
         self.working_palette = self.store.get(text)
         self.swatch_strip.set_palette(self.working_palette)
+        self.palette_preview.emit(None)                # clear any hover preview
+        self._sync_category_combo(self.working_palette.category)
         self._update_reset_enabled()
         self.changed.emit()
 
@@ -265,18 +285,25 @@ class ControlPanel(QWidget):
         self.working_palette = palette
         self.state["palette"] = palette.name
         self.swatch_strip.set_palette(palette)
-        self._sync_palette_combo(palette.name)
+        self.palette_picker.select(palette.name)
+        self._sync_category_combo(getattr(palette, "category", ""))
         self.changed.emit()
 
-    def _sync_palette_combo(self, name: str) -> None:
-        self.palette_combo.blockSignals(True)
-        if self.palette_combo.findText(name) < 0:
-            self.palette_combo.addItem(name)
-        self.palette_combo.setCurrentText(name)
-        self.palette_combo.blockSignals(False)
+    def _sync_category_combo(self, category: str) -> None:
+        self.category_combo.blockSignals(True)
+        self.category_combo.setCurrentText(category or "")
+        self.category_combo.blockSignals(False)
 
     def _on_autosave_toggled(self, checked: bool) -> None:
         self.state["palette_autosave"] = bool(checked)
+
+    def _on_palette_preview_toggled(self, checked: bool) -> None:
+        self.state["palette_preview"] = bool(checked)
+        self.palette_picker.set_preview_enabled(bool(checked))
+
+    def _on_wheel_cycle_toggled(self, checked: bool) -> None:
+        self.state["palette_wheel_cycle"] = bool(checked)
+        self.palette_picker.set_wheel_cycle(bool(checked))
 
     def _on_extract_unit_changed(self, text: str) -> None:
         unit = "pct" if text == "%" else "k"
@@ -289,8 +316,9 @@ class ControlPanel(QWidget):
             self.extract_slider.setValue(8)
 
     def _on_save_palette(self) -> None:
+        self.working_palette.category = self.category_combo.currentText().strip()
         self.store.save(self.working_palette)
-        self._refresh_palette_combo(self.working_palette.name)
+        self._refresh_palette_picker(self.working_palette.name)
         self._update_reset_enabled()
 
     def _on_reset_palette(self) -> None:
@@ -298,19 +326,14 @@ class ControlPanel(QWidget):
         if self.store.is_user(name) and self.store.is_builtin(name):
             self.working_palette = self.store.reset_to_builtin(name)
             self.swatch_strip.set_palette(self.working_palette)
-        self._refresh_palette_combo(name if self.store.is_builtin(name) else None)
+        self._refresh_palette_picker(name if self.store.is_builtin(name) else None)
         self._update_reset_enabled()
         self.changed.emit()
 
-    def _refresh_palette_combo(self, select: str | None) -> None:
-        self.palette_combo.blockSignals(True)
-        self.palette_combo.clear()
-        self.palette_combo.addItems(self.store.list())
+    def _refresh_palette_picker(self, select: str | None) -> None:
+        self.palette_picker.populate(self.store)
         if select is not None:
-            if self.palette_combo.findText(select) < 0:
-                self.palette_combo.addItem(select)
-            self.palette_combo.setCurrentText(select)
-        self.palette_combo.blockSignals(False)
+            self.palette_picker.select(select)
 
     def _update_reset_enabled(self) -> None:
         name = self.working_palette.name

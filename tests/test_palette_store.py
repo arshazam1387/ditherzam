@@ -80,3 +80,31 @@ def test_user_dir_not_created_until_save(tmp_path):
     assert not d.exists()
     s.save(Palette.from_list("x", [[0, 0, 0]]))
     assert d.exists()
+
+
+def test_get_carries_category(tmp_path):
+    s = _store(tmp_path)
+    assert s.get("gameboy").category == "retro"
+
+
+def test_list_by_category_groups_builtins(tmp_path):
+    s = _store(tmp_path)
+    cats = s.list_by_category()
+    assert set(cats["retro"]) >= {"gameboy", "pico8", "cga"}
+    assert set(cats["mono"]) >= {"grayscale", "sepia"}
+
+
+def test_list_by_category_uncategorized_last(tmp_path):
+    s = _store(tmp_path)
+    s.save(Palette.from_list("loner", [[1, 1, 1]]))   # empty category
+    cats = s.list_by_category()
+    assert "loner" in cats["uncategorized"]
+    assert list(cats.keys())[-1] == "uncategorized"
+
+
+def test_user_category_wins_for_shadowed_name(tmp_path):
+    s = _store(tmp_path)
+    s.save(Palette.from_list("gameboy", [[0, 0, 0]], category="favourites"))
+    cats = s.list_by_category()
+    assert "gameboy" in cats["favourites"]
+    assert "gameboy" not in cats.get("retro", [])
