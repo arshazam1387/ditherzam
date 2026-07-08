@@ -80,6 +80,6 @@ The handoff assumed **effects** dominate. Measurement disagrees:
 | # | optimization | before | after | notes |
 |---|--------------|--------|-------|-------|
 | A | `nearest_indices` njit | 370 ms | 98 ms | color stage, bit-identical (3.8×); heavy path 756→497 ms |
-| 1 | cancel superseded renders | — | — | pending |
+| 1 | cancel superseded + single-in-flight coalescing | 20 renders / 19 wasted | 8 renders / 7 wasted | 20-step 720p drag; no stale out-of-order paints |
 | 2 | staged render cache | — | — | pending |
 | 3 | interactive preview proxy | — | — | pending |

@@ -18,6 +18,7 @@ from ditherzam.render import RenderPipeline
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
+from .render_scheduler import RenderCoalescer
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
 from .settings_map import settings_from_controls
@@ -41,22 +42,24 @@ _EFFECT_DEFAULTS: dict[str, dict] = {
 
 
 class _RenderSignals(QObject):
-    finished = Signal(QImage)
+    finished = Signal(QImage, int)
 
 
 class _RenderWorker(QRunnable):
-    """Runs one render off the GUI thread and emits the finished QImage."""
+    """Runs one render off the GUI thread and emits (QImage, generation token)."""
 
-    def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray, settings):
+    def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray, settings,
+                 token: int):
         super().__init__()
         self._pipeline = pipeline
         self._base_gray = base_gray
         self._settings = settings
+        self._token = token
         self.signals = _RenderSignals()
 
     def run(self) -> None:
         rgb = self._pipeline.render(self._base_gray, self._settings)
-        self.signals.finished.emit(numpy_to_qimage(rgb))
+        self.signals.finished.emit(numpy_to_qimage(rgb), self._token)
 
 
 class ImageEditor(QMainWindow):
@@ -70,6 +73,7 @@ class ImageEditor(QMainWindow):
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
         self._debounce_ms = debounce_ms
+        self._coalescer = RenderCoalescer()
 
         central = QWidget()
         central.setObjectName("central_widget")
@@ -367,6 +371,7 @@ class ImageEditor(QMainWindow):
         """Synchronous render (used by tests and the initial paint)."""
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
+        self._coalescer.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         rgb = self.pipeline.render(self._base_gray, settings)
@@ -382,15 +387,29 @@ class ImageEditor(QMainWindow):
     def _do_render(self) -> None:
         if self._base_gray is None:
             return
+        token = self._coalescer.request()
+        if token is not None:
+            self._launch_worker(token)
+
+    def _launch_worker(self, token: int) -> None:
+        """Snapshot the current state and start one background render."""
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
-        worker = _RenderWorker(self.pipeline, self._base_gray, settings)
+        worker = _RenderWorker(self.pipeline, self._base_gray, settings, token)
         worker.signals.finished.connect(self._on_rendered)
         self._pool.start(worker)
 
-    def _on_rendered(self, qimg: QImage) -> None:
-        self.last_qimage = qimg
-        self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+    def _on_rendered(self, qimg: QImage, token: int) -> None:
+        # Drop stale/out-of-order results; only the most-recently-started render
+        # is painted.
+        if self._coalescer.is_current(token):
+            self.last_qimage = qimg
+            self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+        # If state changed while this render was in flight, run one trailing render
+        # with the freshest state.
+        nxt = self._coalescer.on_finished()
+        if nxt is not None:
+            self._launch_worker(nxt)
 
     def _on_image_dropped(self, path: str) -> None:
         from PIL import Image
