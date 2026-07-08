@@ -21,3 +21,5 @@
 - [gotcha|phase 5|done] Slider number displays weren't wired to sliders (frozen); fixed HEAD c95ad00, 375 green — display widgets need explicit signal connect (016-slider-number-display-fix.md)
 - [progress|phase 8|done] Depth-ramp color system (Dither Boy 6.0 style) shipped on branch feat/color-depth-ramp: N-level dither + palette tone ramp, 6 mappings, 511 green both JIT (017-color-depth-ramp-shipped.md)
 - [gotcha|phase 8|done] N-level (depth≥3) dither: luminance_threshold slider becomes a tone BIAS not a binary threshold; levels<=2 path is byte-identical (018-nlevel-threshold-is-tone-bias.md)
+- [progress|phase 8|done] Sub-project B (palette editing UX) shipped+MERGED to main (e406a7d): PaletteStore fork, SwatchStrip, From-Image, settings; 545 green JIT-off; next=C (019-color-palette-editing-b-shipped.md)
+- [gotcha|phase 8|in-progress] 7 kernel tests fail under JIT-ON (special.py float array index); PRE-EXISTING on main, not from color work; JIT-off is green (020-jit-on-kernel-failures-preexisting.md)
