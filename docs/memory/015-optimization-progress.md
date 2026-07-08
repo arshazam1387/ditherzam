@@ -1,12 +1,12 @@
 ---
 type: progress
 phase: 8
-status: in-progress
+status: done
 date: 2026-07-07
 ---
 
-**Performance optimization pass — 5 wins landed on branch `perf/optimize-app`**
-(off `main` at [[005-project-state]]'s 90a9497). All TDD'd, committed per step,
+**Performance optimization pass — 5 wins, MERGED to `main` + pushed** (origin
+at bb1fbf6; branched off [[005-project-state]]'s 90a9497). All TDD'd, committed per step,
 green JIT-on AND JIT-off (**374 passed**, was 333). Full write-up + reproducible
 harness in `benchmarks/` (`RESULTS.md`, `bench.py`, `bench_cache.py`,
 `ui_latency.py`).
@@ -47,5 +47,5 @@ oversubscription), #7 deferring numba's ~900 ms *import* (needs a Qt-free
 name/category registry — larger refactor; only affects time-to-window),
 #8 batch/video parallelism.
 
-**Next:** decide merge of `perf/optimize-app` → `main` + push (handoff says push
-when done). Then optionally the deferred items above.
+**Next:** optionally the deferred items above (effects gaussian, numba import
+deferral, batch parallelism), packaging/dist, real-photo QA.
