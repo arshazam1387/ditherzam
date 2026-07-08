@@ -21,6 +21,11 @@ def main() -> int:
     window = ImageEditor()
     window.resize(1100, 720)
     window.show()
+
+    # Compile the common JIT kernels in the background so the first drag is snappy.
+    from ditherzam.warmup import start_warmup_thread
+    start_warmup_thread()
+
     return app.exec()
 
 
