@@ -145,3 +145,11 @@ def test_palette_preview_signal_reemitted(qapp_fixture, tmp_path):
     panel.palette_preview.connect(seen.append)
     panel.palette_picker.preview.emit(None)
     assert seen == [None]
+
+
+def test_autosave_edit_preserves_category(qapp_fixture, tmp_path):
+    panel = _panel(tmp_path)
+    panel._on_palette_changed("gameboy")
+    panel.state["palette_autosave"] = True
+    panel.swatch_strip.set_swatch_color(0, (1, 2, 3))
+    assert panel.store.get("gameboy").category == "retro"
