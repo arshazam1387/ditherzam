@@ -18,3 +18,4 @@
 - [progress|phase 8|done] Phase 8 animation done: 9 temporal patterns, threshold-field backward-compat, Timeline+ease, render_animation, 330 tests green (013-phase8-animation-done.md)
 - [gotcha|phase 5|done] Live-app bugs fixed: blur-by-default (neutral is 0 not 50) + Palette/Effects not wired to pipeline; 333 tests (014-live-app-bugs-fixed.md)
 - [progress|phase 8|done] Optimization pass MERGED+pushed: 5 wins (color njit, coalescing, staged cache, preview proxy, JIT warmup); 374 green both JIT modes (015-optimization-progress.md)
+- [gotcha|phase 5|done] Slider number displays weren't wired to sliders (frozen); fixed HEAD c95ad00, 375 green — display widgets need explicit signal connect (016-slider-number-display-fix.md)
