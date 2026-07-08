@@ -23,3 +23,4 @@
 - [gotcha|phase 8|done] N-level (depth≥3) dither: luminance_threshold slider becomes a tone BIAS not a binary threshold; levels<=2 path is byte-identical (018-nlevel-threshold-is-tone-bias.md)
 - [progress|phase 8|done] Sub-project B (palette editing UX) shipped+MERGED to main (e406a7d): PaletteStore fork, SwatchStrip, From-Image, settings; 545 green JIT-off; next=C (019-color-palette-editing-b-shipped.md)
 - [gotcha|phase 8|in-progress] 7 kernel tests fail under JIT-ON (special.py float array index); PRE-EXISTING on main, not from color work; JIT-off is green (020-jit-on-kernel-failures-preexisting.md)
+- [progress|phase 8|done] Sub-project C (palette library) shipped+MERGED to main (007f84d): Palette.category, PaletteStore.list_by_category, PalettePicker tree (replaces palette_combo), hover/scroll preview, drag-reorder; 578 green JIT-off; import/share now the only deferred color item (021-color-palette-library-c-shipped.md)
