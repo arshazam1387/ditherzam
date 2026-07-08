@@ -58,7 +58,7 @@ class _RenderWorker(QRunnable):
         self.signals = _RenderSignals()
 
     def run(self) -> None:
-        rgb = self._pipeline.render(self._base_gray, self._settings)
+        rgb = self._pipeline.render_cached(self._base_gray, self._settings)
         self.signals.finished.emit(numpy_to_qimage(rgb), self._token)
 
 
@@ -363,6 +363,7 @@ class ImageEditor(QMainWindow):
     # ---- public API ---------------------------------------------------------
     def load_array(self, gray_f32) -> None:
         self._base_gray = np.asarray(gray_f32, dtype=np.float32)
+        self.pipeline.clear_cache()  # drop the previous image's cached intermediates
 
     def set_style(self, name: str) -> None:
         self.panel.set_style(name)
@@ -374,7 +375,7 @@ class ImageEditor(QMainWindow):
         self._coalescer.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
-        rgb = self.pipeline.render(self._base_gray, settings)
+        rgb = self.pipeline.render_cached(self._base_gray, settings)
         qimg = numpy_to_qimage(rgb)
         self.last_qimage = qimg
         self.viewport.set_pixmap(QPixmap.fromImage(qimg))
