@@ -1,16 +1,51 @@
 from __future__ import annotations
 
 import numpy as np
+from numba import njit, prange
 
 from ..imaging import clamp_u8
 from .palette import Palette
 
 
+@njit(cache=True, parallel=True)
+def _nearest_indices_njit(rgb_f32, pal_f32):
+    h, w = rgb_f32.shape[0], rgb_f32.shape[1]
+    k = pal_f32.shape[0]
+    out = np.empty((h, w), np.int64)
+    for y in prange(h):
+        for x in range(w):
+            r = rgb_f32[y, x, 0]
+            g = rgb_f32[y, x, 1]
+            b = rgb_f32[y, x, 2]
+            best_i = 0
+            # squared distance to palette[0], summed in the same left-to-right
+            # float32 order as the reference (dr*dr + dg*dg) + db*db
+            dr = r - pal_f32[0, 0]
+            dg = g - pal_f32[0, 1]
+            db = b - pal_f32[0, 2]
+            best_d = (dr * dr + dg * dg) + db * db
+            for i in range(1, k):
+                dr = r - pal_f32[i, 0]
+                dg = g - pal_f32[i, 1]
+                db = b - pal_f32[i, 2]
+                d = (dr * dr + dg * dg) + db * db
+                if d < best_d:          # strict: keep the first (lowest) index on ties
+                    best_d = d
+                    best_i = i
+            out[y, x] = best_i
+    return out
+
+
 def nearest_indices(rgb_f32: np.ndarray, palette_f32: np.ndarray) -> np.ndarray:
-    """Index of the nearest palette color (squared RGB distance) per pixel."""
-    diff = rgb_f32[:, :, None, :] - palette_f32[None, None, :, :]
-    dist = (diff * diff).sum(axis=-1)
-    return dist.argmin(axis=-1)
+    """Index of the nearest palette color (squared RGB distance) per pixel.
+
+    Per-pixel loop over the (small) palette instead of a (H, W, K, 3) broadcast:
+    same squared-distance argmin, no ~100 MB temporary. Output is bit-identical to
+    the broadcast reference (see test_color_engine equivalence tests).
+    """
+    rgb = np.ascontiguousarray(rgb_f32, dtype=np.float32)
+    pal = np.ascontiguousarray(palette_f32, dtype=np.float32)
+    return _nearest_indices_njit(rgb, pal)
 
 
 def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
