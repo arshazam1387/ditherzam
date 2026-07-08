@@ -18,6 +18,7 @@ from ditherzam.render import RenderPipeline
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
+from .preview import render_preview
 from .render_scheduler import RenderCoalescer
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
@@ -49,22 +50,29 @@ class _RenderWorker(QRunnable):
     """Runs one render off the GUI thread and emits (QImage, generation token)."""
 
     def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray, settings,
-                 token: int):
+                 token: int, mode: str = "full", proxy_max_side: int = 640):
         super().__init__()
         self._pipeline = pipeline
         self._base_gray = base_gray
         self._settings = settings
         self._token = token
+        self._mode = mode
+        self._proxy_max_side = proxy_max_side
         self.signals = _RenderSignals()
 
     def run(self) -> None:
-        rgb = self._pipeline.render_cached(self._base_gray, self._settings)
+        if self._mode == "proxy":
+            rgb = render_preview(self._pipeline, self._base_gray, self._settings,
+                                 self._proxy_max_side)
+        else:
+            rgb = self._pipeline.render_cached(self._base_gray, self._settings)
         self.signals.finished.emit(numpy_to_qimage(rgb), self._token)
 
 
 class ImageEditor(QMainWindow):
     def __init__(self, registry=None, color_engine=None, effect_stack=None,
-                 debounce_ms: int = 20, parent=None):
+                 debounce_ms: int = 20, settle_ms: int = 160,
+                 proxy_max_side: int = 640, parent=None):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
         self._registry = registry or _dither_registry
@@ -73,6 +81,9 @@ class ImageEditor(QMainWindow):
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
         self._debounce_ms = debounce_ms
+        self._settle_ms = settle_ms
+        self._proxy_max_side = proxy_max_side
+        self._render_mode = "full"
         self._coalescer = RenderCoalescer()
 
         central = QWidget()
@@ -99,9 +110,16 @@ class ImageEditor(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(splitter)
 
+        # Two-stage scheduling: a short debounce fires a fast downscaled *proxy*
+        # for live feedback; a longer settle timer (restarted on every change)
+        # fires the exact full-resolution render once the drag stops.
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
         self._debounce.timeout.connect(self._do_render)
+
+        self._settle = QTimer(self)
+        self._settle.setSingleShot(True)
+        self._settle.timeout.connect(self._do_full_render)
 
         self.expert_mode = False
         self._install_shortcuts()
@@ -372,6 +390,8 @@ class ImageEditor(QMainWindow):
         """Synchronous render (used by tests and the initial paint)."""
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
+        self._debounce.stop()
+        self._settle.stop()
         self._coalescer.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
@@ -382,21 +402,35 @@ class ImageEditor(QMainWindow):
         return qimg
 
     def schedule_render(self) -> None:
-        self._debounce.start(self._debounce_ms)
+        self._debounce.start(self._debounce_ms)   # fast proxy
+        self._settle.start(self._settle_ms)        # full-res once idle
 
     # ---- internals ----------------------------------------------------------
     def _do_render(self) -> None:
+        """Debounce tick: request a fast proxy render."""
         if self._base_gray is None:
             return
+        self._render_mode = "proxy"
+        token = self._coalescer.request()
+        if token is not None:
+            self._launch_worker(token)
+
+    def _do_full_render(self) -> None:
+        """Settle tick: request the exact full-resolution render."""
+        if self._base_gray is None:
+            return
+        self._render_mode = "full"
         token = self._coalescer.request()
         if token is not None:
             self._launch_worker(token)
 
     def _launch_worker(self, token: int) -> None:
-        """Snapshot the current state and start one background render."""
+        """Snapshot the current state + mode and start one background render."""
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
-        worker = _RenderWorker(self.pipeline, self._base_gray, settings, token)
+        worker = _RenderWorker(self.pipeline, self._base_gray, settings, token,
+                               mode=self._render_mode,
+                               proxy_max_side=self._proxy_max_side)
         worker.signals.finished.connect(self._on_rendered)
         self._pool.start(worker)
 

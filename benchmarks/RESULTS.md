@@ -47,6 +47,17 @@ Every drag tick spawns a fresh worker that runs to completion; 19 of 20 results 
 painted then instantly replaced. This is what optimization #1 (cancel superseded)
 targets.
 
+**After #1 + #2 + #3** (same probe, now at 1080p; a luminance drag is an
+upstream-control change the cache can't help, so the proxy carries it):
+
+| metric                    | after |
+|---------------------------|-------|
+| proxy renders (feedback)  | ~12 (cheap, ~99 ms each) |
+| full-res renders          | **1** (on settle) |
+| time to first feedback    | **~98 ms** (was a full ~250 ms+ render) |
+
+20 full renders → 12 cheap proxies + 1 exact full render.
+
 ### Per-stage breakdown @1080p, heavy path (warm)
 
 | stage      | ms/render |
@@ -82,7 +93,7 @@ The handoff assumed **effects** dominate. Measurement disagrees:
 | A | `nearest_indices` njit | 370 ms | 98 ms | color stage, bit-identical (3.8×); heavy path 756→497 ms |
 | 1 | cancel superseded + single-in-flight coalescing | 20 renders / 19 wasted | 8 renders / 7 wasted | 20-step 720p drag; no stale out-of-order paints |
 | 2 | staged render cache (`render_cached`) | 592 ms (full) | invert **59**, effects **192**, saturation **340** | @1080p heavy path, single-control tick; bit-identical to `render()`. Upstream changes (contrast/luminance) stay ~full — see #3. |
-| 3 | interactive preview proxy | — | — | pending |
+| 3 | interactive preview proxy | 534 ms (1080p) / 2274 ms (4K) full | **99 ms** / **217 ms** proxy | upstream-control drag; proxy is display-only, full-res on settle |
 
 ### Staged cache: single-control cached tick @1080p heavy path (warm)
 
