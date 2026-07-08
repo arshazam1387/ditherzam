@@ -70,7 +70,10 @@ class SwatchStrip(QWidget):
 
     # -- public API -----------------------------------------------------------
     def set_palette(self, palette: Palette) -> None:
-        self._palette = Palette(name=palette.name, colors=palette.colors.copy())
+        self._palette = Palette(
+            name=palette.name, colors=palette.colors.copy(),
+            category=getattr(palette, "category", ""),
+        )
         self._locked = set()
         self._rebuild()
 
@@ -174,6 +177,10 @@ class SwatchStrip(QWidget):
         return len(self._buttons) - 1
 
     def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
         if event.mimeData().hasText():
             event.acceptProposedAction()
 

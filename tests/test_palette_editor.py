@@ -89,3 +89,10 @@ def test_move_swatch_noop_same_index(qapp_fixture):
     before = s.palette().colors.copy()
     s.move_swatch(1, 1)
     np.testing.assert_array_equal(s.palette().colors, before)
+
+
+def test_set_palette_preserves_category(qapp_fixture):
+    from ditherzam.ui.palette_editor import SwatchStrip
+    s = SwatchStrip()
+    s.set_palette(Palette.from_list("t", [[1, 2, 3], [4, 5, 6]], category="retro"))
+    assert s.palette().category == "retro"
