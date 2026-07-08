@@ -27,9 +27,15 @@ ditherzam app exists and works end-to-end.
 numpy/numba/pillow/PySide6/pytest/pyyaml. Use `.venv/Scripts/python.exe`; Qt tests
 need `QT_QPA_PLATFORM=offscreen`; all tests `NUMBA_DISABLE_JIT=1`.
 
-**Next:** performance optimization is IN PROGRESS on branch `perf/optimize-app` —
-5 wins landed (see [[015-optimization-progress]]); JIT-on full-suite run now DONE
-(374 green both modes). Still open: merge/push that branch, packaging/dist,
+**Optimization pass DONE + merged to main + pushed** (HEAD c95ad00): 5 perf wins
+(see [[015-optimization-progress]]) + a slider-number display fix
+([[016-slider-number-display-fix]]). **375 green**, JIT-on AND JIT-off. App verified
+running live (color/effects/drag/proxy→full all confirmed). Desktop launcher exists
+at `Desktop\ditherzam.lnk` (venv pythonw -m ditherzam.app).
+
+**Next:** possible feature — masking + layering system (rough est: ~1wk import/auto
+masks, ~2-3wk with brush painting; main cost = UI state refactor from one global
+`state`/pipeline to per-layer). Still open: packaging/dist,
 real-photo QA, deferred spec items (CMYK halftone §17.3, Photoshop/clipboard export
 §11.4–11.6). See per-phase entries
 [[007-phase3-color-engine-done]]..[[013-phase8-animation-done]], [[014-live-app-bugs-fixed]],
