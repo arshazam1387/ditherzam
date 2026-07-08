@@ -81,5 +81,18 @@ The handoff assumed **effects** dominate. Measurement disagrees:
 |---|--------------|--------|-------|-------|
 | A | `nearest_indices` njit | 370 ms | 98 ms | color stage, bit-identical (3.8×); heavy path 756→497 ms |
 | 1 | cancel superseded + single-in-flight coalescing | 20 renders / 19 wasted | 8 renders / 7 wasted | 20-step 720p drag; no stale out-of-order paints |
-| 2 | staged render cache | — | — | pending |
+| 2 | staged render cache (`render_cached`) | 592 ms (full) | invert **59**, effects **192**, saturation **340** | @1080p heavy path, single-control tick; bit-identical to `render()`. Upstream changes (contrast/luminance) stay ~full — see #3. |
 | 3 | interactive preview proxy | — | — | pending |
+
+### Staged cache: single-control cached tick @1080p heavy path (warm)
+
+| control changed | full uncached | cached tick |
+|-----------------|---------------|-------------|
+| invert          | 592 ms        | **59 ms**   |
+| effects param   | 592 ms        | **192 ms**  |
+| saturation      | 592 ms        | **340 ms**  |
+| luminance       | 592 ms        | 484 ms (reuses adjustments only) |
+| contrast (top)  | 592 ms        | 520 ms (~full: nothing upstream to reuse) |
+
+Downstream-of-color controls become cheap; top-of-pipeline controls need the
+preview proxy (#3) since there is no upstream intermediate to reuse.
