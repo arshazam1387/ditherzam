@@ -94,6 +94,20 @@ The handoff assumed **effects** dominate. Measurement disagrees:
 | 1 | cancel superseded + single-in-flight coalescing | 20 renders / 19 wasted | 8 renders / 7 wasted | 20-step 720p drag; no stale out-of-order paints |
 | 2 | staged render cache (`render_cached`) | 592 ms (full) | invert **59**, effects **192**, saturation **340** | @1080p heavy path, single-control tick; bit-identical to `render()`. Upstream changes (contrast/luminance) stay ~full — see #3. |
 | 3 | interactive preview proxy | 534 ms (1080p) / 2274 ms (4K) full | **99 ms** / **217 ms** proxy | upstream-control drag; proxy is display-only, full-res on settle |
+| 5 | background JIT warmup | first render 715 ms | first render **354 ms** | ~360 ms cold-JIT compile moved to a daemon thread that overlaps window-show |
+
+### Startup / first-interaction (fresh process)
+
+| | without warmup | with background warmup |
+|---|---|---|
+| first user render (1080p FS + palette) | 715 ms (cold JIT link) | **354 ms** (pre-warmed) |
+| warmup thread duration | — | ~360 ms (off the critical path) |
+
+Note: importing `ditherzam.ui.main_window` costs ~1.3 s, ~900 ms of which is
+Numba's *import* (pulled in by kernel registration, which the dither combo needs
+at construction). Deferring that would need a registry that lists kernel
+names/categories without importing Numba — a larger refactor left as future work;
+it only affects time-to-window, not time-to-first-render (which any render pays).
 
 ### Staged cache: single-control cached tick @1080p heavy path (warm)
 
