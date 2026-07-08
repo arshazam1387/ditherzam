@@ -148,6 +148,15 @@ class ControlPanel(QWidget):
         self.extract_slider.setRange(2, 64)
         layout.addWidget(_labeled("From-Image Colors", self.extract_slider))
 
+        self.extract_unit_combo = NoScrollComboBox()
+        self.extract_unit_combo.addItems(["k", "%"])
+        self.extract_unit_combo.currentTextChanged.connect(self._on_extract_unit_changed)
+        layout.addWidget(_labeled("From-Image Unit", self.extract_unit_combo))
+
+        self.autosave_toggle = QCheckBox("Autosave palette")
+        self.autosave_toggle.toggled.connect(self._on_autosave_toggled)
+        layout.addWidget(self.autosave_toggle)
+
         self._update_reset_enabled()
 
         self.mode_combo = NoScrollComboBox()
@@ -256,7 +265,28 @@ class ControlPanel(QWidget):
         self.working_palette = palette
         self.state["palette"] = palette.name
         self.swatch_strip.set_palette(palette)
+        self._sync_palette_combo(palette.name)
         self.changed.emit()
+
+    def _sync_palette_combo(self, name: str) -> None:
+        self.palette_combo.blockSignals(True)
+        if self.palette_combo.findText(name) < 0:
+            self.palette_combo.addItem(name)
+        self.palette_combo.setCurrentText(name)
+        self.palette_combo.blockSignals(False)
+
+    def _on_autosave_toggled(self, checked: bool) -> None:
+        self.state["palette_autosave"] = bool(checked)
+
+    def _on_extract_unit_changed(self, text: str) -> None:
+        unit = "pct" if text == "%" else "k"
+        self.state["extract_unit"] = unit
+        if unit == "pct":
+            self.extract_slider.setRange(0, 100)
+            self.extract_slider.setValue(50)
+        else:
+            self.extract_slider.setRange(2, 64)
+            self.extract_slider.setValue(8)
 
     def _on_save_palette(self) -> None:
         self.store.save(self.working_palette)
@@ -277,6 +307,8 @@ class ControlPanel(QWidget):
         self.palette_combo.clear()
         self.palette_combo.addItems(self.store.list())
         if select is not None:
+            if self.palette_combo.findText(select) < 0:
+                self.palette_combo.addItem(select)
             self.palette_combo.setCurrentText(select)
         self.palette_combo.blockSignals(False)
 
