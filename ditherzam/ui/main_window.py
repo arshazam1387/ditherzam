@@ -78,6 +78,7 @@ class ImageEditor(QMainWindow):
         self._registry = registry or _dither_registry
         self.pipeline = RenderPipeline(self._registry, color_engine, effect_stack)
         self._base_gray: np.ndarray | None = None
+        self._base_rgb: np.ndarray | None = None
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
         self._debounce_ms = debounce_ms
@@ -94,6 +95,7 @@ class ImageEditor(QMainWindow):
         self.panel = ControlPanel()
         self.panel.set_registry_categories(self._registry.by_category())
         self.panel.changed.connect(self.schedule_render)
+        self.panel.from_image_requested.connect(self._on_from_image_requested)
         self.viewport.image_dropped.connect(self._on_image_dropped)
 
         scroll = QScrollArea()
@@ -212,8 +214,16 @@ class ImageEditor(QMainWindow):
     def _current_palette(self):
         if self._color_mode() == "off":
             return None
-        from ..color.palette import builtin_palettes
-        return builtin_palettes().get(self.panel.state.get("palette"))
+        return self.panel.working_palette
+
+    def _on_from_image_requested(self) -> None:
+        if self._base_rgb is None:
+            return
+        from ..color.palette import generate_palette
+        unit = str(self.panel.state.get("extract_unit", "k"))
+        value = int(self.panel.extract_slider.value())
+        palette = generate_palette(self._base_rgb, unit, value)
+        self.panel.set_working_palette(palette)
 
     def _current_color_engine(self):
         """ColorEngine reflecting the panel's Palette + Mode, or None when off."""
@@ -273,7 +283,7 @@ class ImageEditor(QMainWindow):
             panel.effects_list.addItem(name)
         panel.state["effects"] = [name for name, _params in effects]
         if palette is not None:
-            panel.state["palette"] = palette.name
+            panel.set_working_palette(palette)
         panel.set_style(settings.style)
         if self._base_gray is not None:
             self.render_now()
@@ -379,8 +389,9 @@ class ImageEditor(QMainWindow):
         )
 
     # ---- public API ---------------------------------------------------------
-    def load_array(self, gray_f32) -> None:
+    def load_array(self, gray_f32, rgb_u8=None) -> None:
         self._base_gray = np.asarray(gray_f32, dtype=np.float32)
+        self._base_rgb = None if rgb_u8 is None else np.asarray(rgb_u8, dtype=np.uint8)
         self.pipeline.clear_cache()  # drop the previous image's cached intermediates
 
     def set_style(self, name: str) -> None:
@@ -451,7 +462,9 @@ class ImageEditor(QMainWindow):
 
         from ditherzam.imaging import to_gray_f32
         try:
-            self.load_array(to_gray_f32(Image.open(path)))
+            img = Image.open(path)
+            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+            self.load_array(to_gray_f32(img), rgb)
         except Exception:
             return
         self.render_now()
