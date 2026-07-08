@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import numpy as np
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QPoint, Qt, Signal, QMimeData
+from PySide6.QtGui import QColor, QDrag
 from PySide6.QtWidgets import (
+    QApplication,
     QColorDialog,
     QHBoxLayout,
     QPushButton,
@@ -13,6 +14,42 @@ from PySide6.QtWidgets import (
 from ..color.palette import Palette
 
 _MIN_SWATCHES = 1
+
+
+class _SwatchButton(QPushButton):
+    """Swatch button that starts a drag (carrying its index) on press-drag,
+    while still behaving as a normal click target for short press/release."""
+
+    def __init__(self, index: int, parent=None):
+        super().__init__(parent)
+        self.index = index
+        self._press_pos: QPoint | None = None
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._press_pos = event.position().toPoint()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if (
+            self._press_pos is not None
+            and bool(event.buttons() & Qt.MouseButton.LeftButton)
+            and (event.position().toPoint() - self._press_pos).manhattanLength()
+            >= QApplication.startDragDistance()
+        ):
+            self._press_pos = None
+            self.setDown(False)
+            drag = QDrag(self)
+            mime = QMimeData()
+            mime.setText(str(self.index))
+            drag.setMimeData(mime)
+            drag.exec(Qt.DropAction.MoveAction)
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
 
 
 class SwatchStrip(QWidget):
@@ -29,6 +66,7 @@ class SwatchStrip(QWidget):
         self._row.setSpacing(2)
         self._buttons: list[QPushButton] = []
         self._rebuild()
+        self.setAcceptDrops(True)
 
     # -- public API -----------------------------------------------------------
     def set_palette(self, palette: Palette) -> None:
@@ -67,6 +105,22 @@ class SwatchStrip(QWidget):
         self._rebuild()
         self.edited.emit(self._palette)
 
+    def move_swatch(self, src_i: int, dst_i: int) -> None:
+        n = self._palette.colors.shape[0]
+        if not (0 <= src_i < n and 0 <= dst_i < n) or src_i == dst_i:
+            return
+        order = list(range(n))
+        order.insert(dst_i, order.pop(src_i))
+        new_colors = self._palette.colors[order].astype(np.float32)
+        remap = {old: new for new, old in enumerate(order)}
+        self._locked = {remap[i] for i in self._locked}
+        self._palette = Palette(
+            name=self._palette.name, colors=new_colors,
+            category=self._palette.category,
+        )
+        self._rebuild()
+        self.edited.emit(self._palette)
+
     def toggle_lock(self, i: int) -> None:
         if i in self._locked:
             self._locked.discard(i)
@@ -90,7 +144,7 @@ class SwatchStrip(QWidget):
         self._buttons = []
         for i in range(self._palette.colors.shape[0]):
             r, g, b = (int(round(c)) for c in self._palette.colors[i])
-            btn = QPushButton()
+            btn = _SwatchButton(i)
             btn.setFixedSize(22, 22)
             border = "2px solid #f0d000" if i in self._locked else "1px solid #333"
             btn.setStyleSheet(f"background-color: rgb({r},{g},{b}); border: {border};")
@@ -111,3 +165,23 @@ class SwatchStrip(QWidget):
         chosen = QColorDialog.getColor(initial, self, "Pick swatch color")
         if chosen.isValid():
             self.set_swatch_color(i, (chosen.red(), chosen.green(), chosen.blue()))
+
+    # -- drag-drop reordering --------------------------------------------------
+    def _target_index(self, x: float) -> int:
+        for i, b in enumerate(self._buttons):
+            if x < b.x() + b.width() / 2:
+                return i
+        return len(self._buttons) - 1
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        try:
+            src = int(event.mimeData().text())
+        except (TypeError, ValueError):
+            return
+        dst = self._target_index(event.position().x())
+        self.move_swatch(src, dst)
+        event.acceptProposedAction()
