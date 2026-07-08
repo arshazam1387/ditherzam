@@ -11,6 +11,24 @@ All render-core numbers are **warm** (JIT compiled) unless a "cold" column is sh
 Times are median-of-5 wall-clock ms. Inputs are deterministic synthetic grayscale
 (`benchmarks/common.make_gray`).
 
+## Final summary (baseline `90a9497` → `perf/optimize-app`)
+
+| dimension | before | after |
+|-----------|--------|-------|
+| **drag-to-first-feedback** (1080p, upstream control) | full ~250 ms+ render every tick, 19/20 painted then instantly replaced | **~98 ms** proxy; 12 cheap proxies + **1** exact full render, no stale paints |
+| **downstream tweak** (1080p, cached full render) | ~592 ms (full recompute) | invert **59 ms**, effects **192 ms**, saturation **340 ms** |
+| **full-res render** (1080p, FS + palette + 2 effects) | 756 ms | **497 ms** |
+| **color palette map** (1080p, per render) | 370 ms | **98 ms** (bit-identical) |
+| **first render after launch** (fresh process) | 715 ms (cold JIT) | **354 ms** (background warmup) |
+| tests | 333 | **374** (all new work TDD'd; green JIT-on **and** JIT-off) |
+
+Output is unchanged: `render()` and the frozen stage order are untouched, golden
+kernel/render tests pass, and the new `render_cached`/`nearest_indices` paths are
+proven bit-identical. The preview proxy is the only approximate path and is
+display-only during an active drag; every committed/exported image and the
+settled on-screen image come from the full-resolution pipeline (verified
+end-to-end: settled display == exact `render_cached`).
+
 ## Baseline (before any optimization) — commit `90a9497`
 
 ### Warm vs cold render (ms)
