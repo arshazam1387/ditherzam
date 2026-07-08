@@ -11,8 +11,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..color.palette_store import PaletteStore
 from ..color.ramp import RAMP_MODES
 from .delegates import populate_dither_combo
+from .palette_editor import SwatchStrip
 from .widgets import (
     InvisibleSpinBox,
     NoScrollComboBox,
@@ -30,7 +32,6 @@ _ADJUSTMENTS = [
     ("blur", "Blur", 100, 0),
 ]
 
-_PALETTES = ["grayscale", "gameboy", "cga", "pico8", "sepia"]
 _COLOR_MODES = ["off", "nearest", "ordered", "diffused", "ramp"]
 _EFFECTS = ["Blur", "Sharpen", "Chromatic Aberration", "JPEG Glitch", "Epsilon Glow"]
 
@@ -40,10 +41,12 @@ class ControlPanel(QWidget):
     ``changed`` — the window turns that into a debounced re-render."""
 
     changed = Signal()
+    from_image_requested = Signal()
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, store: PaletteStore | None = None):
         super().__init__(parent)
         self.setObjectName("control_panel")
+        self.store = store if store is not None else PaletteStore()
         self.state: dict = {
             "contrast": 50, "midtones": 50, "highlights": 50,
             "luminance_threshold": 50, "blur": 0, "saturation": 50,
@@ -51,9 +54,11 @@ class ControlPanel(QWidget):
             "style": "None", "scale": 5, "params": {},
             "palette": "grayscale", "color_mode": "off", "effects": [],
             "depth": 2, "color_mapping": "match",
+            "palette_autosave": False, "extract_unit": "k",
         }
         self._sliders: dict[str, ResettableGlowSlider] = {}
         self._spins: dict[str, InvisibleSpinBox] = {}
+        self.working_palette = self.store.get(self.state["palette"])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(6)
@@ -113,9 +118,37 @@ class ControlPanel(QWidget):
         layout.addWidget(_header("Color"))
 
         self.palette_combo = NoScrollComboBox()
-        self.palette_combo.addItems(_PALETTES)
+        self.palette_combo.addItems(self.store.list())
+        self.palette_combo.setCurrentText(self.state["palette"])
         self.palette_combo.currentTextChanged.connect(self._on_palette_changed)
         layout.addWidget(_labeled("Palette", self.palette_combo))
+
+        self.swatch_strip = SwatchStrip()
+        self.swatch_strip.set_palette(self.working_palette)
+        self.swatch_strip.edited.connect(self._on_palette_edited)
+        layout.addWidget(self.swatch_strip)
+
+        pal_btns = QHBoxLayout()
+        self.shuffle_btn = QPushButton("Shuffle")
+        self.save_palette_btn = QPushButton("Save palette")
+        self.reset_palette_btn = QPushButton("Reset to builtin")
+        self.from_image_btn = QPushButton("From Image")
+        self.shuffle_btn.clicked.connect(lambda: self.swatch_strip.shuffle())
+        self.save_palette_btn.clicked.connect(self._on_save_palette)
+        self.reset_palette_btn.clicked.connect(self._on_reset_palette)
+        self.from_image_btn.clicked.connect(lambda: self.from_image_requested.emit())
+        for b in (self.shuffle_btn, self.save_palette_btn,
+                  self.reset_palette_btn, self.from_image_btn):
+            pal_btns.addWidget(b)
+        pal_container = QWidget()
+        pal_container.setLayout(pal_btns)
+        layout.addWidget(pal_container)
+
+        self.extract_slider = ResettableGlowSlider(default=8, glow_color="#5e89ed")
+        self.extract_slider.setRange(2, 64)
+        layout.addWidget(_labeled("From-Image Colors", self.extract_slider))
+
+        self._update_reset_enabled()
 
         self.mode_combo = NoScrollComboBox()
         self.mode_combo.addItems(_COLOR_MODES)
@@ -207,7 +240,50 @@ class ControlPanel(QWidget):
 
     def _on_palette_changed(self, text: str) -> None:
         self.state["palette"] = text
+        self.working_palette = self.store.get(text)
+        self.swatch_strip.set_palette(self.working_palette)
+        self._update_reset_enabled()
         self.changed.emit()
+
+    def _on_palette_edited(self, palette) -> None:
+        self.working_palette = palette
+        if self.state.get("palette_autosave"):
+            self.store.save(palette)
+            self._update_reset_enabled()
+        self.changed.emit()
+
+    def set_working_palette(self, palette) -> None:
+        self.working_palette = palette
+        self.state["palette"] = palette.name
+        self.swatch_strip.set_palette(palette)
+        self.changed.emit()
+
+    def _on_save_palette(self) -> None:
+        self.store.save(self.working_palette)
+        self._refresh_palette_combo(self.working_palette.name)
+        self._update_reset_enabled()
+
+    def _on_reset_palette(self) -> None:
+        name = self.working_palette.name
+        if self.store.is_user(name) and self.store.is_builtin(name):
+            self.working_palette = self.store.reset_to_builtin(name)
+            self.swatch_strip.set_palette(self.working_palette)
+        self._refresh_palette_combo(name if self.store.is_builtin(name) else None)
+        self._update_reset_enabled()
+        self.changed.emit()
+
+    def _refresh_palette_combo(self, select: str | None) -> None:
+        self.palette_combo.blockSignals(True)
+        self.palette_combo.clear()
+        self.palette_combo.addItems(self.store.list())
+        if select is not None:
+            self.palette_combo.setCurrentText(select)
+        self.palette_combo.blockSignals(False)
+
+    def _update_reset_enabled(self) -> None:
+        name = self.working_palette.name
+        self.reset_palette_btn.setEnabled(
+            self.store.is_user(name) and self.store.is_builtin(name))
 
     def _on_mode_changed(self, text: str) -> None:
         self.state["color_mode"] = text
