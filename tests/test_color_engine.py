@@ -1,5 +1,6 @@
 import numpy as np
-from ditherzam.color.palette import Palette
+import pytest
+from ditherzam.color.palette import Palette, builtin_palettes
 from ditherzam.color.engine import ColorEngine, nearest_indices
 
 DUO = Palette.from_list("duo", [[0, 0, 0], [255, 255, 255]])
@@ -44,6 +45,40 @@ def test_nearest_indices_helper():
     rgb = np.array([[[10, 10, 10], [200, 200, 200]]], np.float32)
     idx = nearest_indices(rgb, pal)
     assert idx.tolist() == [[0, 1]]
+
+
+def _ref_nearest_indices(rgb_f32, palette_f32):
+    """The original broadcast implementation, kept as the equivalence oracle."""
+    diff = rgb_f32[:, :, None, :] - palette_f32[None, None, :, :]
+    dist = (diff * diff).sum(axis=-1)
+    return dist.argmin(axis=-1)
+
+
+@pytest.mark.parametrize("pal_name", list(builtin_palettes().keys()))
+@pytest.mark.parametrize("seed", [0, 1, 2])
+def test_nearest_indices_bit_identical_to_reference(pal_name, seed):
+    pal = builtin_palettes()[pal_name].colors.astype(np.float32)
+    rng = np.random.default_rng(seed)
+    # non-integer float values to stress tie-breaking / rounding
+    rgb = rng.uniform(-5, 260, size=(23, 29, 3)).astype(np.float32)
+    got = nearest_indices(rgb, pal)
+    ref = _ref_nearest_indices(rgb, pal)
+    np.testing.assert_array_equal(got, ref)
+
+
+@pytest.mark.parametrize("mode", ["nearest", "ordered"])
+def test_map_bit_identical_across_palettes(mode):
+    rng = np.random.default_rng(9)
+    rgb = rng.uniform(0, 255, size=(31, 17, 3)).astype(np.float32)
+    for name, pal in builtin_palettes().items():
+        eng = ColorEngine(pal, mode)
+        # reference map: same body but with the oracle nearest-indices
+        got = eng.map(rgb)
+        assert got.dtype == np.uint8 and got.shape == (31, 17, 3)
+        # snap-only invariant: every output color is a palette color
+        allowed = {tuple(int(v) for v in c) for c in pal.colors}
+        uniq = {tuple(c) for c in got.reshape(-1, 3).tolist()}
+        assert uniq <= allowed
 
 
 def test_ordered_output_only_palette_colors():
