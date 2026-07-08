@@ -27,9 +27,9 @@ ditherzam app exists and works end-to-end.
 numpy/numba/pillow/PySide6/pytest/pyyaml. Use `.venv/Scripts/python.exe`; Qt tests
 need `QT_QPA_PLATFORM=offscreen`; all tests `NUMBA_DISABLE_JIT=1`.
 
-**Next:** performance optimization — see `docs/HANDOFF-optimize-app.md` (JIT warmup,
-per-stage render caching, cancel superseded background renders, interactive preview
-downscale, startup time). Also still open: JIT-on full-suite run, packaging/dist,
+**Next:** performance optimization is IN PROGRESS on branch `perf/optimize-app` —
+5 wins landed (see [[015-optimization-progress]]); JIT-on full-suite run now DONE
+(374 green both modes). Still open: merge/push that branch, packaging/dist,
 real-photo QA, deferred spec items (CMYK halftone §17.3, Photoshop/clipboard export
 §11.4–11.6). See per-phase entries
 [[007-phase3-color-engine-done]]..[[013-phase8-animation-done]], [[014-live-app-bugs-fixed]],
