@@ -44,6 +44,7 @@ _EFFECT_DEFAULTS: dict[str, dict] = {
 
 class _RenderSignals(QObject):
     finished = Signal(QImage, int)
+    failed = Signal(int)
 
 
 class _RenderWorker(QRunnable):
@@ -61,12 +62,22 @@ class _RenderWorker(QRunnable):
         self.signals = _RenderSignals()
 
     def run(self) -> None:
-        if self._mode == "proxy":
-            rgb = render_preview(self._pipeline, self._base_gray, self._settings,
-                                 self._proxy_max_side)
-        else:
-            rgb = self._pipeline.render_cached(self._base_gray, self._settings)
-        self.signals.finished.emit(numpy_to_qimage(rgb), self._token)
+        # A render raising here would otherwise never emit `finished`, so the
+        # coalescer's `_busy` flag would stick True and freeze all future renders.
+        # Always report an outcome (finished OR failed) so the coalescer recovers.
+        try:
+            if self._mode == "proxy":
+                rgb = render_preview(self._pipeline, self._base_gray, self._settings,
+                                     self._proxy_max_side)
+            else:
+                rgb = self._pipeline.render_cached(self._base_gray, self._settings)
+            qimg = numpy_to_qimage(rgb)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.signals.failed.emit(self._token)
+            return
+        self.signals.finished.emit(qimg, self._token)
 
 
 class ImageEditor(QMainWindow):
@@ -454,6 +465,7 @@ class ImageEditor(QMainWindow):
                                mode=self._render_mode,
                                proxy_max_side=self._proxy_max_side)
         worker.signals.finished.connect(self._on_rendered)
+        worker.signals.failed.connect(self._on_render_failed)
         self._pool.start(worker)
 
     def _on_rendered(self, qimg: QImage, token: int) -> None:
@@ -464,6 +476,13 @@ class ImageEditor(QMainWindow):
             self.viewport.set_pixmap(QPixmap.fromImage(qimg))
         # If state changed while this render was in flight, run one trailing render
         # with the freshest state.
+        nxt = self._coalescer.on_finished()
+        if nxt is not None:
+            self._launch_worker(nxt)
+
+    def _on_render_failed(self, token: int) -> None:
+        # A background render raised (already logged in the worker). Don't paint,
+        # but release the coalescer so rendering recovers instead of freezing.
         nxt = self._coalescer.on_finished()
         if nxt is not None:
             self._launch_worker(nxt)
