@@ -106,20 +106,27 @@ _BAYER4 = (_bayer_matrix(4) + 0.5) / 16.0 * 255.0  # thresholds 0..255
 
 
 @njit(cache=True, parallel=True)
-def _ordered(img, thresholds):
+def _ordered(img, thresholds, levels=2):
     h, w = img.shape
     mh, mw = thresholds.shape
     out = np.empty_like(img)
+    if levels <= 2:
+        for y in prange(h):
+            for x in range(w):
+                t = thresholds[y % mh, x % mw]
+                out[y, x] = 255.0 if img[y, x] >= t else 0.0
+        return out
+    step = 255.0 / (levels - 1)
     for y in prange(h):
         for x in range(w):
-            t = thresholds[y % mh, x % mw]
-            out[y, x] = 255.0 if img[y, x] >= t else 0.0
+            off = (thresholds[y % mh, x % mw] / 255.0 - 0.5) * step
+            out[y, x] = quantize_to_levels(img[y, x] + off, levels)
     return out
 
 
 @registry.register("Bayer-Matrix 4x4", "Ordered Dither", dims=2)
-def bayer_4(image_array, parameter, luminance_threshold_value):
-    return _ordered(image_array.astype(np.float32), _BAYER4)
+def bayer_4(image_array, parameter, luminance_threshold_value, levels=2):
+    return _ordered(image_array.astype(np.float32), _BAYER4, levels)
 
 
 @njit(cache=True)

@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 from numba import njit, prange
 from ditherzam.dithering import registry
+from ditherzam.dithering.nlevels import quantize_to_levels
 
 
 def _bayer_matrix(n: int) -> np.ndarray:
@@ -34,13 +35,21 @@ _CLUSTER4 = ((_CLUSTER4_IDX + 0.5) / 16.0 * 255.0).astype(np.float32)
 
 
 @njit(cache=True, parallel=True)
-def _ordered(img, thresholds):
+def _ordered(img, thresholds, levels=2):
     h, w = img.shape
     mh, mw = thresholds.shape
     out = np.empty_like(img)
+    if levels <= 2:
+        for y in prange(h):
+            for x in range(w):
+                out[y, x] = 255.0 if img[y, x] >= thresholds[y % mh, x % mw] else 0.0
+        return out
+    step = 255.0 / (levels - 1)
     for y in prange(h):
         for x in range(w):
-            out[y, x] = 255.0 if img[y, x] >= thresholds[y % mh, x % mw] else 0.0
+            # thresholds are 0..255; recenter to [-0.5,0.5]*step as a sub-step offset
+            off = (thresholds[y % mh, x % mw] / 255.0 - 0.5) * step
+            out[y, x] = quantize_to_levels(img[y, x] + off, levels)
     return out
 
 
@@ -141,26 +150,26 @@ def _dot_screen(img, cell):
 
 # ── Kernel: Bayer-Matrix 2x2 · Ordered Dither · dims=2 · no sliders ──
 @registry.register("Bayer-Matrix 2x2", "Ordered Dither", dims=2)
-def bayer_2(image_array, parameter, luminance_threshold_value):
-    return _ordered(image_array.astype(np.float32), _BAYER2)
+def bayer_2(image_array, parameter, luminance_threshold_value, levels=2):
+    return _ordered(image_array.astype(np.float32), _BAYER2, levels)
 
 
 # ── Kernel: Bayer-Matrix 8x8 · Ordered Dither · dims=2 · no sliders ──
 @registry.register("Bayer-Matrix 8x8", "Ordered Dither", dims=2)
-def bayer_8(image_array, parameter, luminance_threshold_value):
-    return _ordered(image_array.astype(np.float32), _BAYER8)
+def bayer_8(image_array, parameter, luminance_threshold_value, levels=2):
+    return _ordered(image_array.astype(np.float32), _BAYER8, levels)
 
 
 # ── Kernel: Bayer-Matrix 16x16 · Ordered Dither · dims=2 · no sliders ──
 @registry.register("Bayer-Matrix 16x16", "Ordered Dither", dims=2)
-def bayer_16(image_array, parameter, luminance_threshold_value):
-    return _ordered(image_array.astype(np.float32), _BAYER16)
+def bayer_16(image_array, parameter, luminance_threshold_value, levels=2):
+    return _ordered(image_array.astype(np.float32), _BAYER16, levels)
 
 
 # ── Kernel: Bayer-Ordered · Ordered Dither · dims=2 · alias of 4x4 ──
 @registry.register("Bayer-Ordered", "Ordered Dither", dims=2)
-def bayer_ordered(image_array, parameter, luminance_threshold_value):
-    return _ordered(image_array.astype(np.float32), _BAYER4)
+def bayer_ordered(image_array, parameter, luminance_threshold_value, levels=2):
+    return _ordered(image_array.astype(np.float32), _BAYER4, levels)
 
 
 # ── Kernel: Bayer-Void · Ordered Dither · dims=2 · Warp Intensity 1-50-10 ──
@@ -206,8 +215,8 @@ def modulated_bayer(image_array, parameter, luminance_threshold_value):
 
 # ── Kernel: Cluster-Dot · Ordered Dither · dims=2 · no sliders (extra) ──
 @registry.register("Cluster-Dot", "Ordered Dither", dims=2)
-def cluster_dot(image_array, parameter, luminance_threshold_value):
-    return _ordered(image_array.astype(np.float32), _CLUSTER4)
+def cluster_dot(image_array, parameter, luminance_threshold_value, levels=2):
+    return _ordered(image_array.astype(np.float32), _CLUSTER4, levels)
 
 
 # ── Kernel: Halftone-Ordered · Ordered Dither · dims=2 · Cell Size 2-20-6 (extra) ──
