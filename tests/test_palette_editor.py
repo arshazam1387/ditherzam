@@ -60,3 +60,32 @@ def test_remove_reindexes_locks(qapp_fixture):
     s.toggle_lock(2)
     s.remove_swatch(0)                              # index 2 -> now index 1
     assert s.locked() == {1}
+
+
+def test_move_swatch_reorders_colors(qapp_fixture):
+    s = _strip()   # colors [[0,0,0],[128,128,128],[255,255,255]]
+    s.move_swatch(0, 2)
+    np.testing.assert_array_equal(s.palette().colors[2], [0, 0, 0])
+    np.testing.assert_array_equal(s.palette().colors[0], [128, 128, 128])
+
+
+def test_move_swatch_emits_edited(qapp_fixture):
+    s = _strip()
+    seen = []
+    s.edited.connect(lambda pal: seen.append(pal))
+    s.move_swatch(2, 0)
+    assert len(seen) == 1
+
+
+def test_move_swatch_remaps_locks(qapp_fixture):
+    s = _strip()
+    s.toggle_lock(0)              # lock the first swatch
+    s.move_swatch(0, 2)          # it moves to index 2
+    assert s.locked() == {2}
+
+
+def test_move_swatch_noop_same_index(qapp_fixture):
+    s = _strip()
+    before = s.palette().colors.copy()
+    s.move_swatch(1, 1)
+    np.testing.assert_array_equal(s.palette().colors, before)
