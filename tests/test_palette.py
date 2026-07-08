@@ -173,3 +173,48 @@ def test_generate_palette_bad_unit_raises():
     img = np.zeros((4, 4, 3), np.uint8)
     with pytest.raises(ValueError):
         generate_palette(img, "nonsense", 4)
+
+
+def test_category_defaults_empty():
+    from ditherzam.color.palette import Palette
+    p = Palette.from_list("x", [[1, 2, 3]])
+    assert p.category == ""
+
+
+def test_category_yaml_roundtrip(tmp_path):
+    from ditherzam.color.palette import Palette
+    p = Palette.from_list("x", [[1, 2, 3]], category="retro")
+    dest = tmp_path / "x.yaml"
+    p.to_yaml(dest)
+    assert "category: retro" in dest.read_text(encoding="utf-8")
+    assert Palette.load(dest).category == "retro"
+
+
+def test_empty_category_not_written(tmp_path):
+    from ditherzam.color.palette import Palette
+    p = Palette.from_list("x", [[1, 2, 3]])
+    dest = tmp_path / "x.yaml"
+    p.to_yaml(dest)
+    assert "category" not in dest.read_text(encoding="utf-8")
+
+
+def test_load_legacy_yaml_has_empty_category(tmp_path):
+    from ditherzam.color.palette import Palette
+    dest = tmp_path / "legacy.yaml"
+    dest.write_text("name: legacy\ncolors:\n  - [1, 2, 3]\n", encoding="utf-8")
+    assert Palette.load(dest).category == ""
+
+
+def test_shuffle_preserves_category():
+    import numpy as np
+    from ditherzam.color.palette import Palette
+    p = Palette.from_list("x", [[1, 2, 3], [4, 5, 6]], category="retro")
+    out = p.shuffle(locked={0}, rng=np.random.default_rng(0))
+    assert out.category == "retro"
+
+
+def test_extract_palette_is_user_category():
+    import numpy as np
+    from ditherzam.color.palette import extract_palette
+    rgb = np.random.default_rng(0).integers(0, 256, (8, 8, 3), dtype=np.uint8)
+    assert extract_palette(rgb, k=4).category == "user"
