@@ -17,3 +17,4 @@
 - [progress|phase 7|done] Phase 7 video done: ffmpeg builders/limits/runner/assemble, per-frame dither, Qt workers + video_controller, 298 tests green (012-phase7-video-done.md)
 - [progress|phase 8|done] Phase 8 animation done: 9 temporal patterns, threshold-field backward-compat, Timeline+ease, render_animation, 330 tests green (013-phase8-animation-done.md)
 - [gotcha|phase 5|done] Live-app bugs fixed: blur-by-default (neutral is 0 not 50) + Palette/Effects not wired to pipeline; 333 tests (014-live-app-bugs-fixed.md)
+- [progress|phase 8|in-progress] Optimization pass: 5 wins on perf/optimize-app (color njit, coalescing, staged cache, preview proxy, JIT warmup); 374 green (015-optimization-progress.md)
