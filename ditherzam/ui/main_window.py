@@ -79,6 +79,7 @@ class ImageEditor(QMainWindow):
         self.pipeline = RenderPipeline(self._registry, color_engine, effect_stack)
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
+        self._preview_palette = None
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
         self._debounce_ms = debounce_ms
@@ -96,6 +97,7 @@ class ImageEditor(QMainWindow):
         self.panel.set_registry_categories(self._registry.by_category())
         self.panel.changed.connect(self.schedule_render)
         self.panel.from_image_requested.connect(self._on_from_image_requested)
+        self.panel.palette_preview.connect(self._on_palette_preview)
         self.viewport.image_dropped.connect(self._on_image_dropped)
 
         scroll = QScrollArea()
@@ -214,7 +216,16 @@ class ImageEditor(QMainWindow):
     def _current_palette(self):
         if self._color_mode() == "off":
             return None
+        if self._preview_palette is not None:
+            return self._preview_palette
         return self.panel.working_palette
+
+    def _on_palette_preview(self, palette) -> None:
+        if not self.panel.state.get("palette_preview", True):
+            return
+        self._preview_palette = palette          # a Palette, or None to revert
+        if self._base_gray is not None:
+            self.schedule_render()
 
     def _on_from_image_requested(self) -> None:
         if self._base_rgb is None:
