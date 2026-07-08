@@ -46,7 +46,17 @@ class PaletteStore:
             if name not in builtins:
                 raise KeyError(name)
             p = builtins[name]
-        return Palette(name=p.name, colors=p.colors.copy())
+        return Palette(name=p.name, colors=p.colors.copy(), category=p.category)
+
+    def list_by_category(self) -> dict[str, list[str]]:
+        cats: dict[str, list[str]] = {}
+        for name in self.list():
+            key = self.get(name).category or "uncategorized"
+            cats.setdefault(key, []).append(name)
+        ordered = sorted(k for k in cats if k != "uncategorized")
+        if "uncategorized" in cats:
+            ordered.append("uncategorized")
+        return {k: sorted(cats[k]) for k in ordered}
 
     # -- mutation -------------------------------------------------------------
     def save(self, palette: Palette) -> None:
