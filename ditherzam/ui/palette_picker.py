@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
 _NAME_ROLE = Qt.ItemDataRole.UserRole
 
 
-def _swatch_icon(colors: np.ndarray, w: int = 64, h: int = 16) -> QIcon:
+def _swatch_icon(colors: np.ndarray, w: int = 112, h: int = 22) -> QIcon:
     pix = QPixmap(w, h)
     pix.fill(QColor(0, 0, 0, 0))
     n = max(1, int(colors.shape[0]))
@@ -31,7 +31,9 @@ class PalettePicker(QTreeWidget):
         super().__init__(parent)
         self.setHeaderHidden(True)
         self.setMouseTracking(True)
-        self.setIconSize(QSize(64, 16))
+        # Bigger swatches + a taller list so more palettes are visible at once.
+        self.setIconSize(QSize(112, 22))
+        self.setMinimumHeight(260)
         self._preview_enabled = True
         self._wheel_cycle = False
         self._store = None
