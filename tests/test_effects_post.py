@@ -28,7 +28,7 @@ def test_shape_and_dtype_preserved():
         (sharpen, {"amount": 1.5}),
         (chromatic_aberration, {"shift": 2}),
         (jpeg_glitch, {"quality": 10}),
-        (epsilon_glow, {"radius": 3, "strength": 0.5}),
+        (epsilon_glow, {"threshold": 32, "radius": 3, "intensity": 1.0}),
     ]:
         out = fn(x, **kw)
         assert out.shape == x.shape and out.dtype == np.uint8
@@ -86,14 +86,56 @@ def test_jpeg_glitch_clamps_quality():
     assert jpeg_glitch(x, quality=999).shape == x.shape
 
 
-def test_epsilon_glow_brightens_uniform_field():
-    # glow(blur)==100 on a flat field; out = clip(100 + 100*0.5) = 150
-    x = gray_img(100)
-    out = epsilon_glow(x, radius=3, strength=0.5)
-    assert np.all(out == 150)
+def test_epsilon_glow_intensity_zero_is_identity():
+    x = rand_img()
+    np.testing.assert_array_equal(epsilon_glow(x, intensity=0.0), x)
 
 
-def test_epsilon_glow_clips_to_255():
-    x = gray_img(200)
-    out = epsilon_glow(x, radius=2, strength=1.0)      # 200 + 200 -> clipped 255
-    assert out.max() == 255 and out.dtype == np.uint8
+def test_epsilon_glow_shape_dtype_all_params():
+    x = rand_img()
+    out = epsilon_glow(x, threshold=40, smoothing=20, radius=5, intensity=1.0,
+                       epsilon=0.5, falloff=0.4, distance_scale=1.2, aspect=1.5)
+    assert out.shape == x.shape and out.dtype == np.uint8
+    assert out.min() >= 0 and out.max() <= 255
+
+
+def test_epsilon_glow_higher_threshold_fewer_glow_pixels():
+    # vertical luminance gradient 0..255 across the width
+    grad = np.tile(np.linspace(0, 255, 32, dtype=np.uint8), (32, 1))
+    x = np.stack([grad, grad, grad], axis=-1)
+    changed_low = int(np.count_nonzero(np.any(
+        epsilon_glow(x, threshold=32, radius=4, intensity=1.0) != x, axis=-1)))
+    changed_high = int(np.count_nonzero(np.any(
+        epsilon_glow(x, threshold=200, radius=4, intensity=1.0) != x, axis=-1)))
+    assert changed_high < changed_low          # higher threshold => fewer glowing pixels
+
+
+def test_epsilon_glow_smoothing_zero_hard_cut_no_error():
+    x = rand_img()
+    out = epsilon_glow(x, threshold=100, smoothing=0, radius=3, intensity=1.0)
+    assert out.dtype == np.uint8 and np.isfinite(out.astype(np.float64)).all()
+
+
+def test_epsilon_glow_epsilon_raises_core_brightness():
+    # one bright pixel over a dark field; brighter epsilon => brighter center
+    x = np.zeros((32, 32, 3), np.uint8)
+    x[16, 16] = 255
+    dim = epsilon_glow(x, threshold=50, radius=6, intensity=1.0, epsilon=0.0)
+    hot = epsilon_glow(x, threshold=50, radius=6, intensity=1.0, epsilon=1.0)
+    assert int(hot[16, 16].sum()) >= int(dim[16, 16].sum())
+
+
+def test_epsilon_glow_grayscale_input_ok():
+    x = gray_img(180)
+    out = epsilon_glow(x, threshold=50, radius=3, intensity=0.8)
+    assert out.shape == x.shape and out.dtype == np.uint8
+
+
+def test_chromatic_before_glow_differs_from_after():
+    # emergent stack-order interaction: CA then Glow != Glow then CA
+    x = rand_img()
+    ca_then_glow = epsilon_glow(chromatic_aberration(x, shift=2),
+                                threshold=40, radius=3, intensity=1.0)
+    glow_then_ca = chromatic_aberration(
+        epsilon_glow(x, threshold=40, radius=3, intensity=1.0), shift=2)
+    assert not np.array_equal(ca_then_glow, glow_then_ca)

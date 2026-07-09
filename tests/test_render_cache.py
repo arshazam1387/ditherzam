@@ -27,7 +27,7 @@ def _duo():
 def _stack():
     s = EffectStack()
     s.add("Chromatic Aberration", shift=2)
-    s.add("Epsilon Glow", radius=3.0, strength=0.4)
+    s.add("Epsilon Glow", threshold=40.0, radius=3.0, intensity=1.0)
     return s
 
 
