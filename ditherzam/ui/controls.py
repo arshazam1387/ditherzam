@@ -34,7 +34,7 @@ _ADJUSTMENTS = [
 ]
 
 _COLOR_MODES = ["off", "nearest", "ordered", "diffused", "ramp"]
-_EFFECTS = ["Blur", "Sharpen", "Chromatic Aberration", "JPEG Glitch", "Epsilon Glow"]
+_EFFECTS = ["Blur", "Sharpen", "Chromatic Aberration", "JPEG Glitch"]
 
 
 class ControlPanel(QWidget):

@@ -38,7 +38,9 @@ _EFFECT_DEFAULTS: dict[str, dict] = {
     "Sharpen": {"amount": 1.0},
     "Chromatic Aberration": {"shift": 2},
     "JPEG Glitch": {"quality": 15},
-    "Epsilon Glow": {"radius": 4.0, "strength": 0.5},
+    "Epsilon Glow": {"threshold": 64.0, "smoothing": 32.0, "radius": 8.0,
+                     "intensity": 1.0, "epsilon": 0.4, "falloff": 0.5,
+                     "distance_scale": 1.0, "aspect": 1.0},
 }
 
 
@@ -111,13 +113,26 @@ class ImageEditor(QMainWindow):
         self.panel.palette_preview.connect(self._on_palette_preview)
         self.viewport.image_dropped.connect(self._on_image_dropped)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.panel)
+        from PySide6.QtWidgets import QTabWidget
+        from .glow_panel import GlowPanel
+
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setWidget(self.panel)
+
+        self.glow_panel = GlowPanel()
+        self.glow_panel.changed.connect(self.schedule_render)
+        glow_scroll = QScrollArea()
+        glow_scroll.setWidgetResizable(True)
+        glow_scroll.setWidget(self.glow_panel)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(editor_scroll, "Editor")
+        self.tabs.addTab(glow_scroll, "Glow")
 
         splitter = QSplitter(Qt.Orientation.Horizontal, central)
         splitter.addWidget(self.viewport)
-        splitter.addWidget(scroll)
+        splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         # single-child layout for the central widget
