@@ -28,13 +28,30 @@ def test_apply_dither_passes_levels_to_capable_kernel():
     assert 2 < len(np.unique(np.round(out4))) <= 4
 
 
-def test_apply_dither_levels_ignored_for_incapable_kernel():
+def test_apply_dither_levels_promotes_incapable_kernel():
+    # A binary-only kernel (supports_levels False) is promoted to multi-tone by
+    # the pipeline so a colour palette can span its whole tonal range instead of
+    # collapsing to 2 colours. See the "styles only show one/two colours" bug.
     g = np.tile(np.linspace(0, 255, 64, np.float32), (32, 1))
-    a = apply_dither(g, style="Ostromukhov", scale=1, luminance_threshold=50,
-                     params={}, registry=R, levels=6)
-    b = apply_dither(g, style="Ostromukhov", scale=1, luminance_threshold=50,
-                     params={}, registry=R, levels=2)
-    np.testing.assert_array_equal(a, b)  # levels had no effect
+    out2 = apply_dither(g, style="Dot Screen", scale=1, luminance_threshold=50,
+                        params={}, registry=R, levels=2)
+    out6 = apply_dither(g, style="Dot Screen", scale=1, luminance_threshold=50,
+                        params={}, registry=R, levels=6)
+    assert len(np.unique(np.round(out2))) <= 2      # default stays binary
+    assert 2 < len(np.unique(np.round(out6))) <= 6  # higher depth -> more tones
+
+
+def test_apply_dither_levels_two_unchanged_for_incapable_kernel():
+    # The default depth (levels<=2) must be byte-identical to the raw binary
+    # kernel, so existing goldens / look at default settings are untouched.
+    from ditherzam.dithering.pipeline import _build_param, _luminance_to_255
+    g = np.tile(np.linspace(0, 255, 64, np.float32), (32, 1))
+    entry = R.get_entry("Dot Screen")
+    piped = apply_dither(g, style="Dot Screen", scale=1, luminance_threshold=50,
+                         params={}, registry=R, levels=2)
+    raw = entry.func(g.astype(np.float32), _build_param(entry, {}),
+                     _luminance_to_255(50))
+    np.testing.assert_array_equal(piped, raw)
 
 
 @pytest.mark.parametrize("style", R.list_dithers())

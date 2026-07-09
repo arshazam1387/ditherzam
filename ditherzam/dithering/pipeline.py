@@ -28,6 +28,28 @@ def _resize_field_nearest(field: np.ndarray, target_hw: tuple[int, int]) -> np.n
     return field[ys][:, xs]
 
 
+def _binary_to_levels(func, small, param, tval, levels) -> np.ndarray:
+    """Promote a binary (0/255) threshold kernel to ``levels`` tones.
+
+    Most pattern/screen/threshold kernels only ever emit black or white, so a
+    colour palette applied afterward collapses to two colours no matter the
+    depth. Here the tonal range is split into ``levels-1`` bands and the kernel
+    dithers the in-band fraction: ``out = (floor(v/step) + kernel_bit(frac)) *
+    step``. Each kernel keeps its own texture while building up a smooth
+    multi-tone gradient the palette can span. Bit-identical kernels are treated
+    as black boxes, so this needs no per-kernel change.
+    """
+    step = 255.0 / (levels - 1)
+    v = np.clip(np.asarray(small, dtype=np.float32), 0.0, 255.0)
+    q = v / step
+    lower = np.floor(q)
+    frac = (q - lower).astype(np.float32)             # 0..1 position within band
+    bit_img = np.asarray(func((frac * 255.0).astype(np.float32), param, tval))
+    bit = (bit_img >= 128.0).astype(np.float32)       # kernel emits 0/255
+    out = (lower + bit) * step
+    return np.clip(out, 0.0, 255.0).astype(np.float32)
+
+
 def apply_dither(gray_f32, *, style, scale, luminance_threshold,
                  params, registry, preview_disabled=False,
                  threshold_field=None, levels=2) -> np.ndarray:
@@ -48,8 +70,13 @@ def apply_dither(gray_f32, *, style, scale, luminance_threshold,
         small = (small - fld).astype(np.float32)
 
     param = _build_param(entry, params)
+    lv = int(levels)
     if entry.supports_levels:
-        out = entry.func(small, param, tval, int(levels))
+        out = entry.func(small, param, tval, lv)
+    elif lv > 2:
+        # Kernel only does binary thresholding; promote it to multi-tone so a
+        # colour palette can span its full range instead of showing 1-2 colours.
+        out = _binary_to_levels(entry.func, small, param, tval, lv)
     else:
         out = entry.func(small, param, tval)
 
