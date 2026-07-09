@@ -1,0 +1,7 @@
+name: greencrt
+category: mono
+colors:
+  - [8, 16, 8]
+  - [24, 84, 40]
+  - [72, 180, 96]
+  - [168, 248, 176]

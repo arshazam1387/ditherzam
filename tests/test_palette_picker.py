@@ -35,6 +35,23 @@ def test_palette_rows_present(qapp_fixture, tmp_path):
     assert "gameboy" in names and "grayscale" in names
 
 
+def test_picker_is_enlarged(qapp_fixture, tmp_path):
+    # Palette section made bigger: taller list + larger swatches.
+    picker = _picker(tmp_path)
+    assert picker.minimumHeight() >= 240
+    assert picker.iconSize().width() >= 96
+
+
+def test_added_palettes_and_category_visible(qapp_fixture, tmp_path):
+    from PySide6.QtCore import Qt
+    picker = _picker(tmp_path)
+    headers = [picker.topLevelItem(i).text(0) for i in range(picker.topLevelItemCount())]
+    assert "cool" in headers
+    names = [it.data(0, Qt.ItemDataRole.UserRole) for it in _palette_items(picker)]
+    for n in ("c64", "zxspectrum", "nord", "solarized", "greencrt", "ambercrt"):
+        assert n in names
+
+
 def test_click_palette_emits_selected(qapp_fixture, tmp_path):
     picker = _picker(tmp_path)
     seen = []

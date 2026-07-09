@@ -60,6 +60,20 @@ def test_builtin_exact_values():
     np.testing.assert_array_equal(b["cga"].colors[14], np.array([255, 255, 85], np.float32))
 
 
+def test_added_builtin_palettes_present_and_valid():
+    b = builtin_palettes()
+    added = {"c64": "retro", "zxspectrum": "retro", "nord": "cool",
+             "solarized": "cool", "greencrt": "mono", "ambercrt": "mono"}
+    for name, category in added.items():
+        assert name in b, f"missing added palette: {name}"
+        p = b[name]
+        assert p.category == category
+        assert p.colors.ndim == 2 and p.colors.shape[1] == 3
+        assert p.colors.shape[0] >= 2
+        assert p.colors.dtype == np.float32
+        assert float(p.colors.min()) >= 0.0 and float(p.colors.max()) <= 255.0
+
+
 def test_extract_returns_k_colors():
     img = np.random.RandomState(0).randint(0, 256, (32, 32, 3), dtype=np.uint8)
     p = extract_palette(img, k=8)
