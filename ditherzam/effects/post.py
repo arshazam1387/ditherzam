@@ -41,12 +41,63 @@ def jpeg_glitch(rgb_u8: np.ndarray, quality: int) -> np.ndarray:
     return np.asarray(Image.open(buf).convert("RGB"), np.uint8)
 
 
-def epsilon_glow(rgb_u8: np.ndarray, radius: float, strength: float) -> np.ndarray:
-    """Additive bloom tuned for dithered art: base + blur(base) * strength."""
-    pil = Image.fromarray(rgb_u8)
-    glow = np.asarray(pil.filter(ImageFilter.GaussianBlur(float(radius))), np.float32)
-    base = np.asarray(pil, np.float32)
-    return np.clip(base + glow * strength, 0, 255).astype(np.uint8)
+def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
+    """0..1 soft ramp between edge0 and edge1; hard step when edge1 <= edge0."""
+    if edge1 <= edge0:
+        return (x >= edge0).astype(np.float32)
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _aniso_blur(src_f: np.ndarray, sigma: float, aspect: float) -> np.ndarray:
+    """Gaussian blur wider along x by `aspect`, via resize->isotropic blur->resize.
+    aspect > 1 stretches the glow horizontally; aspect == 1 is isotropic."""
+    h, w = src_f.shape[:2]
+    ax = max(float(aspect), 1e-3)
+    new_w = max(1, int(round(w / ax)))
+    img = Image.fromarray(np.clip(src_f, 0, 255).astype(np.uint8))
+    if new_w != w:
+        img = img.resize((new_w, h), Image.BILINEAR)
+    img = img.filter(ImageFilter.GaussianBlur(float(max(sigma, 0.0))))
+    if new_w != w:
+        img = img.resize((w, h), Image.BILINEAR)
+    return np.asarray(img, np.float32)
+
+
+def epsilon_glow(rgb_u8: np.ndarray, threshold: float = 64.0, smoothing: float = 32.0,
+                 radius: float = 8.0, intensity: float = 1.0, epsilon: float = 0.4,
+                 falloff: float = 0.5, distance_scale: float = 1.0,
+                 aspect: float = 1.0) -> np.ndarray:
+    """Threshold-driven bloom tuned for dithered art.
+
+    Weighted luminance selects bright pixels through a soft knee; the emissive
+    source is spread by a multi-scale anisotropic blur; `epsilon` adds a tight,
+    hot core. `intensity` is the master gate (0 => identity).
+    """
+    if intensity <= 0:
+        return rgb_u8
+    base = rgb_u8.astype(np.float32)
+    lum = 0.299 * base[..., 0] + 0.587 * base[..., 1] + 0.114 * base[..., 2]
+    mask = _smoothstep(float(threshold), float(threshold) + float(smoothing), lum)
+    src = base * mask[..., None]
+
+    r = max(float(radius) * float(distance_scale), 0.0)
+    scales = (0.5, 1.0, 2.0)
+    base_w = np.array([1.0, 0.6, 0.35], np.float32)
+    f = float(np.clip(falloff, 0.0, 1.0))
+    bias = np.array([1.0 + f, 1.0, 1.0 - 0.5 * f], np.float32)
+    weights = base_w * bias
+    weights /= weights.sum()
+    glow = np.zeros_like(base)
+    for s, wgt in zip(scales, weights):
+        glow += _aniso_blur(src, r * s + 1e-3, aspect) * float(wgt)
+
+    k = 1.0 + float(np.clip(epsilon, 0.0, 1.0)) * 8.0
+    core = base * (mask[..., None] ** k)
+    core_glow = _aniso_blur(core, max(r * 0.25, 1e-3), aspect) * float(np.clip(epsilon, 0.0, 1.0))
+
+    out = base + (glow + core_glow) * float(intensity)
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
 EFFECTS = {
