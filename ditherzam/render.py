@@ -111,13 +111,12 @@ class RenderPipeline:
         engine = self.color_engine
         if engine is not None:
             engine = _engine_for_settings(engine, settings)
-            rgb = engine.map(d).astype(np.float32)
+            rgb = engine.map(d)
         else:
-            rgb = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
+            rgb = np.asarray(d, np.float32)
 
-        # 7: saturation (RGB float32) then clamp to uint8
-        rgb = apply_saturation(rgb, settings.saturation)
-        rgb_u8 = clamp_u8(rgb)
+        # 7: saturation and clamp fused into the final RGB uint8 allocation.
+        rgb_u8 = apply_saturation(rgb, settings.saturation, output_u8=True)
 
         # 8: effects stack (RGB uint8) — snapshot once, same reassignment race.
         stack = self.effect_stack
@@ -204,9 +203,9 @@ class RenderPipeline:
             col_sig = _color_sig(engine)
             if dirty or c.get("col_sig") != col_sig or "colored" not in c:
                 if engine is not None:
-                    colored = engine.map(d).astype(np.float32)
+                    colored = engine.map(d)
                 else:
-                    colored = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
+                    colored = np.asarray(d, np.float32)
                 c["col_sig"] = col_sig
                 c["colored"] = colored
                 dirty = True
@@ -214,7 +213,7 @@ class RenderPipeline:
 
             # L4: saturation then clamp to uint8
             if dirty or c.get("sat_sig") != settings.saturation or "satout" not in c:
-                satout = clamp_u8(apply_saturation(colored, settings.saturation))
+                satout = apply_saturation(colored, settings.saturation, output_u8=True)
                 c["sat_sig"] = settings.saturation
                 c["satout"] = satout
                 dirty = True

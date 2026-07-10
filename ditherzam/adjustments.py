@@ -1,5 +1,6 @@
 from __future__ import annotations
 import numpy as np
+from numba import njit, prange
 from PIL import Image, ImageFilter
 from .imaging import clamp_u8
 
@@ -30,11 +31,60 @@ def apply_invert(img: np.ndarray, enabled: bool) -> np.ndarray:
     return (255.0 - img).astype(np.float32) if enabled else img
 
 
-def apply_saturation(rgb: np.ndarray, value: float) -> np.ndarray:
+@njit(cache=True, parallel=True)
+def _saturation_rgb_u8(rgb: np.ndarray, factor: np.float32) -> np.ndarray:
+    h, w = rgb.shape[:2]
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for y in prange(h):
+        for x in range(w):
+            r = np.float32(rgb[y, x, 0])
+            g = np.float32(rgb[y, x, 1])
+            b = np.float32(rgb[y, x, 2])
+            lum = ((np.float32(0.299) * r + np.float32(0.587) * g)
+                   + np.float32(0.114) * b)
+            for channel, source in ((0, r), (1, g), (2, b)):
+                adjusted = lum + (source - lum) * factor
+                adjusted = min(np.float32(255.0), max(np.float32(0.0), adjusted))
+                out[y, x, channel] = adjusted
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _saturation_gray_u8(gray: np.ndarray, factor: np.float32) -> np.ndarray:
+    h, w = gray.shape
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for y in prange(h):
+        for x in range(w):
+            source = np.float32(gray[y, x])
+            # Preserve the legacy RGB-repeat calculation, including its rare
+            # neutral-50 one-byte truncation differences.
+            lum = ((np.float32(0.299) * source + np.float32(0.587) * source)
+                   + np.float32(0.114) * source)
+            adjusted = lum + (source - lum) * factor
+            adjusted = min(np.float32(255.0), max(np.float32(0.0), adjusted))
+            byte = np.uint8(adjusted)
+            out[y, x, 0] = byte
+            out[y, x, 1] = byte
+            out[y, x, 2] = byte
+    return out
+
+
+def apply_saturation_u8(gray_or_rgb: np.ndarray, value: float) -> np.ndarray:
+    """Apply saturation and clamp directly into the final RGB uint8 frame."""
+    image = np.asarray(gray_or_rgb)
+    factor = np.float32(value / 50.0)
+    if image.ndim == 2:
+        return _saturation_gray_u8(image, factor)
+    return _saturation_rgb_u8(image[..., :3], factor)
+
+
+def apply_saturation(rgb: np.ndarray, value: float, *, output_u8: bool = False) -> np.ndarray:
     """Scale color saturation about per-pixel luminance.
 
     value in 0..100; 50 = identity, 0 = grayscale, 100 = 2x saturation.
     """
+    if output_u8:
+        return apply_saturation_u8(rgb, value)
     factor = value / 50.0
     lum = (
         0.299 * rgb[..., 0]
