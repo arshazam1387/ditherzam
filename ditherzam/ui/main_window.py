@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
 
 from ditherzam.dithering import registry as _dither_registry
 from ditherzam.color.context import ColorContextCache
-from ditherzam.render import RenderPipeline
+from ditherzam.render import RenderCancelled, RenderPipeline
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
@@ -55,23 +55,26 @@ _EFFECT_DEFAULTS: dict[str, dict] = {
 class _RenderSignals(QObject):
     finished = Signal(QImage, object)   # (image, RenderRequest)
     failed = Signal(object)             # RenderRequest
+    cancelled = Signal(object)          # RenderRequest -- distinct from failed: not an error
 
 
 class _RenderWorker(QRunnable):
     """Runs one render off the GUI thread for an immutable RenderRequest."""
 
     def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray,
-                 request: RenderRequest):
+                 request: RenderRequest, is_cancelled=None):
         super().__init__()
         self._pipeline = pipeline
         self._base_gray = base_gray
         self._request = request
+        self._is_cancelled = is_cancelled
         self.signals = _RenderSignals()
 
     def run(self) -> None:
         # A render raising here would otherwise never emit `finished`, so the
         # scheduler's `_busy` flag would stick True and freeze all future renders.
-        # Always report an outcome (finished OR failed) so the scheduler recovers.
+        # Always report an outcome (finished, failed, OR cancelled) so the
+        # scheduler recovers -- exactly one terminal signal per run.
         try:
             # Apply the request's snapshotted color/effect context -- never the
             # pipeline's *current* attributes, which the GUI thread may have
@@ -81,10 +84,15 @@ class _RenderWorker(QRunnable):
             if self._request.mode == "proxy":
                 rgb = render_preview(self._pipeline, self._base_gray,
                                      self._request.settings,
-                                     self._request.target_max_side)
+                                     self._request.target_max_side,
+                                     is_cancelled=self._is_cancelled)
             else:
-                rgb = self._pipeline.render_cached(self._base_gray, self._request.settings)
+                rgb = self._pipeline.render_cached(self._base_gray, self._request.settings,
+                                                    is_cancelled=self._is_cancelled)
             qimg = numpy_to_qimage(rgb)
+        except RenderCancelled:
+            self.signals.cancelled.emit(self._request)
+            return
         except Exception:
             import traceback
             traceback.print_exc()
@@ -698,9 +706,11 @@ class ImageEditor(QMainWindow):
 
     def _launch_worker(self, request: RenderRequest) -> None:
         """Start one background render for an already-stamped request."""
-        worker = _RenderWorker(self.pipeline, self._base_gray, request)
+        worker = _RenderWorker(self.pipeline, self._base_gray, request,
+                                is_cancelled=lambda: self._scheduler.should_cancel(request))
         worker.signals.finished.connect(self._on_rendered)
         worker.signals.failed.connect(self._on_render_failed)
+        worker.signals.cancelled.connect(self._on_render_cancelled)
         self._pool.start(worker)
 
     def _on_rendered(self, qimg: QImage, request: RenderRequest) -> None:
@@ -721,6 +731,13 @@ class ImageEditor(QMainWindow):
     def _on_render_failed(self, request: RenderRequest) -> None:
         # A background render raised (already logged in the worker). Don't paint,
         # but release the scheduler so rendering recovers instead of freezing.
+        nxt = self._scheduler.on_finished()
+        if nxt is not None:
+            self._launch_worker(nxt)
+
+    def _on_render_cancelled(self, request: RenderRequest) -> None:
+        # Obsolete by design, not an error -- don't paint, but still release the
+        # scheduler and run the trailing request that made this one obsolete.
         nxt = self._scheduler.on_finished()
         if nxt is not None:
             self._launch_worker(nxt)

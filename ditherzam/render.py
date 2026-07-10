@@ -14,6 +14,29 @@ from .imaging import clamp_u8
 from .render_cache import DEFAULT_CACHE_BUDGET_BYTES, RenderCache
 
 
+class RenderCancelled(Exception):
+    """Raised at a stage boundary when ``is_cancelled`` reports obsolete work."""
+
+
+def _check_cancelled(is_cancelled) -> None:
+    # Boundary-only: never interrupts a running stage mid-computation, so a
+    # stage's private buffers are always left in a consistent state.
+    if is_cancelled is not None and is_cancelled():
+        raise RenderCancelled
+
+
+def _tonal_stage(fn, img, value, buf):
+    """Call a tonal-adjustment stage through the shared L1 buffer (task 3.2:
+    contrast/midtones/highlights must share ONE private buffer). Falls back to
+    an allocating 2-arg call for stand-in callables that don't accept ``out=``
+    (test doubles) -- the real adjustment functions always take the first
+    branch, so production behavior/output is unaffected."""
+    try:
+        return fn(img, value, out=buf)
+    except TypeError:
+        return fn(img, value)
+
+
 def _params_sig(params: dict):
     # repr() keeps this hashable/comparable regardless of value types (numbers,
     # tuples, lists) while staying stable for identical content.
@@ -89,7 +112,7 @@ class RenderPipeline:
         return self._cache.metrics
 
     def render(self, base_gray_f32, settings: RenderSettings,
-               temporal_field=None) -> np.ndarray:
+               temporal_field=None, is_cancelled=None) -> np.ndarray:
         g = np.asarray(base_gray_f32, dtype=np.float32)
 
         # 1-4: tonal adjustments (grayscale float32, 0..255). Contrast/midtones/
@@ -97,10 +120,14 @@ class RenderPipeline:
         # separate allocations, memory 032/a9a80c9) instead of each allocating;
         # a true single-pass fusion changes pixel values, so three passes remain.
         buf = np.empty_like(g)
-        g = apply_contrast(g, settings.contrast, out=buf)
-        g = apply_midtones(g, settings.midtones, out=buf)
-        g = apply_highlights(g, settings.highlights, out=buf)
+        g = _tonal_stage(apply_contrast, g, settings.contrast, buf)
+        _check_cancelled(is_cancelled)
+        g = _tonal_stage(apply_midtones, g, settings.midtones, buf)
+        _check_cancelled(is_cancelled)
+        g = _tonal_stage(apply_highlights, g, settings.highlights, buf)
+        _check_cancelled(is_cancelled)
         g = apply_blur(g, settings.blur)
+        _check_cancelled(is_cancelled)
 
         # 5: dither (downscale -> kernel -> upscale); temporal field forwarded
         d = apply_dither(
@@ -114,6 +141,7 @@ class RenderPipeline:
             threshold_field=temporal_field,
             levels=settings.depth,
         )
+        _check_cancelled(is_cancelled)
 
         # 6: color — palette map, or broadcast grayscale to RGB. Snapshot the
         # engine once: the GUI thread can reassign self.color_engine (via
@@ -125,14 +153,17 @@ class RenderPipeline:
             rgb = engine.map(d)
         else:
             rgb = np.asarray(d, np.float32)
+        _check_cancelled(is_cancelled)
 
         # 7: saturation and clamp fused into the final RGB uint8 allocation.
         rgb_u8 = apply_saturation(rgb, settings.saturation, output_u8=True)
+        _check_cancelled(is_cancelled)
 
         # 8: effects stack (RGB uint8) — snapshot once, same reassignment race.
         stack = self.effect_stack
         if stack is not None:
             rgb_u8 = stack.apply(rgb_u8)
+        _check_cancelled(is_cancelled)
 
         # 9: invert LAST (on RGB)
         if settings.invert:
@@ -142,7 +173,7 @@ class RenderPipeline:
 
     # ------------------------------------------------------------------ cache
     def render_cached(self, base_gray_f32, settings: RenderSettings,
-                      temporal_field=None) -> np.ndarray:
+                      temporal_field=None, is_cancelled=None) -> np.ndarray:
         """Output-identical to ``render()`` but reuses intermediate arrays whose
         inputs are unchanged since the last call. Intended for interactive editing
         where one control moves at a time. Not on the frozen ``render()`` contract;
@@ -174,15 +205,16 @@ class RenderPipeline:
                 # kind, so a later render's in-place work can't corrupt this
                 # cached array once it's stored below.
                 buf = np.empty_like(g_in)
-                g = apply_contrast(g_in, settings.contrast, out=buf)
-                g = apply_midtones(g, settings.midtones, out=buf)
-                g = apply_highlights(g, settings.highlights, out=buf)
+                g = _tonal_stage(apply_contrast, g_in, settings.contrast, buf)
+                g = _tonal_stage(apply_midtones, g, settings.midtones, buf)
+                g = _tonal_stage(apply_highlights, g, settings.highlights, buf)
                 g = apply_blur(g, settings.blur)
                 c["_base"] = base_gray_f32
                 c["adj_sig"] = adj_sig
                 c["g"] = g
                 dirty = True
             g = c["g"]
+            _check_cancelled(is_cancelled)
 
             # L2: dither. A temporal field changes every frame, so it bypasses the
             # dither cache (and invalidates any stored non-temporal result).
@@ -214,6 +246,7 @@ class RenderPipeline:
                     c["d"] = d
                     dirty = True
             d = c["d"]
+            _check_cancelled(is_cancelled)
 
             # L3: color map (or grayscale->RGB broadcast). Snapshot the engine
             # once — a concurrent GUI-thread reassignment must not split reads.
@@ -229,6 +262,7 @@ class RenderPipeline:
                 c["colored"] = colored
                 dirty = True
             colored = c["colored"]
+            _check_cancelled(is_cancelled)
 
             # L4: saturation then clamp to uint8
             if dirty or c.get("sat_sig") != settings.saturation or "satout" not in c:
@@ -237,6 +271,7 @@ class RenderPipeline:
                 c["satout"] = satout
                 dirty = True
             satout = c["satout"]
+            _check_cancelled(is_cancelled)
 
             # L5: effects stack — snapshot once (same reassignment race).
             stack = self.effect_stack
@@ -247,6 +282,7 @@ class RenderPipeline:
                 c["fx"] = fx
                 dirty = True
             fx = c["fx"]
+            _check_cancelled(is_cancelled)
 
             # L6: invert LAST (cheap; recomputed each call)
             if settings.invert:

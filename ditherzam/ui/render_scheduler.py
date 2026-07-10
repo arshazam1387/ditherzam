@@ -50,6 +50,11 @@ class RenderScheduler:
         """True if ``req`` is the most-recently-started render (should paint)."""
         return req.generation == self._gen
 
+    def should_cancel(self, req: RenderRequest) -> bool:
+        """True if ``req`` is in flight but a newer trailing request already
+        obsoletes it -- the worker should stop at its next stage boundary."""
+        return self.is_current(req) and self._pending is not None
+
     def invalidate(self) -> None:
         """Mark any in-flight render stale (e.g. a synchronous render_now
         painted). Its delivered result will fail ``is_current`` and not paint.
