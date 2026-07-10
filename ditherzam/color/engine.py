@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from numba import njit, prange
 
 from ..imaging import clamp_u8
 from .palette import Palette
 from .context import DEFAULT_COLOR_CONTEXT_CACHE, ColorContextCache
+
+# Dev/regression setting: reproduce the pre-5eb0ee6 "Option B" legacy ramp
+# luminance path (BLAS matmul, position-dependent under SIMD block/remainder
+# splits) instead of the default position-independent "Option A" scalar
+# kernels. Global (not per-engine) so preview and export never diverge from
+# each other. Intended to be set via the env var at process start; flipping
+# it mid-session with a warm render cache may surface stale cached output.
+RAMP_EXACT_BLAS_LUMINANCE = os.environ.get(
+    "DITHERZAM_RAMP_EXACT_BLAS", ""
+).strip().lower() in ("1", "true", "yes", "on")
 
 
 @njit(cache=True, parallel=True)
@@ -256,6 +268,18 @@ class ColorEngine:
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
         if self.mode == "ramp":
+            if RAMP_EXACT_BLAS_LUMINANCE:
+                # Option B: exact pre-5eb0ee6 behavior, BLAS matmul and all.
+                rgb = _to_rgb(gray_or_rgb_f32)
+                ramp = self._get_ramp()
+                depth = ramp.shape[0]
+                gray = rgb[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32)
+                if depth == 1:
+                    level = np.zeros(gray.shape, np.int64)
+                else:
+                    level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1)
+                    level = level.astype(np.int64)
+                return clamp_u8(ramp[level])
             image = np.asarray(gray_or_rgb_f32, dtype=np.float32)
             ramp = np.ascontiguousarray(self._get_ramp(), dtype=np.float32)
             if image.ndim == 2:
