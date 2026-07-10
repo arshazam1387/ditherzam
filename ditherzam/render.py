@@ -22,7 +22,21 @@ def _params_sig(params: dict):
 def _color_sig(engine):
     if engine is None:
         return (None,)
-    return (engine.mode, engine.palette.name, engine.palette.colors.tobytes())
+    context = getattr(engine, "context", None)
+    if context is not None:
+        return context.key
+    colors = np.asarray(engine.palette.colors)
+    return (engine.mode, colors.shape, colors.dtype.str,
+            colors.tobytes(order="C"), getattr(engine, "depth", None),
+            getattr(engine, "mapping", None), getattr(engine, "phase", None))
+
+
+def _engine_for_settings(engine, settings):
+    if engine is not None and getattr(engine, "mode", None) == "ramp":
+        return engine.with_settings(
+            depth=settings.depth, mapping=settings.color_mapping
+        )
+    return engine
 
 
 def _effect_sig(stack):
@@ -96,9 +110,7 @@ class RenderPipeline:
         # split read would dereference None mid-render.
         engine = self.color_engine
         if engine is not None:
-            if getattr(engine, "mode", None) == "ramp":
-                engine.depth = settings.depth
-                engine.mapping = settings.color_mapping
+            engine = _engine_for_settings(engine, settings)
             rgb = engine.map(d).astype(np.float32)
         else:
             rgb = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
@@ -188,12 +200,10 @@ class RenderPipeline:
             # L3: color map (or grayscale->RGB broadcast). Snapshot the engine
             # once — a concurrent GUI-thread reassignment must not split reads.
             engine = self.color_engine
-            col_sig = _color_sig(engine) + (settings.depth, settings.color_mapping)
+            engine = _engine_for_settings(engine, settings)
+            col_sig = _color_sig(engine)
             if dirty or c.get("col_sig") != col_sig or "colored" not in c:
                 if engine is not None:
-                    if getattr(engine, "mode", None) == "ramp":
-                        engine.depth = settings.depth
-                        engine.mapping = settings.color_mapping
                     colored = engine.map(d).astype(np.float32)
                 else:
                     colored = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)

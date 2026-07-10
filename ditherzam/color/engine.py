@@ -5,7 +5,7 @@ from numba import njit, prange
 
 from ..imaging import clamp_u8
 from .palette import Palette
-from .ramp import build_ramp
+from .context import DEFAULT_COLOR_CONTEXT_CACHE, ColorContextCache
 
 
 @njit(cache=True, parallel=True)
@@ -217,22 +217,42 @@ def _to_rgb(img: np.ndarray) -> np.ndarray:
 
 class ColorEngine:
     def __init__(self, palette: Palette, mode: str = "nearest", *,
-                 depth: int = 2, mapping: str = "match", phase: float = 0.0) -> None:
+                 depth: int = 2, mapping: str = "match", phase: float = 0.0,
+                 context_cache: ColorContextCache | None = None) -> None:
         self.palette = palette
         self.mode = mode
         self.depth = depth
         self.mapping = mapping
         self.phase = phase
-        self._ramp = None
-        self._ramp_key = None
+        self.context_cache = context_cache or DEFAULT_COLOR_CONTEXT_CACHE
+
+    @property
+    def context(self):
+        # Keep legacy direct field assignment source-compatible while ensuring
+        # derived state always follows the engine's current complete settings.
+        return self.context_cache.get(
+            self.palette, self.mode, self.depth, self.mapping, self.phase
+        )
 
     def _get_ramp(self) -> np.ndarray:
-        key = (self.palette.colors.tobytes(), int(self.depth),
-               self.mapping, float(self.phase))
-        if self._ramp_key != key:
-            self._ramp = build_ramp(self.palette, self.depth, self.mapping, self.phase)
-            self._ramp_key = key
-        return self._ramp
+        if self.context.ramp is None:
+            raise RuntimeError("ramp requested from a non-ramp color context")
+        return self.context.ramp
+
+    def with_settings(self, **changes) -> "ColorEngine":
+        """Return an engine derived from this one without mutating shared state."""
+        allowed = {"palette", "mode", "depth", "mapping", "phase"}
+        unknown = changes.keys() - allowed
+        if unknown:
+            raise TypeError(f"unknown color settings: {sorted(unknown)!r}")
+        return ColorEngine(
+            changes.get("palette", self.palette),
+            changes.get("mode", self.mode),
+            depth=changes.get("depth", self.depth),
+            mapping=changes.get("mapping", self.mapping),
+            phase=changes.get("phase", self.phase),
+            context_cache=self.context_cache,
+        )
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
         if self.mode == "ramp":
@@ -244,7 +264,7 @@ class ColorEngine:
         rgb = _to_rgb(gray_or_rgb_f32)
         if self.mode == "off":
             return clamp_u8(rgb)
-        pal = self.palette.colors.astype(np.float32)
+        pal = self.context.palette_colors
         if self.mode == "nearest":
             idx = nearest_indices(rgb, pal)
             return clamp_u8(pal[idx])
