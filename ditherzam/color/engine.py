@@ -49,27 +49,105 @@ def nearest_indices(rgb_f32: np.ndarray, palette_f32: np.ndarray) -> np.ndarray:
     return _nearest_indices_njit(rgb, pal)
 
 
-def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+@njit(cache=True, parallel=True)
+def _ordered_rgb_njit(rgb_f32, pal_f32, bayer_f32):
+    """Bayer-bias and palette-map RGB directly, without frame intermediates."""
+    h, w = rgb_f32.shape[:2]
+    k = pal_f32.shape[0]
+    mh, mw = bayer_f32.shape
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    spread = np.float32(255.0 / max(1, k - 1))
+    for y in prange(h):
+        for x in range(w):
+            offset = bayer_f32[y % mh, x % mw] * spread
+            r = rgb_f32[y, x, 0] + offset
+            g = rgb_f32[y, x, 1] + offset
+            b = rgb_f32[y, x, 2] + offset
+
+            dr = r - pal_f32[0, 0]
+            dg = g - pal_f32[0, 1]
+            db = b - pal_f32[0, 2]
+            best_distance = (dr * dr + dg * dg) + db * db
+            best_index = 0
+            for i in range(1, k):
+                dr = r - pal_f32[i, 0]
+                dg = g - pal_f32[i, 1]
+                db = b - pal_f32[i, 2]
+                distance = (dr * dr + dg * dg) + db * db
+                if distance < best_distance:
+                    best_distance = distance
+                    best_index = i
+
+            # Palette colors are constrained to 0..255. Assignment preserves
+            # clamp_u8's truncation for fractional extracted-palette colors.
+            out[y, x, 0] = pal_f32[best_index, 0]
+            out[y, x, 1] = pal_f32[best_index, 1]
+            out[y, x, 2] = pal_f32[best_index, 2]
+    return out
+
+
+@njit(cache=True)
+def _floyd_steinberg_rgb_njit(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+    """Sequential scalar RGB Floyd-Steinberg with first-minimum palette ties."""
     h, w = rgb.shape[:2]
-    work = rgb.astype(np.float32).copy()
+    work = rgb.copy()
     out = np.empty((h, w, 3), dtype=np.float32)
+    weight_right = np.float32(7.0 / 16.0)
+    weight_down_left = np.float32(3.0 / 16.0)
+    weight_down = np.float32(5.0 / 16.0)
+    weight_down_right = np.float32(1.0 / 16.0)
     for y in range(h):
         for x in range(w):
-            old = work[y, x].copy()
-            diff = pal - old
-            idx = int((diff * diff).sum(axis=1).argmin())
-            new = pal[idx]
-            out[y, x] = new
-            err = old - new
+            old_r = work[y, x, 0]
+            old_g = work[y, x, 1]
+            old_b = work[y, x, 2]
+
+            dr = pal[0, 0] - old_r
+            dg = pal[0, 1] - old_g
+            db = pal[0, 2] - old_b
+            best_distance = (dr * dr + dg * dg) + db * db
+            best_index = 0
+            for i in range(1, pal.shape[0]):
+                dr = pal[i, 0] - old_r
+                dg = pal[i, 1] - old_g
+                db = pal[i, 2] - old_b
+                distance = (dr * dr + dg * dg) + db * db
+                if distance < best_distance:
+                    best_distance = distance
+                    best_index = i
+
+            new_r = pal[best_index, 0]
+            new_g = pal[best_index, 1]
+            new_b = pal[best_index, 2]
+            out[y, x, 0] = new_r
+            out[y, x, 1] = new_g
+            out[y, x, 2] = new_b
+            err_r = old_r - new_r
+            err_g = old_g - new_g
+            err_b = old_b - new_b
             if x + 1 < w:
-                work[y, x + 1] += err * (7.0 / 16.0)
+                work[y, x + 1, 0] += err_r * weight_right
+                work[y, x + 1, 1] += err_g * weight_right
+                work[y, x + 1, 2] += err_b * weight_right
             if y + 1 < h:
                 if x - 1 >= 0:
-                    work[y + 1, x - 1] += err * (3.0 / 16.0)
-                work[y + 1, x] += err * (5.0 / 16.0)
+                    work[y + 1, x - 1, 0] += err_r * weight_down_left
+                    work[y + 1, x - 1, 1] += err_g * weight_down_left
+                    work[y + 1, x - 1, 2] += err_b * weight_down_left
+                work[y + 1, x, 0] += err_r * weight_down
+                work[y + 1, x, 1] += err_g * weight_down
+                work[y + 1, x, 2] += err_b * weight_down
                 if x + 1 < w:
-                    work[y + 1, x + 1] += err * (1.0 / 16.0)
+                    work[y + 1, x + 1, 0] += err_r * weight_down_right
+                    work[y + 1, x + 1, 1] += err_g * weight_down_right
+                    work[y + 1, x + 1, 2] += err_b * weight_down_right
     return out
+
+
+def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+    rgb_f32 = np.ascontiguousarray(rgb, dtype=np.float32)
+    pal_f32 = np.ascontiguousarray(pal, dtype=np.float32)
+    return _floyd_steinberg_rgb_njit(rgb_f32, pal_f32)
 
 
 def _bayer_matrix(n: int) -> np.ndarray:
@@ -132,15 +210,9 @@ class ColorEngine:
             idx = nearest_indices(rgb, pal)
             return clamp_u8(pal[idx])
         if self.mode == "ordered":
-            k = pal.shape[0]
-            spread = 255.0 / max(1, k - 1)
-            h, w = rgb.shape[:2]
-            mh, mw = _BAYER4.shape
-            offset = _BAYER4[np.arange(h)[:, None] % mh,
-                             np.arange(w)[None, :] % mw]
-            biased = rgb + offset[:, :, None] * spread
-            idx = nearest_indices(biased.astype(np.float32), pal)
-            return clamp_u8(pal[idx])
+            rgb_f32 = np.ascontiguousarray(rgb, dtype=np.float32)
+            pal_f32 = np.ascontiguousarray(pal, dtype=np.float32)
+            return _ordered_rgb_njit(rgb_f32, pal_f32, _BAYER4)
         if self.mode == "diffused":
             return clamp_u8(_floyd_steinberg_rgb(rgb, pal))
         raise ValueError(f"unknown ColorEngine mode: {self.mode!r}")

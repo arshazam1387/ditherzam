@@ -18,9 +18,12 @@ from ditherzam.color.palette import builtin_palettes
 from ditherzam.effects.stack import EffectStack
 
 SIZES = {
+    "480p": (480, 854),
+    "720p": (720, 1280),
     "512": (512, 512),
     "1080p": (1080, 1920),   # (H, W)
     "4K": (2160, 3840),
+    "5K": (2880, 5120),
 }
 
 

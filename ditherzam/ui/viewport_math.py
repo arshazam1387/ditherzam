@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 
 def next_zoom(current, direction, factor_in=1.2, factor_out=0.8,
               zmax=100.0, zmin=0.01):
@@ -37,3 +39,19 @@ def clamp_velocity(v, scale=0.5, maximum=2000.0):
 def zoom_percent(m11) -> int:
     """Integer zoom percent from a view transform's horizontal scale (m11)."""
     return int(m11 * 100)
+
+
+def viewport_device_size(logical_width, logical_height, device_pixel_ratio):
+    """Return drawable viewport demand in device pixels.
+
+    Rounding up avoids selecting a preview that is one device pixel too small
+    when a fractional display scale is active.
+    """
+    if logical_width <= 0 or logical_height <= 0:
+        raise ValueError("viewport dimensions must be positive")
+    if device_pixel_ratio <= 0:
+        raise ValueError("device pixel ratio must be positive")
+    return (
+        int(math.ceil(logical_width * device_pixel_ratio)),
+        int(math.ceil(logical_height * device_pixel_ratio)),
+    )
