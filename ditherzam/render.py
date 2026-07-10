@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import threading
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
 
@@ -25,16 +27,33 @@ def _check_cancelled(is_cancelled) -> None:
         raise RenderCancelled
 
 
+@lru_cache(maxsize=None)
+def _accepts_out(fn) -> bool:
+    # True iff ``fn`` can receive ``out=`` -- either an explicit ``out``
+    # parameter (real adjustment funcs) or a ``**kwargs`` catch-all (e.g. a
+    # MagicMock, whose signature is ``(*args, **kwargs)``). Cached per function
+    # object (monkeypatched doubles are distinct objects, so each is inspected
+    # once). Dispatch stays OUT of the live execution path: no try/except around
+    # the stage body, so a real error propagates and the stage runs exactly once.
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "out" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
 def _tonal_stage(fn, img, value, buf):
     """Call a tonal-adjustment stage through the shared L1 buffer (task 3.2:
-    contrast/midtones/highlights must share ONE private buffer). Falls back to
-    an allocating 2-arg call for stand-in callables that don't accept ``out=``
-    (test doubles) -- the real adjustment functions always take the first
-    branch, so production behavior/output is unaffected."""
-    try:
+    contrast/midtones/highlights must share ONE private buffer) when ``fn``
+    accepts ``out=``. Production stages always do, so they take the fused
+    ``out=buf`` branch every call; 2-arg test doubles take the allocating
+    branch. The stage runs exactly once -- dispatch is by signature, not by
+    catching a TypeError around live execution."""
+    if _accepts_out(fn):
         return fn(img, value, out=buf)
-    except TypeError:
-        return fn(img, value)
+    return fn(img, value)
 
 
 def _params_sig(params: dict):
