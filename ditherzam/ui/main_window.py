@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from ditherzam.dithering import registry as _dither_registry
+from ditherzam.color.context import ColorContextCache
 from ditherzam.render import RenderPipeline
 
 from .controls import ControlPanel
@@ -123,6 +124,10 @@ class ImageEditor(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
         self._registry = registry or _dither_registry
+        # Engines are immutable request snapshots, while their palette-derived
+        # data is safe to reuse for the lifetime of this editor.  Keeping the
+        # cache editor-owned avoids global cross-document retention.
+        self._color_context_cache = ColorContextCache()
         self.pipeline = RenderPipeline(self._registry, color_engine, effect_stack)
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
@@ -382,7 +387,11 @@ class ImageEditor(QMainWindow):
         if palette is None:
             return None
         from ..color.engine import ColorEngine
-        return ColorEngine(palette, self._color_mode())
+        return ColorEngine(
+            palette,
+            self._color_mode(),
+            context_cache=self._color_context_cache,
+        )
 
     def _current_effect_stack(self):
         from ..effects.stack import EffectStack
