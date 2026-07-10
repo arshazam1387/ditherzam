@@ -92,10 +92,14 @@ class RenderPipeline:
                temporal_field=None) -> np.ndarray:
         g = np.asarray(base_gray_f32, dtype=np.float32)
 
-        # 1-4: tonal adjustments (grayscale float32, 0..255)
-        g = apply_contrast(g, settings.contrast)
-        g = apply_midtones(g, settings.midtones)
-        g = apply_highlights(g, settings.highlights)
+        # 1-4: tonal adjustments (grayscale float32, 0..255). Contrast/midtones/
+        # highlights share ONE private buffer (proven byte-identical to three
+        # separate allocations, memory 032/a9a80c9) instead of each allocating;
+        # a true single-pass fusion changes pixel values, so three passes remain.
+        buf = np.empty_like(g)
+        g = apply_contrast(g, settings.contrast, out=buf)
+        g = apply_midtones(g, settings.midtones, out=buf)
+        g = apply_highlights(g, settings.highlights, out=buf)
         g = apply_blur(g, settings.blur)
 
         # 5: dither (downscale -> kernel -> upscale); temporal field forwarded
@@ -166,9 +170,13 @@ class RenderPipeline:
                        settings.highlights, settings.blur)
             if (c.get("_base") is not base_gray_f32 or c.get("adj_sig") != adj_sig
                     or "g" not in c):
-                g = apply_contrast(g_in, settings.contrast)
-                g = apply_midtones(g, settings.midtones)
-                g = apply_highlights(g, settings.highlights)
+                # Fresh, call-private buffer -- never the shared/module-global
+                # kind, so a later render's in-place work can't corrupt this
+                # cached array once it's stored below.
+                buf = np.empty_like(g_in)
+                g = apply_contrast(g_in, settings.contrast, out=buf)
+                g = apply_midtones(g, settings.midtones, out=buf)
+                g = apply_highlights(g, settings.highlights, out=buf)
                 g = apply_blur(g, settings.blur)
                 c["_base"] = base_gray_f32
                 c["adj_sig"] = adj_sig

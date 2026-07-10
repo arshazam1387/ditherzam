@@ -5,17 +5,30 @@ from PIL import Image, ImageFilter
 from .imaging import clamp_u8
 
 
-def apply_contrast(img: np.ndarray, value: float) -> np.ndarray:
-    return (img * (value / 50.0)).astype(np.float32)
+def apply_contrast(img: np.ndarray, value: float, out: np.ndarray | None = None) -> np.ndarray:
+    if out is None:
+        return (img * (value / 50.0)).astype(np.float32)
+    # Same ufunc computation as the allocating path, just targeting a caller-
+    # owned buffer (proven byte-identical: benchmarks/adjustment_fusion.py).
+    np.multiply(img, value / 50.0, out=out)
+    return out
 
 
-def apply_midtones(img: np.ndarray, value: float) -> np.ndarray:
+def apply_midtones(img: np.ndarray, value: float, out: np.ndarray | None = None) -> np.ndarray:
     gamma = max(1.0 + (value - 50) / 200.0, 0.1)
-    return (255.0 * (img / 255.0) ** (1.0 / gamma)).astype(np.float32)
+    if out is None:
+        return (255.0 * (img / 255.0) ** (1.0 / gamma)).astype(np.float32)
+    np.divide(img, 255.0, out=out)
+    np.power(out, 1.0 / gamma, out=out)
+    np.multiply(out, 255.0, out=out)
+    return out
 
 
-def apply_highlights(img: np.ndarray, value: float) -> np.ndarray:
-    return (img * (1.0 + (value - 50) / 100.0)).astype(np.float32)
+def apply_highlights(img: np.ndarray, value: float, out: np.ndarray | None = None) -> np.ndarray:
+    if out is None:
+        return (img * (1.0 + (value - 50) / 100.0)).astype(np.float32)
+    np.multiply(img, 1.0 + (value - 50) / 100.0, out=out)
+    return out
 
 
 def apply_blur(img: np.ndarray, value: float) -> np.ndarray:
