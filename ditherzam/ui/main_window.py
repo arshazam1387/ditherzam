@@ -25,7 +25,8 @@ from .preview_preferences import (
     load_preview_preferences,
     save_preview_preferences,
 )
-from .render_scheduler import RenderCoalescer
+from .render_request import RenderKind, RenderRequest
+from .render_scheduler import RenderScheduler
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
 from .settings_map import settings_from_controls
@@ -51,41 +52,44 @@ _EFFECT_DEFAULTS: dict[str, dict] = {
 
 
 class _RenderSignals(QObject):
-    finished = Signal(QImage, int)
-    failed = Signal(int)
+    finished = Signal(QImage, object)   # (image, RenderRequest)
+    failed = Signal(object)             # RenderRequest
 
 
 class _RenderWorker(QRunnable):
-    """Runs one render off the GUI thread and emits (QImage, generation token)."""
+    """Runs one render off the GUI thread for an immutable RenderRequest."""
 
-    def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray, settings,
-                 token: int, mode: str = "full", proxy_max_side: int = 640):
+    def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray,
+                 request: RenderRequest):
         super().__init__()
         self._pipeline = pipeline
         self._base_gray = base_gray
-        self._settings = settings
-        self._token = token
-        self._mode = mode
-        self._proxy_max_side = proxy_max_side
+        self._request = request
         self.signals = _RenderSignals()
 
     def run(self) -> None:
         # A render raising here would otherwise never emit `finished`, so the
-        # coalescer's `_busy` flag would stick True and freeze all future renders.
-        # Always report an outcome (finished OR failed) so the coalescer recovers.
+        # scheduler's `_busy` flag would stick True and freeze all future renders.
+        # Always report an outcome (finished OR failed) so the scheduler recovers.
         try:
-            if self._mode == "proxy":
-                rgb = render_preview(self._pipeline, self._base_gray, self._settings,
-                                     self._proxy_max_side)
+            # Apply the request's snapshotted color/effect context -- never the
+            # pipeline's *current* attributes, which the GUI thread may have
+            # since reassigned for a newer request.
+            self._pipeline.color_engine = self._request.color_engine
+            self._pipeline.effect_stack = self._request.effect_stack
+            if self._request.mode == "proxy":
+                rgb = render_preview(self._pipeline, self._base_gray,
+                                     self._request.settings,
+                                     self._request.target_max_side)
             else:
-                rgb = self._pipeline.render_cached(self._base_gray, self._settings)
+                rgb = self._pipeline.render_cached(self._base_gray, self._request.settings)
             qimg = numpy_to_qimage(rgb)
         except Exception:
             import traceback
             traceback.print_exc()
-            self.signals.failed.emit(self._token)
+            self.signals.failed.emit(self._request)
             return
-        self.signals.finished.emit(qimg, self._token)
+        self.signals.finished.emit(qimg, self._request)
 
 
 class ImageEditor(QMainWindow):
@@ -104,8 +108,7 @@ class ImageEditor(QMainWindow):
         self._debounce_ms = debounce_ms
         self._settle_ms = settle_ms
         self._proxy_max_side = proxy_max_side
-        self._render_mode = "full"
-        self._coalescer = RenderCoalescer()
+        self._scheduler = RenderScheduler()
         self._preference_store = preference_store or QSettings()
         self.preview_preferences = load_preview_preferences(self._preference_store)
 
@@ -517,7 +520,7 @@ class ImageEditor(QMainWindow):
             raise RuntimeError("No image loaded")
         self._debounce.stop()
         self._settle.stop()
-        self._coalescer.invalidate()  # supersede any in-flight background render
+        self._scheduler.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         rgb = self.pipeline.render_cached(self._base_gray, settings)
@@ -531,51 +534,65 @@ class ImageEditor(QMainWindow):
         self._settle.start(self._settle_ms)        # full-res once idle
 
     # ---- internals ----------------------------------------------------------
+    def _build_request(self, kind: RenderKind) -> RenderRequest:
+        """Snapshot current UI state into an immutable request. ``generation``
+        is a placeholder here -- the scheduler stamps the real value in
+        ``request()``/``on_finished()``."""
+        self._sync_pipeline()
+        settings = settings_from_controls(self.panel.state)
+        logical_size = self._reference_size()  # (w, h)
+        target_max_side = (self._proxy_max_side if kind is RenderKind.DRAG
+                           else max(logical_size))
+        return RenderRequest(
+            generation=0,
+            kind=kind,
+            settings=settings,
+            source_id=id(self._base_gray),
+            target_max_side=target_max_side,
+            logical_size=logical_size,
+            color_engine=self.pipeline.color_engine,
+            effect_stack=self.pipeline.effect_stack,
+        )
+
     def _do_render(self) -> None:
         """Debounce tick: request a fast proxy render."""
         if self._base_gray is None:
             return
-        self._render_mode = "proxy"
-        token = self._coalescer.request()
-        if token is not None:
-            self._launch_worker(token)
+        req = self._scheduler.request(self._build_request(RenderKind.DRAG))
+        if req is not None:
+            self._launch_worker(req)
 
     def _do_full_render(self) -> None:
         """Settle tick: request the exact full-resolution render."""
         if self._base_gray is None:
             return
-        self._render_mode = "full"
-        token = self._coalescer.request()
-        if token is not None:
-            self._launch_worker(token)
+        req = self._scheduler.request(self._build_request(RenderKind.SETTLE))
+        if req is not None:
+            self._launch_worker(req)
 
-    def _launch_worker(self, token: int) -> None:
-        """Snapshot the current state + mode and start one background render."""
-        self._sync_pipeline()
-        settings = settings_from_controls(self.panel.state)
-        worker = _RenderWorker(self.pipeline, self._base_gray, settings, token,
-                               mode=self._render_mode,
-                               proxy_max_side=self._proxy_max_side)
+    def _launch_worker(self, request: RenderRequest) -> None:
+        """Start one background render for an already-stamped request."""
+        worker = _RenderWorker(self.pipeline, self._base_gray, request)
         worker.signals.finished.connect(self._on_rendered)
         worker.signals.failed.connect(self._on_render_failed)
         self._pool.start(worker)
 
-    def _on_rendered(self, qimg: QImage, token: int) -> None:
+    def _on_rendered(self, qimg: QImage, request: RenderRequest) -> None:
         # Drop stale/out-of-order results; only the most-recently-started render
         # is painted.
-        if self._coalescer.is_current(token):
+        if self._scheduler.is_current(request):
             self.last_qimage = qimg
             self.viewport.set_pixmap(QPixmap.fromImage(qimg))
         # If state changed while this render was in flight, run one trailing render
-        # with the freshest state.
-        nxt = self._coalescer.on_finished()
+        # with the freshest, highest-priority state.
+        nxt = self._scheduler.on_finished()
         if nxt is not None:
             self._launch_worker(nxt)
 
-    def _on_render_failed(self, token: int) -> None:
+    def _on_render_failed(self, request: RenderRequest) -> None:
         # A background render raised (already logged in the worker). Don't paint,
-        # but release the coalescer so rendering recovers instead of freezing.
-        nxt = self._coalescer.on_finished()
+        # but release the scheduler so rendering recovers instead of freezing.
+        nxt = self._scheduler.on_finished()
         if nxt is not None:
             self._launch_worker(nxt)
 
