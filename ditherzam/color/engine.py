@@ -150,6 +150,50 @@ def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
     return _floyd_steinberg_rgb_njit(rgb_f32, pal_f32)
 
 
+@njit(cache=True, parallel=True)
+def _ramp_gray_njit(gray_f32: np.ndarray, ramp_f32: np.ndarray) -> np.ndarray:
+    """Map grayscale directly to a ramp without RGB, level, or mapped frames."""
+    h, w = gray_f32.shape
+    depth = ramp_f32.shape[0]
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for y in prange(h):
+        for x in range(w):
+            # A 2D input is already luminance, so do not manufacture RGB merely
+            # to apply weights whose float32 sum is 1.0.
+            gray = gray_f32[y, x]
+            level = 0
+            if depth > 1:
+                scaled = gray / np.float32(255.0) * np.float32(depth - 1)
+                level = int(np.rint(scaled))
+                level = min(depth - 1, max(0, level))
+            out[y, x, 0] = ramp_f32[level, 0]
+            out[y, x, 1] = ramp_f32[level, 1]
+            out[y, x, 2] = ramp_f32[level, 2]
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _ramp_rgb_njit(rgb_f32: np.ndarray, ramp_f32: np.ndarray) -> np.ndarray:
+    """Fuse Rec.601 luminance, banker rounding, clipping, and ramp lookup."""
+    h, w = rgb_f32.shape[:2]
+    depth = ramp_f32.shape[0]
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for y in prange(h):
+        for x in range(w):
+            gray = ((rgb_f32[y, x, 0] * np.float32(0.299)
+                     + rgb_f32[y, x, 1] * np.float32(0.587))
+                    + rgb_f32[y, x, 2] * np.float32(0.114))
+            level = 0
+            if depth > 1:
+                scaled = gray / np.float32(255.0) * np.float32(depth - 1)
+                level = int(np.rint(scaled))
+                level = min(depth - 1, max(0, level))
+            out[y, x, 0] = ramp_f32[level, 0]
+            out[y, x, 1] = ramp_f32[level, 1]
+            out[y, x, 2] = ramp_f32[level, 2]
+    return out
+
+
 def _bayer_matrix(n: int) -> np.ndarray:
     if n == 1:
         return np.zeros((1, 1), dtype=np.float32)
@@ -191,20 +235,15 @@ class ColorEngine:
         return self._ramp
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
+        if self.mode == "ramp":
+            image = np.asarray(gray_or_rgb_f32, dtype=np.float32)
+            ramp = np.ascontiguousarray(self._get_ramp(), dtype=np.float32)
+            if image.ndim == 2:
+                return _ramp_gray_njit(np.ascontiguousarray(image), ramp)
+            return _ramp_rgb_njit(np.ascontiguousarray(image[..., :3]), ramp)
         rgb = _to_rgb(gray_or_rgb_f32)
         if self.mode == "off":
             return clamp_u8(rgb)
-        if self.mode == "ramp":
-            ramp = self._get_ramp()
-            depth = ramp.shape[0]
-            gray = rgb[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32) \
-                if rgb.ndim == 3 else rgb
-            if depth == 1:
-                level = np.zeros(gray.shape, dtype=np.int64)
-            else:
-                level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1)
-                level = level.astype(np.int64)
-            return clamp_u8(ramp[level])
         pal = self.palette.colors.astype(np.float32)
         if self.mode == "nearest":
             idx = nearest_indices(rgb, pal)
