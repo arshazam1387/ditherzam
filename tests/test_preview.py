@@ -3,7 +3,53 @@ import numpy as np
 
 from ditherzam.dithering import registry
 from ditherzam.render import RenderPipeline, RenderSettings
-from ditherzam.ui.preview import proxy_factor, proxy_scale, render_preview
+from ditherzam.ui.preview import (
+    PREVIEW_RESOLUTIONS,
+    auto_preview_resolution,
+    normalize_preview_resolution,
+    preview_cap,
+    preview_target_size,
+    proxy_factor,
+    proxy_scale,
+    render_preview,
+    resize_preview_bucket,
+    zoom_preview_bucket,
+)
+
+
+def test_preview_resolution_parsing_and_caps():
+    assert PREVIEW_RESOLUTIONS == ("Auto", "480", "720", "1080", "1440", "2160", "Full")
+    assert normalize_preview_resolution(" auto ") == "Auto"
+    assert normalize_preview_resolution(1080) == "1080"
+    assert normalize_preview_resolution("FULL") == "Full"
+    assert normalize_preview_resolution("garbage") == "Auto"
+    assert preview_cap("1080", 4000) == 1080
+    assert preview_cap("Full", 4000) == 4000
+    assert preview_cap("480", 320) == 320
+
+
+def test_preview_target_size_preserves_aspect_and_never_upscales():
+    assert preview_target_size(2160, 3840, 1080) == (608, 1080)
+    assert preview_target_size(300, 400, 720) == (300, 400)
+    assert preview_target_size(1, 4000, 480) == (1, 480)
+
+
+def test_auto_resolution_is_viewport_aware_and_clamped_to_720_1440():
+    assert auto_preview_resolution((2160, 3840), (500, 300), 1.0) == 720
+    assert auto_preview_resolution((2160, 3840), (1000, 700), 1.0) == 1080
+    assert auto_preview_resolution((2160, 3840), (1600, 1000), 2.0) == 1440
+    # A small source is an exact render, not an artificial 720px upscale.
+    assert auto_preview_resolution((300, 400), (1600, 1000), 2.0) == 400
+
+
+def test_resize_and_zoom_helpers_change_only_at_buckets_and_respect_ceiling():
+    assert resize_preview_bucket(719) == 720
+    assert resize_preview_bucket(721) == 1080
+    assert resize_preview_bucket(2000) == 1440
+    assert zoom_preview_bucket(720, 721, 1440, 3840) == 1080
+    assert zoom_preview_bucket(1080, 1000, 1440, 3840) == 1080
+    assert zoom_preview_bucket(1080, 2000, 1440, 3840) == 1440
+    assert zoom_preview_bucket(1440, 3000, 2160, 1800) == 1800
 
 
 def test_proxy_factor_caps_longest_side():
@@ -21,12 +67,12 @@ def test_proxy_scale_keeps_block_size_and_stays_ge_one():
     assert proxy_scale(10, 4) == 2
 
 
-def test_render_preview_returns_full_display_size_uint8():
+def test_render_preview_returns_capped_size_uint8():
     pipe = RenderPipeline(registry)
     base = np.random.default_rng(0).uniform(0, 255, (1080, 1920)).astype(np.float32)
     s = RenderSettings(style="Floyd-Steinberg", scale=5)
     out = render_preview(pipe, base, s, max_side=640)
-    assert out.shape == (1080, 1920, 3)
+    assert out.shape == (360, 640, 3)
     assert out.dtype == np.uint8
 
 
@@ -46,5 +92,4 @@ def test_render_preview_is_cheaper_shape_wise():
     base = np.random.default_rng(2).uniform(0, 255, (1080, 1920)).astype(np.float32)
     s = RenderSettings(style="Floyd-Steinberg", scale=5)
     out = render_preview(pipe, base, s, max_side=640)
-    # still full display size, just approximate content
-    assert out.shape == (1080, 1920, 3)
+    assert out.shape == (360, 640, 3)

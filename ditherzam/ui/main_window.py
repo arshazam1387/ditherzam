@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 
 import numpy as np
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap
+from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
@@ -19,6 +19,12 @@ from ditherzam.render import RenderPipeline
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
 from .preview import render_preview
+from .preview_preferences import (
+    PREVIEW_RESOLUTIONS,
+    PreviewPreferences,
+    load_preview_preferences,
+    save_preview_preferences,
+)
 from .render_scheduler import RenderCoalescer
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
@@ -85,7 +91,7 @@ class _RenderWorker(QRunnable):
 class ImageEditor(QMainWindow):
     def __init__(self, registry=None, color_engine=None, effect_stack=None,
                  debounce_ms: int = 20, settle_ms: int = 160,
-                 proxy_max_side: int = 640, parent=None):
+                 proxy_max_side: int = 640, parent=None, preference_store=None):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
         self._registry = registry or _dither_registry
@@ -100,6 +106,8 @@ class ImageEditor(QMainWindow):
         self._proxy_max_side = proxy_max_side
         self._render_mode = "full"
         self._coalescer = RenderCoalescer()
+        self._preference_store = preference_store or QSettings()
+        self.preview_preferences = load_preview_preferences(self._preference_store)
 
         central = QWidget()
         central.setObjectName("central_widget")
@@ -153,9 +161,61 @@ class ImageEditor(QMainWindow):
 
         self.expert_mode = False
         self._install_shortcuts()
+        self._wire_preview_preferences()
         self._wire_export()
         self._wire_video()
         self._wire_animation()
+
+    def _wire_preview_preferences(self) -> None:
+        """Build the View menu controls for application-level preview policy."""
+        self.view_menu = self.menuBar().addMenu("&View")
+        self.preview_resolution_menu = self.view_menu.addMenu("Preview Resolution")
+        self.preview_resolution_group = QActionGroup(self)
+        self.preview_resolution_group.setExclusive(True)
+        self.preview_resolution_actions: dict[str, QAction] = {}
+
+        for resolution in PREVIEW_RESOLUTIONS:
+            action = QAction(resolution, self)
+            action.setCheckable(True)
+            action.setChecked(resolution == self.preview_preferences.resolution)
+            action.triggered.connect(
+                lambda _checked=False, value=resolution:
+                    self._set_preview_resolution(value)
+            )
+            self.preview_resolution_group.addAction(action)
+            self.preview_resolution_menu.addAction(action)
+            self.preview_resolution_actions[resolution] = action
+
+        self.view_menu.addSeparator()
+        self.rerender_on_zoom_action = QAction(
+            "Rerender Preview When Zooming In", self
+        )
+        self.rerender_on_zoom_action.setCheckable(True)
+        self.rerender_on_zoom_action.setChecked(
+            self.preview_preferences.rerender_on_zoom
+        )
+        self.rerender_on_zoom_action.toggled.connect(self._set_rerender_on_zoom)
+        self.view_menu.addAction(self.rerender_on_zoom_action)
+
+    def _set_preview_resolution(self, resolution: str) -> None:
+        self.preview_preferences = PreviewPreferences(
+            resolution, self.preview_preferences.rerender_on_zoom
+        )
+        self._save_preview_preferences_and_schedule()
+
+    def _set_rerender_on_zoom(self, enabled: bool) -> None:
+        self.preview_preferences = PreviewPreferences(
+            self.preview_preferences.resolution, enabled
+        )
+        self._save_preview_preferences_and_schedule()
+
+    def _save_preview_preferences_and_schedule(self) -> None:
+        save_preview_preferences(self._preference_store, self.preview_preferences)
+        # Task 2.3 owns the one-off Full action. If that state has been introduced,
+        # any policy edit supersedes it without coupling these controls to its shape.
+        if hasattr(self, "_full_preview_requested"):
+            self._full_preview_requested = False
+        self.schedule_render()
 
     # ---- animation (Phase 8, UI layer only) ---------------------------------
     def _wire_animation(self) -> None:
@@ -274,12 +334,16 @@ class ImageEditor(QMainWindow):
 
     def _current_effect_stack(self):
         from ..effects.stack import EffectStack
+        from ..effects.glow_params import glow_params_from_state
         names = self.panel.state.get("effects", []) or []
-        if not names:
+        glow_on = bool(self.glow_panel.state.get("glow_enabled"))
+        if not names and not glow_on:
             return None
         stack = EffectStack()
         for name in names:
             stack.add(name, **_EFFECT_DEFAULTS.get(name, {}))
+        if glow_on:
+            stack.add("Epsilon Glow", **glow_params_from_state(self.glow_panel.state))
         return stack
 
     def _sync_pipeline(self) -> None:
@@ -315,10 +379,23 @@ class ImageEditor(QMainWindow):
         panel.invert_toggle.setChecked(bool(settings.invert))
         panel.preview_toggle.setChecked(bool(settings.preview_disabled))
         panel.state["params"] = dict(settings.params)
+        from ..effects.glow_params import glow_state_from_params, GLOW_DEFAULTS
         panel.effects_list.clear()
-        for name, _params in effects:
-            panel.effects_list.addItem(name)
-        panel.state["effects"] = [name for name, _params in effects]
+        glow_state = None
+        non_glow = []
+        for name, params in effects:
+            if name == "Epsilon Glow":
+                glow_state = glow_state_from_params(params)
+            else:
+                panel.effects_list.addItem(name)
+                non_glow.append(name)
+        panel.state["effects"] = non_glow
+        # push glow params into the Glow tab (enable + sliders), or disable if absent
+        gp = self.glow_panel
+        gp.enable_toggle.setChecked(bool(glow_state))
+        if glow_state:
+            for key, slider in gp._sliders.items():
+                slider.setValue(int(glow_state.get(key, GLOW_DEFAULTS[key])))
         if palette is not None:
             panel.set_working_palette(palette)
         panel.set_style(settings.style)
