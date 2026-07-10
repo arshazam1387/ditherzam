@@ -40,8 +40,17 @@ def apply_blur(img: np.ndarray, value: float) -> np.ndarray:
     return np.array(pil, dtype=np.float32)
 
 
-def apply_invert(img: np.ndarray, enabled: bool) -> np.ndarray:
-    return (255.0 - img).astype(np.float32) if enabled else img
+def apply_invert(img: np.ndarray, enabled: bool, out: np.ndarray | None = None) -> np.ndarray:
+    if not enabled:
+        return img
+    if out is None:
+        return (255.0 - img).astype(np.float32)
+    # Same subtraction as the allocating path, targeting a caller-owned
+    # buffer; skips the redundant uint8->float32 pre-cast the allocating
+    # path needs (np.subtract casts internally). Proven byte-identical:
+    # tests/test_render_scratch_reuse.py.
+    np.subtract(255.0, img, out=out)
+    return out
 
 
 @njit(cache=True, parallel=True)

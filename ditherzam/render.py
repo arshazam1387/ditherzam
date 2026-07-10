@@ -184,9 +184,14 @@ class RenderPipeline:
             rgb_u8 = stack.apply(rgb_u8)
         _check_cancelled(is_cancelled)
 
-        # 9: invert LAST (on RGB)
+        # 9: invert LAST (on RGB). Task 3.4: route through ONE call-private
+        # float32 scratch buffer (never cached, never returned as itself --
+        # the returned array is always the fresh clamp_u8 uint8 result)
+        # instead of four full-image allocations. Proven byte-identical:
+        # tests/test_render_scratch_reuse.py.
         if settings.invert:
-            rgb_u8 = clamp_u8(apply_invert(rgb_u8.astype(np.float32), True))
+            buf = np.empty_like(rgb_u8, dtype=np.float32)
+            rgb_u8 = clamp_u8(apply_invert(rgb_u8, True, out=buf), inplace=True)
 
         return np.asarray(rgb_u8, np.uint8)
 
@@ -303,9 +308,11 @@ class RenderPipeline:
             fx = c["fx"]
             _check_cancelled(is_cancelled)
 
-            # L6: invert LAST (cheap; recomputed each call)
+            # L6: invert LAST (recomputed each call; never cached). Same
+            # call-private scratch route as render()'s L9 (task 3.4).
             if settings.invert:
-                result = clamp_u8(apply_invert(np.asarray(fx, np.float32), True))
+                buf = np.empty_like(fx, dtype=np.float32)
+                result = clamp_u8(apply_invert(fx, True, out=buf), inplace=True)
             else:
                 result = np.asarray(fx, np.uint8)
             self._cache.put(cache_key, c)
