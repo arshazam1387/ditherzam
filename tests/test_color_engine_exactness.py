@@ -8,6 +8,20 @@ from ditherzam.color.engine import (
     _ordered_rgb_njit,
 )
 from ditherzam.color.palette import Palette, builtin_palettes
+from ditherzam.color.ramp import RAMP_MODES, build_ramp
+
+
+def _ramp_reference(image: np.ndarray, ramp: np.ndarray) -> np.ndarray:
+    """Frozen pre-optimization ramp expression used as a differential oracle."""
+    arr = np.asarray(image, dtype=np.float32)
+    gray = (arr if arr.ndim == 2 else
+            arr[..., :3].astype(np.float32) @ np.array([0.299, 0.587, 0.114], np.float32))
+    depth = ramp.shape[0]
+    if depth == 1:
+        level = np.zeros(gray.shape, dtype=np.int64)
+    else:
+        level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1).astype(np.int64)
+    return np.clip(ramp[level], 0, 255).astype(np.uint8)
 
 
 def _floyd_steinberg_rgb_reference(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
@@ -51,6 +65,55 @@ def _ordered_rgb_reference(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
     dist = (diff * diff).sum(axis=-1)
     idx = dist.argmin(axis=-1)
     return np.clip(pal[idx], 0, 255).astype(np.uint8)
+
+
+@pytest.mark.parametrize("mapping", RAMP_MODES)
+@pytest.mark.parametrize("depth", [1, 2, 64])
+@pytest.mark.parametrize("kind", ["gray", "rgb", "noncontiguous"])
+def test_ramp_matches_frozen_reference(mapping, depth, kind):
+    rng = np.random.default_rng(4100 + depth)
+    pal = builtin_palettes()["pico8"]
+    if kind == "gray":
+        image = rng.uniform(-40, 295, size=(13, 17)).astype(np.float32)
+    else:
+        backing = rng.uniform(-40, 295, size=(13, 34, 4)).astype(np.float32)
+        image = backing[:, ::2, :] if kind == "noncontiguous" else backing[:, :17, :]
+    ramp = build_ramp(pal, depth, mapping)
+
+    got = ColorEngine(pal, mode="ramp", depth=depth, mapping=mapping).map(image)
+
+    np.testing.assert_array_equal(got, _ramp_reference(image, ramp))
+
+
+@pytest.mark.parametrize("depth", [2, 3, 64])
+def test_ramp_preserves_bankers_rounding_at_half_boundaries(depth):
+    pal = builtin_palettes()["pico8"]
+    boundaries = ((np.arange(depth - 1, dtype=np.float32) + np.float32(0.5))
+                  * np.float32(255.0 / (depth - 1)))
+    gray = np.stack([np.nextafter(boundaries, -np.inf), boundaries,
+                     np.nextafter(boundaries, np.inf)], axis=1)
+    ramp = build_ramp(pal, depth, "interpolated")
+
+    got = ColorEngine(pal, mode="ramp", depth=depth,
+                      mapping="interpolated").map(gray)
+
+    np.testing.assert_array_equal(got, _ramp_reference(gray, ramp))
+
+
+def test_ramp_fused_path_skips_rgb_repeat_and_post_map_clamp(monkeypatch):
+    import ditherzam.color.engine as engine_module
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("ramp mapping must return directly from its fused kernel")
+
+    monkeypatch.setattr(engine_module, "_to_rgb", forbidden)
+    monkeypatch.setattr(engine_module, "clamp_u8", forbidden)
+    gray = np.linspace(0, 255, 63, dtype=np.float32).reshape(7, 9)
+
+    out = ColorEngine(builtin_palettes()["gameboy"], mode="ramp", depth=4).map(gray)
+
+    assert out.shape == (7, 9, 3)
+    assert out.dtype == np.uint8
 
 
 @pytest.mark.parametrize("shape", [(1, 1), (1, 19), (17, 1), (13, 11)])
