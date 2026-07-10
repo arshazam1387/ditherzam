@@ -80,6 +80,19 @@ def test_invalidate_makes_inflight_stale():
     assert not s.is_current(req)           # the in-flight result must not paint
 
 
+def test_invalidate_drops_pending_trailing_request():
+    """A synchronous render_now() (which calls invalidate(), never request())
+    must not leave a stale coalesced pending request to be promoted and painted
+    over the fresh full render. Distinct from the priority path: render_now
+    never calls request(), so bumping the generation alone is not enough --
+    the pending request itself must be cleared."""
+    s = RenderScheduler()
+    s.request(_req())                      # gen 1 in flight
+    s.request(_req())                      # coalesced -> pending, gen 1
+    s.invalidate()                         # render_now() painted synchronously
+    assert s.on_finished() is None         # stale pending must NOT be promoted
+
+
 def test_out_of_order_delivery_paints_only_current():
     s = RenderScheduler()
     t1 = s.request(_req())

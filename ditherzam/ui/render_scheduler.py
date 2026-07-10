@@ -52,8 +52,14 @@ class RenderScheduler:
 
     def invalidate(self) -> None:
         """Mark any in-flight render stale (e.g. a synchronous render_now
-        painted). Its delivered result will fail ``is_current`` and not paint."""
+        painted). Its delivered result will fail ``is_current`` and not paint.
+
+        Also drop any coalesced pending request: a synchronous full render
+        already satisfies whatever was queued, and because requests are frozen
+        at build time a stale pending would otherwise be promoted by the next
+        ``on_finished`` and paint older state over the fresh render."""
         self._gen += 1
+        self._pending = None
 
     def on_finished(self) -> RenderRequest | None:
         """A worker finished. Returns the stamped trailing request to launch
