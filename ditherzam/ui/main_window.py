@@ -18,7 +18,7 @@ from ditherzam.render import RenderPipeline
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
-from .preview import auto_preview_resolution, preview_cap, render_preview
+from .preview import auto_preview_resolution, preview_cap, render_preview, zoom_preview_bucket
 from .preview_preferences import (
     PREVIEW_RESOLUTIONS,
     PreviewPreferences,
@@ -118,7 +118,7 @@ class _DecodeWorker(QRunnable):
 
 class ImageEditor(QMainWindow):
     def __init__(self, registry=None, color_engine=None, effect_stack=None,
-                 debounce_ms: int = 20, settle_ms: int = 160,
+                 debounce_ms: int = 20, settle_ms: int = 160, zoom_debounce_ms: int = 150,
                  proxy_max_side: int = 640, parent=None, preference_store=None):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
@@ -131,6 +131,7 @@ class ImageEditor(QMainWindow):
         self._pool = QThreadPool.globalInstance()
         self._debounce_ms = debounce_ms
         self._settle_ms = settle_ms
+        self._zoom_debounce_ms = zoom_debounce_ms
         self._proxy_max_side = proxy_max_side
         self._scheduler = RenderScheduler()
         self._preference_store = preference_store or QSettings()
@@ -138,6 +139,12 @@ class ImageEditor(QMainWindow):
         # Set by the Full Quality Preview action; makes the next settle tick
         # exact/uncapped, then any further edit resets it via schedule_render().
         self._full_preview_requested = False
+        # True only for the paint right after a new source loads -- refits the
+        # viewport once, then ordinary renders keep the user's zoom/pan.
+        self._pending_refit = False
+        # Longest-side bucket of the last zoom-triggered render, so we schedule
+        # a bucket at most once until the user zooms back out below it.
+        self._last_zoom_bucket: int | None = None
 
         central = QWidget()
         central.setObjectName("central_widget")
@@ -150,6 +157,7 @@ class ImageEditor(QMainWindow):
         self.panel.from_image_requested.connect(self._on_from_image_requested)
         self.panel.palette_preview.connect(self._on_palette_preview)
         self.viewport.image_dropped.connect(self._on_image_dropped)
+        self.viewport.zoom_changed.connect(self._on_zoom_changed)
 
         from PySide6.QtWidgets import QTabWidget
         from .glow_panel import GlowPanel
@@ -188,6 +196,12 @@ class ImageEditor(QMainWindow):
         self._settle = QTimer(self)
         self._settle.setSingleShot(True)
         self._settle.timeout.connect(self._do_full_render)
+
+        # Debounces zoom bursts (wheel/pinch spam) before considering a bucketed
+        # refinement render; only fires the optional Task-2.4 zoom refinement.
+        self._zoom_debounce = QTimer(self)
+        self._zoom_debounce.setSingleShot(True)
+        self._zoom_debounce.timeout.connect(self._on_zoom_debounced)
 
         self.expert_mode = False
         self._install_shortcuts()
@@ -249,6 +263,11 @@ class ImageEditor(QMainWindow):
         if hasattr(self, "_full_preview_requested"):
             self._full_preview_requested = False
         self.schedule_render()
+
+    def _on_zoom_changed(self, _percent: int) -> None:
+        """viewport.zoom_changed fires on every zoom/fit step; debounce bursts
+        before evaluating whether a higher-res refinement render is due."""
+        self._zoom_debounce.start(self._zoom_debounce_ms)
 
     # ---- animation (Phase 8, UI layer only) ---------------------------------
     def _wire_animation(self) -> None:
@@ -540,6 +559,7 @@ class ImageEditor(QMainWindow):
         self._base_gray = np.asarray(gray_f32, dtype=np.float32)
         self._base_rgb = None if rgb_u8 is None else np.asarray(rgb_u8, dtype=np.uint8)
         self.pipeline.clear_cache()  # drop the previous image's cached intermediates
+        self._pending_refit = True  # a new source: the next paint should fit
 
     def set_style(self, name: str) -> None:
         self.panel.set_style(name)
@@ -556,11 +576,15 @@ class ImageEditor(QMainWindow):
         rgb = self.pipeline.render_cached(self._base_gray, settings)
         qimg = numpy_to_qimage(rgb)
         self.last_qimage = qimg
-        self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+        refit = self._pending_refit
+        self._pending_refit = False
+        self.viewport.set_pixmap(QPixmap.fromImage(qimg),
+                                 logical_size=self._reference_size(), refit=refit)
         return qimg
 
     def schedule_render(self) -> None:
         self._full_preview_requested = False       # any edit returns to the cap
+        self._last_zoom_bucket = None               # a normal edit re-settles the baseline
         self._debounce.start(self._debounce_ms)   # fast proxy
         self._settle.start(self._settle_ms)        # full-res once idle
 
@@ -581,19 +605,22 @@ class ImageEditor(QMainWindow):
             return auto_preview_resolution((h, w), (vw, vh), dpr)
         return preview_cap(resolution, source_longest)
 
-    def _build_request(self, kind: RenderKind) -> RenderRequest:
+    def _build_request(self, kind: RenderKind, target_max_side: int | None = None) -> RenderRequest:
         """Snapshot current UI state into an immutable request. ``generation``
         is a placeholder here -- the scheduler stamps the real value in
-        ``request()``/``on_finished()``."""
+        ``request()``/``on_finished()``. A non-``None`` ``target_max_side``
+        override wins over the kind-derived cap (used by zoom refinement to
+        request a specific bucket)."""
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         logical_size = self._reference_size()  # (w, h)
-        if kind is RenderKind.FULL:
-            target_max_side = max(logical_size)
-        elif kind is RenderKind.DRAG:
-            target_max_side = min(self._proxy_max_side, self._policy_cap())
-        else:  # SETTLE, ZOOM
-            target_max_side = self._policy_cap()
+        if target_max_side is None:
+            if kind is RenderKind.FULL:
+                target_max_side = max(logical_size)
+            elif kind is RenderKind.DRAG:
+                target_max_side = min(self._proxy_max_side, self._policy_cap())
+            else:  # SETTLE, ZOOM
+                target_max_side = self._policy_cap()
         return RenderRequest(
             generation=0,
             kind=kind,
@@ -632,6 +659,34 @@ class ImageEditor(QMainWindow):
         if req is not None:
             self._launch_worker(req)
 
+    def _zoom_required_pixels(self) -> int:
+        """Device pixels the full source spans at the current viewport zoom."""
+        source_longest = max(self._reference_size())
+        scale = self.viewport.transform().m11() * self.viewport.devicePixelRatioF()
+        return int(round(source_longest * scale))
+
+    def _on_zoom_debounced(self) -> None:
+        """Zoom-debounce tick: optionally schedule one bucketed refinement
+        render, at most once per bucket, respecting the resolution ceiling."""
+        if not self.preview_preferences.rerender_on_zoom:
+            return
+        if self._base_gray is None:
+            return
+        source_longest = max(self._reference_size())
+        ceiling = preview_cap(self.preview_preferences.resolution, source_longest)
+        baseline = self._policy_cap()
+        required = self._zoom_required_pixels()
+        bucket = zoom_preview_bucket(baseline, required, ceiling, source_longest)
+        if bucket <= baseline:
+            self._last_zoom_bucket = None  # zoomed back out to the settled baseline
+            return
+        if bucket == self._last_zoom_bucket:
+            return  # already rendered this bucket
+        self._last_zoom_bucket = bucket
+        req = self._scheduler.request(self._build_request(RenderKind.ZOOM, target_max_side=bucket))
+        if req is not None:
+            self._launch_worker(req)
+
     def _launch_worker(self, request: RenderRequest) -> None:
         """Start one background render for an already-stamped request."""
         worker = _RenderWorker(self.pipeline, self._base_gray, request)
@@ -644,7 +699,10 @@ class ImageEditor(QMainWindow):
         # is painted.
         if self._scheduler.is_current(request):
             self.last_qimage = qimg
-            self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+            refit = self._pending_refit
+            self._pending_refit = False
+            self.viewport.set_pixmap(QPixmap.fromImage(qimg),
+                                     logical_size=request.logical_size, refit=refit)
         # If state changed while this render was in flight, run one trailing render
         # with the freshest, highest-priority state.
         nxt = self._scheduler.on_finished()
