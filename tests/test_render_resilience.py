@@ -21,9 +21,11 @@ def test_worker_emits_failed_not_finished_on_exception(qapp_fixture, monkeypatch
     from ditherzam.dithering import registry
     from ditherzam.ui.render_request import RenderKind, RenderRequest
 
+    # FULL is the only kind whose mode is "full" (render_cached); SETTLE/DRAG/ZOOM
+    # now render through the capped render_preview path (task 2.3).
     monkeypatch.setattr(RenderPipeline, "render_cached", _throw)
     request = RenderRequest(
-        generation=7, kind=RenderKind.SETTLE, settings=RenderSettings(),
+        generation=7, kind=RenderKind.FULL, settings=RenderSettings(),
         source_id=1, target_max_side=16, logical_size=(16, 16),
     )
     worker = mw._RenderWorker(RenderPipeline(registry), np.zeros((16, 16), np.float32),
