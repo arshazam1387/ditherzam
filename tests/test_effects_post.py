@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from PIL import Image, ImageFilter
 from ditherzam.effects.post import (
     EFFECTS, blur, sharpen, chromatic_aberration, jpeg_glitch, epsilon_glow,
 )
@@ -11,6 +12,48 @@ def rand_img():
 
 def gray_img(v):
     return np.full((16, 16, 3), v, np.uint8)
+
+
+def _epsilon_glow_reference(rgb_u8, threshold=64.0, smoothing=32.0,
+                            radius=8.0, intensity=1.0, epsilon=0.4,
+                            falloff=0.5, distance_scale=1.0, aspect=1.0):
+    """Frozen pre-optimization implementation used as a differential oracle."""
+    if intensity <= 0:
+        return rgb_u8
+    base = rgb_u8.astype(np.float32)
+    lum = 0.299 * base[..., 0] + 0.587 * base[..., 1] + 0.114 * base[..., 2]
+    edge0, edge1 = float(threshold), float(threshold) + float(smoothing)
+    if edge1 <= edge0:
+        mask = (lum >= edge0).astype(np.float32)
+    else:
+        t = np.clip((lum - edge0) / (edge1 - edge0), 0.0, 1.0)
+        mask = (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+    src = base * mask[..., None]
+
+    def aniso_blur(src_f, sigma):
+        h, w = src_f.shape[:2]
+        ax = max(float(aspect), 1e-3)
+        new_w = max(1, int(round(w / ax)))
+        img = Image.fromarray(np.clip(src_f, 0, 255).astype(np.uint8))
+        if new_w != w:
+            img = img.resize((new_w, h), Image.BILINEAR)
+        img = img.filter(ImageFilter.GaussianBlur(float(max(sigma, 0.0))))
+        if new_w != w:
+            img = img.resize((w, h), Image.BILINEAR)
+        return np.asarray(img, np.float32)
+
+    r = max(float(radius) * float(distance_scale), 0.0)
+    weights = np.array([1.0, 0.6, 0.35], np.float32)
+    f = float(np.clip(falloff, 0.0, 1.0))
+    weights *= np.array([1.0 + f, 1.0, 1.0 - 0.5 * f], np.float32)
+    weights /= weights.sum()
+    glow = np.zeros_like(base)
+    for scale, weight in zip((0.5, 1.0, 2.0), weights):
+        glow += aniso_blur(src, r * scale + 1e-3) * float(weight)
+    eps = float(np.clip(epsilon, 0.0, 1.0))
+    core = base * (mask[..., None] ** (1.0 + eps * 8.0))
+    core_glow = aniso_blur(core, max(r * 0.25, 1e-3)) * eps
+    return np.clip(base + (glow + core_glow) * float(intensity), 0, 255).astype(np.uint8)
 
 
 def test_all_five_effects_registered():
@@ -129,6 +172,34 @@ def test_epsilon_glow_grayscale_input_ok():
     x = gray_img(180)
     out = epsilon_glow(x, threshold=50, radius=3, intensity=0.8)
     assert out.shape == x.shape and out.dtype == np.uint8
+
+
+@pytest.mark.parametrize("params", [
+    {},
+    {"threshold": 40, "smoothing": 20, "radius": 5, "intensity": 1.0,
+     "epsilon": 0.5, "falloff": 0.4, "distance_scale": 1.2, "aspect": 1.5},
+    {"threshold": -20, "smoothing": 0, "radius": 0, "intensity": 2.5,
+     "epsilon": 1.5, "falloff": -1, "distance_scale": -2, "aspect": 0.01},
+])
+def test_epsilon_glow_matches_frozen_reference(params):
+    x = np.random.RandomState(81).randint(0, 256, (19, 23, 3), np.uint8)
+    before = x.copy()
+    np.testing.assert_array_equal(epsilon_glow(x, **params),
+                                  _epsilon_glow_reference(x, **params))
+    np.testing.assert_array_equal(x, before)
+
+
+def test_epsilon_glow_matches_reference_for_noncontiguous_input():
+    backing = np.random.RandomState(82).randint(0, 256, (24, 34, 3), np.uint8)
+    x = backing[::2, 1::2]
+    assert not x.flags.c_contiguous
+    params = {"threshold": 91, "smoothing": 17, "radius": 3.5,
+              "intensity": 0.7, "epsilon": 0.2, "falloff": 0.8,
+              "distance_scale": 1.4, "aspect": 2.0}
+    before = backing.copy()
+    np.testing.assert_array_equal(epsilon_glow(x, **params),
+                                  _epsilon_glow_reference(x, **params))
+    np.testing.assert_array_equal(backing, before)
 
 
 def test_chromatic_before_glow_differs_from_after():

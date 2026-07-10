@@ -49,18 +49,24 @@ def _smoothstep(edge0: float, edge1: float, x: np.ndarray) -> np.ndarray:
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _aniso_blur(src_f: np.ndarray, sigma: float, aspect: float) -> np.ndarray:
-    """Gaussian blur wider along x by `aspect`, via resize->isotropic blur->resize.
-    aspect > 1 stretches the glow horizontally; aspect == 1 is isotropic."""
+def _aniso_source(src_f: np.ndarray, aspect: float) -> tuple[Image.Image, int]:
+    """Convert and horizontally compress a source once for repeated blurs."""
     h, w = src_f.shape[:2]
     ax = max(float(aspect), 1e-3)
     new_w = max(1, int(round(w / ax)))
     img = Image.fromarray(np.clip(src_f, 0, 255).astype(np.uint8))
     if new_w != w:
         img = img.resize((new_w, h), Image.BILINEAR)
+    return img, w
+
+
+def _aniso_blur(img: Image.Image, sigma: float, output_w: int) -> np.ndarray:
+    """Blur a prepared source, restoring its original width when needed."""
+    h = img.height
+    new_w = img.width
     img = img.filter(ImageFilter.GaussianBlur(float(max(sigma, 0.0))))
-    if new_w != w:
-        img = img.resize((w, h), Image.BILINEAR)
+    if new_w != output_w:
+        img = img.resize((output_w, h), Image.BILINEAR)
     return np.asarray(img, np.float32)
 
 
@@ -79,6 +85,7 @@ def epsilon_glow(rgb_u8: np.ndarray, threshold: float = 64.0, smoothing: float =
     base = rgb_u8.astype(np.float32)
     lum = 0.299 * base[..., 0] + 0.587 * base[..., 1] + 0.114 * base[..., 2]
     mask = _smoothstep(float(threshold), float(threshold) + float(smoothing), lum)
+    del lum
     src = base * mask[..., None]
 
     r = max(float(radius) * float(distance_scale), 0.0)
@@ -89,12 +96,16 @@ def epsilon_glow(rgb_u8: np.ndarray, threshold: float = 64.0, smoothing: float =
     weights = base_w * bias
     weights /= weights.sum()
     glow = np.zeros_like(base)
+    src_img, output_w = _aniso_source(src, aspect)
+    del src
     for s, wgt in zip(scales, weights):
-        glow += _aniso_blur(src, r * s + 1e-3, aspect) * float(wgt)
+        glow += _aniso_blur(src_img, r * s + 1e-3, output_w) * float(wgt)
 
     k = 1.0 + float(np.clip(epsilon, 0.0, 1.0)) * 8.0
     core = base * (mask[..., None] ** k)
-    core_glow = _aniso_blur(core, max(r * 0.25, 1e-3), aspect) * float(np.clip(epsilon, 0.0, 1.0))
+    core_img, output_w = _aniso_source(core, aspect)
+    del core, mask
+    core_glow = _aniso_blur(core_img, max(r * 0.25, 1e-3), output_w) * float(np.clip(epsilon, 0.0, 1.0))
 
     out = base + (glow + core_glow) * float(intensity)
     return np.clip(out, 0, 255).astype(np.uint8)
