@@ -1,11 +1,14 @@
 import numpy as np
 import pytest
 
+import ditherzam.color.engine as engine_module
 from ditherzam.color.engine import (
     ColorEngine,
     _BAYER4,
     _floyd_steinberg_rgb_njit,
     _ordered_rgb_njit,
+    _to_rgb,
+    clamp_u8,
 )
 from ditherzam.color.palette import Palette, builtin_palettes
 from ditherzam.color.ramp import RAMP_MODES, build_ramp
@@ -22,6 +25,18 @@ def _ramp_reference(image: np.ndarray, ramp: np.ndarray) -> np.ndarray:
     else:
         level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1).astype(np.int64)
     return np.clip(ramp[level], 0, 255).astype(np.uint8)
+
+
+def _ramp_legacy_blas_reference(input_arr: np.ndarray, ramp: np.ndarray, depth: int) -> np.ndarray:
+    """Frozen pre-5eb0ee6 ramp expression (Option B): position-dependent BLAS
+    matmul luminance, kept as the byte-for-byte oracle for the dev toggle."""
+    rgb = _to_rgb(input_arr)
+    gray = rgb[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32)
+    if depth == 1:
+        level = np.zeros(gray.shape, np.int64)
+    else:
+        level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1).astype(np.int64)
+    return clamp_u8(ramp[level])
 
 
 def _floyd_steinberg_rgb_reference(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
@@ -114,6 +129,81 @@ def test_ramp_fused_path_skips_rgb_repeat_and_post_map_clamp(monkeypatch):
 
     assert out.shape == (7, 9, 3)
     assert out.dtype == np.uint8
+
+
+def test_ramp_exact_blas_luminance_flag_defaults_off():
+    assert engine_module.RAMP_EXACT_BLAS_LUMINANCE is False
+
+
+def test_ramp_flag_off_still_uses_option_a(monkeypatch):
+    """Default (flag False) is unchanged: matches the existing Option A oracle."""
+    monkeypatch.setattr(engine_module, "RAMP_EXACT_BLAS_LUMINANCE", False)
+    rng = np.random.default_rng(4200)
+    pal = builtin_palettes()["pico8"]
+    depth, mapping = 16, "interpolated"
+    image = rng.uniform(-40, 295, size=(11, 23, 4)).astype(np.float32)
+    ramp = build_ramp(pal, depth, mapping)
+
+    got = ColorEngine(pal, mode="ramp", depth=depth, mapping=mapping).map(image)
+
+    np.testing.assert_array_equal(got, _ramp_reference(image, ramp))
+
+
+@pytest.mark.parametrize("mapping", ["match", "interpolated", "banded"])
+@pytest.mark.parametrize("depth", [1, 2, 64])
+@pytest.mark.parametrize("kind", ["gray", "rgb", "noncontiguous"])
+def test_ramp_flag_on_matches_legacy_blas_reference(monkeypatch, mapping, depth, kind):
+    monkeypatch.setattr(engine_module, "RAMP_EXACT_BLAS_LUMINANCE", True)
+    rng = np.random.default_rng(6100 + depth)
+    pal = builtin_palettes()["pico8"]
+    if kind == "gray":
+        image = rng.uniform(-40, 295, size=(13, 17)).astype(np.float32)
+    else:
+        backing = rng.uniform(-40, 295, size=(13, 34, 4)).astype(np.float32)
+        image = backing[:, ::2, :] if kind == "noncontiguous" else backing[:, :17, :]
+    ramp = build_ramp(pal, depth, mapping)
+
+    got = ColorEngine(pal, mode="ramp", depth=depth, mapping=mapping).map(image)
+
+    assert np.array_equal(got, _ramp_legacy_blas_reference(image, ramp, depth))
+
+
+@pytest.mark.parametrize("shape", [(1, 1), (1, 19), (17, 1)])
+@pytest.mark.parametrize("kind", ["gray", "rgb"])
+def test_ramp_flag_on_matches_legacy_blas_reference_for_degenerate_shapes(monkeypatch, shape, kind):
+    monkeypatch.setattr(engine_module, "RAMP_EXACT_BLAS_LUMINANCE", True)
+    rng = np.random.default_rng(7200 + shape[0] * 100 + shape[1])
+    pal = builtin_palettes()["pico8"]
+    depth, mapping = 8, "interpolated"
+    size = shape if kind == "gray" else (*shape, 4)
+    image = rng.uniform(-40, 295, size=size).astype(np.float32)
+    ramp = build_ramp(pal, depth, mapping)
+
+    got = ColorEngine(pal, mode="ramp", depth=depth, mapping=mapping).map(image)
+
+    assert np.array_equal(got, _ramp_legacy_blas_reference(image, ramp, depth))
+
+
+def test_ramp_flag_toggles_a_vs_b_on_flat_seam_input(monkeypatch):
+    """A large constant-gray region at a ramp half-boundary (144.5, depth=16):
+    Option A's per-pixel scalar formula stays uniform; Option B's BLAS matmul
+    (`rgb @ [0.299,0.587,0.114]`) rounds a subset of pixels differently under
+    SIMD block/remainder splits, reproducing the pre-5eb0ee6 position seam.
+    """
+    pal = builtin_palettes()["pico8"]
+    depth, mapping = 16, "interpolated"
+    gray = np.full((100, 100), 144.5, dtype=np.float32)
+
+    monkeypatch.setattr(engine_module, "RAMP_EXACT_BLAS_LUMINANCE", False)
+    result_a = ColorEngine(pal, mode="ramp", depth=depth, mapping=mapping).map(gray)
+    monkeypatch.setattr(engine_module, "RAMP_EXACT_BLAS_LUMINANCE", True)
+    result_b = ColorEngine(pal, mode="ramp", depth=depth, mapping=mapping).map(gray)
+
+    # A is immune to the seam: a flat input maps to exactly one ramp color.
+    assert len(np.unique(result_a.reshape(-1, 3), axis=0)) == 1
+    # B reproduces the legacy position-dependent seam: more than one color.
+    assert len(np.unique(result_b.reshape(-1, 3), axis=0)) > 1
+    assert not np.array_equal(result_a, result_b)
 
 
 @pytest.mark.parametrize("shape", [(1, 1), (1, 19), (17, 1), (13, 11)])
