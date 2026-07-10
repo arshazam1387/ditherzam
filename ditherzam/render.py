@@ -11,6 +11,7 @@ from .adjustments import (
 )
 from .dithering.pipeline import apply_dither
 from .imaging import clamp_u8
+from .render_cache import DEFAULT_CACHE_BUDGET_BYTES, RenderCache
 
 
 def _params_sig(params: dict):
@@ -74,12 +75,18 @@ class RenderPipeline:
         "color", "saturation", "effects", "invert",
     )
 
-    def __init__(self, registry, color_engine=None, effect_stack=None) -> None:
+    def __init__(self, registry, color_engine=None, effect_stack=None, *,
+                 cache_budget_bytes=DEFAULT_CACHE_BUDGET_BYTES) -> None:
         self.registry = registry
         self.color_engine = color_engine
         self.effect_stack = effect_stack
-        self._cache: dict = {}
+        self._cache = RenderCache(cache_budget_bytes)
         self._cache_lock = threading.Lock()
+
+    @property
+    def cache_metrics(self):
+        """Read-only snapshot of staged-cache memory and eviction metrics."""
+        return self._cache.metrics
 
     def render(self, base_gray_f32, settings: RenderSettings,
                temporal_field=None) -> np.ndarray:
@@ -146,7 +153,11 @@ class RenderPipeline:
           L6 invert
         """
         with self._cache_lock:
-            c = self._cache
+            cache_key = id(base_gray_f32)
+            cached = self._cache.get(cache_key)
+            # Never mutate a retained group: admission/eviction is atomic and a
+            # failed or oversized render cannot publish a partial chain.
+            c = dict(cached) if cached is not None else {}
             g_in = np.asarray(base_gray_f32, dtype=np.float32)
             dirty = False
 
@@ -231,8 +242,11 @@ class RenderPipeline:
 
             # L6: invert LAST (cheap; recomputed each call)
             if settings.invert:
-                return clamp_u8(apply_invert(np.asarray(fx, np.float32), True))
-            return np.asarray(fx, np.uint8)
+                result = clamp_u8(apply_invert(np.asarray(fx, np.float32), True))
+            else:
+                result = np.asarray(fx, np.uint8)
+            self._cache.put(cache_key, c)
+            return result
 
     def clear_cache(self) -> None:
         with self._cache_lock:
