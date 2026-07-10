@@ -18,7 +18,7 @@ from ditherzam.render import RenderPipeline
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
-from .preview import render_preview
+from .preview import auto_preview_resolution, preview_cap, render_preview
 from .preview_preferences import (
     PREVIEW_RESOLUTIONS,
     PreviewPreferences,
@@ -92,6 +92,30 @@ class _RenderWorker(QRunnable):
         self.signals.finished.emit(qimg, self._request)
 
 
+class _DecodeSignals(QObject):
+    finished = Signal(object, object)   # (gray_f32, rgb_u8)
+
+
+class _DecodeWorker(QRunnable):
+    """Decodes an image file off the GUI thread for the initial drop/import."""
+
+    def __init__(self, path: str):
+        super().__init__()
+        self._path = path
+        self.signals = _DecodeSignals()
+
+    def run(self) -> None:
+        from PIL import Image
+        from ditherzam.imaging import to_gray_f32
+        try:
+            img = Image.open(self._path)
+            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+            gray = to_gray_f32(img)
+        except Exception:
+            return  # swallow decode failures, same as the old synchronous path
+        self.signals.finished.emit(gray, rgb)
+
+
 class ImageEditor(QMainWindow):
     def __init__(self, registry=None, color_engine=None, effect_stack=None,
                  debounce_ms: int = 20, settle_ms: int = 160,
@@ -111,6 +135,9 @@ class ImageEditor(QMainWindow):
         self._scheduler = RenderScheduler()
         self._preference_store = preference_store or QSettings()
         self.preview_preferences = load_preview_preferences(self._preference_store)
+        # Set by the Full Quality Preview action; makes the next settle tick
+        # exact/uncapped, then any further edit resets it via schedule_render().
+        self._full_preview_requested = False
 
         central = QWidget()
         central.setObjectName("central_widget")
@@ -199,6 +226,9 @@ class ImageEditor(QMainWindow):
         )
         self.rerender_on_zoom_action.toggled.connect(self._set_rerender_on_zoom)
         self.view_menu.addAction(self.rerender_on_zoom_action)
+
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self._actions["full_quality_preview"])
 
     def _set_preview_resolution(self, resolution: str) -> None:
         self.preview_preferences = PreviewPreferences(
@@ -530,10 +560,27 @@ class ImageEditor(QMainWindow):
         return qimg
 
     def schedule_render(self) -> None:
+        self._full_preview_requested = False       # any edit returns to the cap
         self._debounce.start(self._debounce_ms)   # fast proxy
         self._settle.start(self._settle_ms)        # full-res once idle
 
     # ---- internals ----------------------------------------------------------
+    def _policy_cap(self) -> int:
+        """Settled longest-side cap from the current preview preference + viewport."""
+        w, h = self._reference_size()
+        source_longest = max(w, h)
+        if source_longest <= 0:
+            return 1440  # no image loaded yet; a reasonable default
+        resolution = self.preview_preferences.resolution
+        if resolution == "Auto":
+            vp = self.viewport.viewport()
+            vw, vh = vp.width(), vp.height()
+            if vw <= 0 or vh <= 0:
+                return preview_cap("Auto", source_longest)
+            dpr = self.viewport.devicePixelRatioF()
+            return auto_preview_resolution((h, w), (vw, vh), dpr)
+        return preview_cap(resolution, source_longest)
+
     def _build_request(self, kind: RenderKind) -> RenderRequest:
         """Snapshot current UI state into an immutable request. ``generation``
         is a placeholder here -- the scheduler stamps the real value in
@@ -541,8 +588,12 @@ class ImageEditor(QMainWindow):
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         logical_size = self._reference_size()  # (w, h)
-        target_max_side = (self._proxy_max_side if kind is RenderKind.DRAG
-                           else max(logical_size))
+        if kind is RenderKind.FULL:
+            target_max_side = max(logical_size)
+        elif kind is RenderKind.DRAG:
+            target_max_side = min(self._proxy_max_side, self._policy_cap())
+        else:  # SETTLE, ZOOM
+            target_max_side = self._policy_cap()
         return RenderRequest(
             generation=0,
             kind=kind,
@@ -563,10 +614,21 @@ class ImageEditor(QMainWindow):
             self._launch_worker(req)
 
     def _do_full_render(self) -> None:
-        """Settle tick: request the exact full-resolution render."""
+        """Settle tick: request the settled (policy-capped) render, or an exact
+        full render if Full Quality Preview was requested."""
         if self._base_gray is None:
             return
-        req = self._scheduler.request(self._build_request(RenderKind.SETTLE))
+        kind = RenderKind.FULL if self._full_preview_requested else RenderKind.SETTLE
+        req = self._scheduler.request(self._build_request(kind))
+        if req is not None:
+            self._launch_worker(req)
+
+    def _do_full_quality_preview(self) -> None:
+        """View > Full Quality Preview: force one exact, uncapped render now."""
+        if self._base_gray is None:
+            return
+        self._full_preview_requested = True
+        req = self._scheduler.request(self._build_request(RenderKind.FULL))
         if req is not None:
             self._launch_worker(req)
 
@@ -597,16 +659,16 @@ class ImageEditor(QMainWindow):
             self._launch_worker(nxt)
 
     def _on_image_dropped(self, path: str) -> None:
-        from PIL import Image
+        worker = _DecodeWorker(path)
+        worker.signals.finished.connect(self._on_image_decoded)
+        self._decode_worker = worker  # keep the signals QObject alive until it fires
+        self._pool.start(worker)
 
-        from ditherzam.imaging import to_gray_f32
-        try:
-            img = Image.open(path)
-            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
-            self.load_array(to_gray_f32(img), rgb)
-        except Exception:
-            return
-        self.render_now()
+    def _on_image_decoded(self, gray_f32, rgb_u8) -> None:
+        """GUI-thread slot: decode finished off-thread; paint a capped preview
+        immediately instead of blocking on a synchronous exact render."""
+        self.load_array(gray_f32, rgb_u8)
+        self.schedule_render()
 
     def _install_shortcuts(self) -> None:
         hk = get_hotkeys(sys.platform)
@@ -615,6 +677,7 @@ class ImageEditor(QMainWindow):
             "zoom_in": self.viewport.zoom_in,
             "zoom_out": self.viewport.zoom_out,
             "zoom_reset": self.viewport.reset_zoom,
+            "full_quality_preview": self._do_full_quality_preview,
         }
         for action_name, slot in bindings.items():
             act = QAction(self)

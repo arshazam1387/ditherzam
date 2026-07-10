@@ -55,8 +55,9 @@ class RenderRequest:
 
     @property
     def mode(self) -> str:
-        """Worker render mode: capped proxy for drag, exact for everything else."""
-        return "proxy" if self.kind is RenderKind.DRAG else "full"
+        """Worker render mode: exact+cached only for an explicit Full request;
+        drag/settle/zoom all render through the capped, exact-if-fit preview path."""
+        return "full" if self.kind is RenderKind.FULL else "proxy"
 
 
 def supersedes(new: RenderRequest, old: RenderRequest) -> bool:
