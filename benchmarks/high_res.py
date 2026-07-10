@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import gc
+import hashlib
 import time
 import tracemalloc
 from dataclasses import replace
@@ -15,6 +16,7 @@ import numpy as np
 
 from ditherzam.color.engine import ColorEngine
 from ditherzam.color.palette import Palette
+from ditherzam.effects.stack import EffectStack
 from ditherzam.ui.preview import render_preview
 
 from .common import REGISTRY, RenderPipeline, RenderSettings, SIZES, make_gray
@@ -137,6 +139,90 @@ def cached(args) -> None:
         row(label, size, measure(tick, args.repeats))
 
 
+def _effect_input(h: int, w: int) -> np.ndarray:
+    """Deterministic, non-gray RGB input that exercises every effect channel."""
+    gray = np.clip(make_gray(h, w), 0, 255).astype(np.uint8)
+    return np.stack(
+        (gray, np.roll(gray, w // 7, axis=1), np.flipud(gray)), axis=-1)
+
+
+def _effect_stack(items: tuple[tuple[str, dict], ...]) -> EffectStack:
+    stack = EffectStack()
+    for name, params in items:
+        stack.add(name, **params)
+    return stack
+
+
+def _measure_effect(stack: EffectStack, source: np.ndarray, repeats: int):
+    """Measure an effect stack and retain individual warm samples + checksum."""
+    gc.collect()
+    source_checksum = hashlib.sha256(source.tobytes()).digest()
+    process = psutil.Process() if psutil else None
+    rss0 = process.memory_info().rss if process else None
+    tracemalloc.start()
+    t0 = time.perf_counter()
+    result = stack.apply(source)
+    first = (time.perf_counter() - t0) * 1000.0
+    samples = []
+    for _ in range(repeats):
+        t0 = time.perf_counter()
+        result = stack.apply(source)
+        samples.append((time.perf_counter() - t0) * 1000.0)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    rss1 = process.memory_info().rss if process else None
+    assert result.shape == source.shape
+    assert result.dtype == np.uint8
+    assert hashlib.sha256(source.tobytes()).digest() == source_checksum
+    rss_delta = None if rss0 is None else (rss1 - rss0) / 1048576
+    checksum = hashlib.sha256(result.tobytes()).hexdigest()[:16]
+    return first, samples, peak / 1048576, rss_delta, checksum
+
+
+def effects(args) -> None:
+    """Profile post-effects in isolation, without render-pipeline noise."""
+    sizes = {
+        "quick": ("1080p",),
+        "default": ("1080p",),
+        "full": ("1080p", "4K"),
+    }[args.tier]
+    cases = (
+        ("Blur", (("Blur", {"radius": 2.0}),)),
+        ("Sharpen", (("Sharpen", {"amount": 1.0}),)),
+        ("Chromatic Aberration", (("Chromatic Aberration", {"shift": 2}),)),
+        ("JPEG Glitch", (("JPEG Glitch", {"quality": 15}),)),
+        ("Epsilon Glow", (("Epsilon Glow", {
+            "threshold": 64.0, "smoothing": 32.0, "radius": 8.0,
+            "intensity": 1.0, "epsilon": 0.4, "falloff": 0.5,
+            "distance_scale": 1.0, "aspect": 1.0,
+        }),)),
+        ("stack/all", (
+            ("Blur", {"radius": 2.0}),
+            ("Sharpen", {"amount": 1.0}),
+            ("Chromatic Aberration", {"shift": 2}),
+            ("JPEG Glitch", {"quality": 15}),
+            ("Epsilon Glow", {
+                "threshold": 64.0, "smoothing": 32.0, "radius": 8.0,
+                "intensity": 1.0, "epsilon": 0.4, "falloff": 0.5,
+                "distance_scale": 1.0, "aspect": 1.0,
+            }),
+        )),
+    )
+    print("\n== effects (isolated RGB uint8) ==")
+    print(f"{'case':<25} {'size':>6} {'first ms':>10} {'warm samples ms':>24} "
+          f"{'py peak MB':>10} {'rss dMB':>10} {'sha256/16':>16}")
+    for size in sizes:
+        h, w = SIZES[size]
+        source = _effect_input(h, w)
+        for label, items in cases:
+            first, samples, peak, rss, checksum = _measure_effect(
+                _effect_stack(items), source, args.repeats)
+            warm_text = ",".join(f"{sample:.1f}" for sample in samples)
+            rss_text = "n/a" if rss is None else f"{rss:.1f}"
+            print(f"{label:<25} {size:>6} {first:>10.1f} {warm_text:>24} "
+                  f"{peak:>10.1f} {rss_text:>10} {checksum:>16}")
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -148,7 +234,7 @@ def parse_args(argv=None):
         "--large-diffused", action="store_true",
         help="DANGER: benchmark large Python RGB diffusion")
     parser.add_argument(
-        "--section", choices=("all", "exact", "preview", "cache"),
+        "--section", choices=("all", "exact", "preview", "cache", "effects"),
         default="all")
     return parser.parse_args(argv)
 
@@ -167,6 +253,8 @@ def main(argv=None) -> None:
         previews(args)
     if args.section in ("all", "cache"):
         cached(args)
+    if args.section in ("all", "effects"):
+        effects(args)
 
 
 if __name__ == "__main__":
