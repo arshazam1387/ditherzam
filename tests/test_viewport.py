@@ -99,3 +99,20 @@ def test_viewport_device_demand_reports_drawable_pixels(qapp_fixture):
         int(__import__("math").ceil(logical_w * dpr)),
         int(__import__("math").ceil(logical_h * dpr)),
     )
+from PySide6.QtGui import QPainter, QPixmap
+
+
+def test_pixmap_filtering_is_smooth_only_while_downscaled(qapp_fixture):
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView()
+    view.resize(200, 200)
+    view.show()
+    qapp_fixture.processEvents()
+
+    view.set_pixmap(QPixmap(1000, 1000), logical_size=(1000, 1000), refit=True)
+    assert view.renderHints() & QPainter.RenderHint.SmoothPixmapTransform
+
+    view.resetTransform()
+    view._update_pixmap_filtering()
+    assert not (view.renderHints() & QPainter.RenderHint.SmoothPixmapTransform)

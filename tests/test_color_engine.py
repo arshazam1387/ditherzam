@@ -40,6 +40,57 @@ def test_nearest_output_only_palette_colors():
     assert uniq <= allowed
 
 
+def test_source_mode_preserves_spatial_hues_while_simplifying():
+    source = np.array([
+        [[240, 20, 20], [20, 30, 235]],
+        [[225, 35, 25], [25, 20, 220]],
+    ], np.float32)
+    palette = Palette.from_list("source", [[255, 0, 0], [0, 0, 255]])
+    out = ColorEngine(palette, mode="source", source_rgb=source,
+                      source_dither=0).map(
+        np.full((2, 2), 127.5, np.float32))
+    np.testing.assert_array_equal(out[:, 0], np.array([[255, 0, 0], [255, 0, 0]]))
+    np.testing.assert_array_equal(out[:, 1], np.array([[0, 0, 255], [0, 0, 255]]))
+
+
+def test_source_mode_resizes_source_to_preview_shape():
+    source = np.zeros((4, 4, 3), np.float32)
+    source[:, 2:] = [255, 255, 255]
+    palette = Palette.from_list("bw", [[0, 0, 0], [255, 255, 255]])
+    out = ColorEngine(palette, "source", source_rgb=source,
+                      source_dither=0).map(
+        np.zeros((2, 2), np.float32))
+    assert out.shape == (2, 2, 3)
+    np.testing.assert_array_equal(out[:, 0], 0)
+    np.testing.assert_array_equal(out[:, 1], 255)
+
+
+def test_source_dither_adds_texture_without_swapping_spatial_hues():
+    source = np.array([[[220, 30, 30], [25, 30, 220]]], np.float32)
+    palette = Palette.from_list("rb", [[220, 30, 30], [25, 30, 220]])
+    dither = np.array([[0.0, 255.0]], np.float32)
+    plain = ColorEngine(palette, "source", source_rgb=source,
+                        source_dither=0).map(dither)
+    textured = ColorEngine(palette, "source", source_rgb=source,
+                           source_dither=50).map(dither)
+    assert not np.array_equal(textured, plain)
+    assert textured[0, 0, 0] > textured[0, 0, 2]  # left remains red
+    assert textured[0, 1, 2] > textured[0, 1, 0]  # right remains blue
+
+
+def test_full_source_dither_colors_the_marks_themselves():
+    source = np.array([[[220, 30, 30], [25, 30, 220]]], np.float32)
+    palette = Palette.from_list("rb", [[220, 30, 30], [25, 30, 220]])
+    dither = np.array([[64.0, 192.0]], np.float32)
+    out = ColorEngine(palette, "source", source_rgb=source,
+                      source_dither=100).map(dither)
+    # The dither value becomes each mark's peak channel; local source hue picks
+    # which channel carries it. This distinguishes foreground-colored marks
+    # from a monochrome mask composited over/under a source-color layer.
+    assert out[0, 0, 0] == 64 and out[0, 0, 0] > out[0, 0, 2]
+    assert out[0, 1, 2] == 192 and out[0, 1, 2] > out[0, 1, 0]
+
+
 def test_nearest_indices_helper():
     pal = np.array([[0, 0, 0], [255, 255, 255]], np.float32)
     rgb = np.array([[[10, 10, 10], [200, 200, 200]]], np.float32)

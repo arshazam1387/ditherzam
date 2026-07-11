@@ -124,6 +124,8 @@ def test_from_image_request_sets_working_palette(qapp_fixture):
     win._on_from_image_requested()
     assert win.panel.working_palette.colors.shape == (6, 3)
     assert win.panel.working_palette.name == "from image"
+    assert win.panel.state["color_mode"] == "source"
+    assert win._current_color_engine().source_dither == 100
 
 
 def test_from_image_no_image_is_noop(qapp_fixture):

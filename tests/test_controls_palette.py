@@ -113,6 +113,18 @@ def test_extract_unit_widget_switches_range(qapp_fixture, tmp_path):
     assert panel.extract_slider.maximum() == 64
 
 
+def test_source_dither_control_only_shows_for_source_mode(qapp_fixture, tmp_path):
+    from ditherzam.ui.controls import ControlPanel
+    panel = ControlPanel()
+    assert not panel.source_dither_row.isVisibleTo(panel)
+    panel.mode_combo.setCurrentText("source")
+    assert panel.source_dither_row.isVisibleTo(panel)
+    panel.source_dither_slider.setValue(72)
+    assert panel.state["source_dither"] == 72
+    panel.mode_combo.setCurrentText("nearest")
+    assert not panel.source_dither_row.isVisibleTo(panel)
+
+
 def test_preview_defaults(qapp_fixture, tmp_path):
     panel = _panel(tmp_path)
     assert panel.state["palette_preview"] is True

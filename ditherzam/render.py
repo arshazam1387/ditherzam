@@ -67,7 +67,11 @@ def _color_sig(engine):
         return (None,)
     context = getattr(engine, "context", None)
     if context is not None:
-        return context.key
+        source = getattr(engine, "source_rgb", None)
+        source_sig = ((id(source), source.shape,
+                       getattr(engine, "source_dither", None))
+                      if source is not None else None)
+        return context.key, source_sig
     colors = np.asarray(engine.palette.colors)
     return (engine.mode, colors.shape, colors.dtype.str,
             colors.tobytes(order="C"), getattr(engine, "depth", None),

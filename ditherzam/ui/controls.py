@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QPushButton,
     QVBoxLayout,
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from ..color.palette_store import PaletteStore
 from ..color.ramp import RAMP_MODES
+from ..dithering.parameters import parameter_specs
 from .delegates import populate_dither_combo
 from .palette_editor import SwatchStrip
 from .palette_picker import PalettePicker
@@ -33,7 +35,7 @@ _ADJUSTMENTS = [
     ("blur", "Blur", 100, 0),
 ]
 
-_COLOR_MODES = ["off", "nearest", "ordered", "diffused", "ramp"]
+_COLOR_MODES = ["off", "source", "nearest", "ordered", "diffused", "ramp"]
 _EFFECTS = ["Blur", "Sharpen", "Chromatic Aberration", "JPEG Glitch"]
 
 
@@ -55,12 +57,17 @@ class ControlPanel(QWidget):
             "invert": False, "preview_disabled": False,
             "style": "None", "scale": 5, "params": {},
             "palette": "grayscale", "color_mode": "off", "effects": [],
+            "source_dither": 100,
             "depth": 2, "color_mapping": "match",
             "palette_autosave": False, "extract_unit": "k",
             "palette_preview": True, "palette_wheel_cycle": False,
         }
         self._sliders: dict[str, ResettableGlowSlider] = {}
         self._spins: dict[str, InvisibleSpinBox] = {}
+        self._registry = None
+        self._style_params: dict[str, dict] = {"None": {}}
+        self.param_sliders: dict[str, ResettableGlowSlider] = {}
+        self.param_value_labels: dict[str, QLabel] = {}
         self.working_palette = self.store.get(self.state["palette"])
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -83,7 +90,24 @@ class ControlPanel(QWidget):
         self.dither_combo = NoScrollComboBox()
         populate_dither_combo(self.dither_combo, {"Default": ["None"]})
         self.dither_combo.currentIndexChanged.connect(self._on_style_changed)
-        layout.addWidget(_labeled("Style", self.dither_combo))
+        self._dither_categories = {"Default": ["None"]}
+        self.dither_search = QLineEdit()
+        self.dither_search.setPlaceholderText("Search dither styles…")
+        self.dither_search.setClearButtonEnabled(True)
+        self.dither_search.setVisible(False)
+        self.dither_search.textChanged.connect(self._filter_dither_styles)
+        self.dither_search_btn = QPushButton("Search")
+        self.dither_search_btn.setCheckable(True)
+        self.dither_search_btn.toggled.connect(self._toggle_dither_search)
+
+        style_row = QHBoxLayout()
+        style_row.setContentsMargins(0, 0, 0, 0)
+        style_row.addWidget(self.dither_combo, 1)
+        style_row.addWidget(self.dither_search_btn)
+        style_container = QWidget()
+        style_container.setLayout(style_row)
+        layout.addWidget(_labeled("Style", style_container))
+        layout.addWidget(self.dither_search)
 
         self.scale_slider = ResettableGlowSlider(default=5, glow_color="#5e89ed")
         self.scale_slider.setRange(1, 20)
@@ -95,6 +119,12 @@ class ControlPanel(QWidget):
             lambda v: self.scale_spin.setValue(round(v / 20 * 100)))
         self._spins["scale"] = self.scale_spin
         layout.addWidget(_labeled("Scale", self.scale_slider, self.scale_spin))
+
+        self.param_controls = QWidget()
+        self.param_controls_layout = QVBoxLayout(self.param_controls)
+        self.param_controls_layout.setContentsMargins(0, 0, 0, 0)
+        self.param_controls_layout.setSpacing(6)
+        layout.addWidget(self.param_controls)
 
     def _build_adjustments_section(self, layout: QVBoxLayout) -> None:
         layout.addWidget(_header("Adjustments"))
@@ -182,6 +212,20 @@ class ControlPanel(QWidget):
         self.mode_combo.currentTextChanged.connect(self._on_mode_changed)
         layout.addWidget(_labeled("Mode", self.mode_combo))
 
+        self.source_dither_slider = ResettableGlowSlider(default=100, glow_color="#5e89ed")
+        self.source_dither_slider.setRange(0, 100)
+        self.source_dither_spin = InvisibleSpinBox(max_display=100)
+        self.source_dither_spin.setValue(100)
+        self.source_dither_slider.valueChanged.connect(
+            self._make_slider_handler("source_dither"))
+        self.source_dither_slider.valueChanged.connect(self.source_dither_spin.setValue)
+        self._sliders["source_dither"] = self.source_dither_slider
+        self._spins["source_dither"] = self.source_dither_spin
+        self.source_dither_row = _labeled("Colored Dither", self.source_dither_slider,
+                                          self.source_dither_spin)
+        self.source_dither_row.setVisible(False)
+        layout.addWidget(self.source_dither_row)
+
         self.mapping_combo = NoScrollComboBox()
         self.mapping_combo.addItems(list(RAMP_MODES))
         self.mapping_combo.currentTextChanged.connect(self._on_mapping_changed)
@@ -230,13 +274,89 @@ class ControlPanel(QWidget):
 
     # ---- public API ---------------------------------------------------------
     def set_registry_categories(self, by_category) -> None:
+        self._dither_categories = {
+            str(category): list(names) for category, names in by_category.items()
+        }
+        self._filter_dither_styles(self.dither_search.text())
+
+    def set_registry(self, registry) -> None:
+        """Attach the registry that supplies style-specific control metadata."""
+        self._registry = registry
+        self.set_registry_categories(registry.by_category())
+        self._rebuild_parameter_controls()
+
+    def refresh_parameter_controls(self) -> None:
+        """Re-read current preset/state values into the visible style controls."""
+        self._rebuild_parameter_controls()
+
+    def _rebuild_parameter_controls(self) -> None:
+        while self.param_controls_layout.count():
+            item = self.param_controls_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self.param_sliders.clear()
+        self.param_value_labels.clear()
+
+        entry = (self._registry.get_entry(self.state["style"])
+                 if self._registry is not None else None)
+        specs = parameter_specs(entry) if entry is not None else ()
+        params = self.state.setdefault("params", {})
+        for spec in specs:
+            value = max(spec.minimum, min(spec.maximum,
+                        int(params.get(spec.key, spec.default))))
+            params.setdefault(spec.key, value)
+            slider = ResettableGlowSlider(default=spec.default, glow_color="#5e89ed")
+            slider.setRange(spec.minimum, spec.maximum)
+            slider.setValue(value)
+            number = QLabel(str(value))
+            number.setMinimumWidth(24)
+            number.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            slider.valueChanged.connect(
+                lambda v, key=spec.key: self._on_parameter_changed(key, v))
+            slider.valueChanged.connect(lambda v, label=number: label.setText(str(v)))
+            self.param_sliders[spec.key] = slider
+            self.param_value_labels[spec.key] = number
+            self.param_controls_layout.addWidget(_labeled(spec.label, slider, number))
+        self.param_controls.setVisible(bool(specs))
+
+    def _on_parameter_changed(self, key: str, value: int) -> None:
+        self.state.setdefault("params", {})[key] = int(value)
+        self._style_params[self.state["style"]] = dict(self.state["params"])
+        self.changed.emit()
+
+    def _toggle_dither_search(self, visible: bool) -> None:
+        self.dither_search.setVisible(visible)
+        if visible:
+            self.dither_search.setFocus()
+        else:
+            self.dither_search.clear()
+
+    def _filter_dither_styles(self, query: str) -> None:
+        needle = query.strip().casefold()
+        if needle:
+            filtered = {
+                category: [name for name in names if needle in name.casefold()]
+                for category, names in self._dither_categories.items()
+            }
+            filtered = {category: names for category, names in filtered.items() if names}
+        else:
+            filtered = self._dither_categories
+
         current = self.state["style"]
         self.dither_combo.blockSignals(True)
-        populate_dither_combo(self.dither_combo, by_category)
+        populate_dither_combo(self.dither_combo, filtered)
+        model = self.dither_combo.model()
+        for row in range(self.dither_combo.count()):
+            idx = model.index(row, 0)
+            if idx.data(Qt.ItemDataRole.UserRole) == current:
+                self.dither_combo.setCurrentIndex(row)
+                break
         self.dither_combo.blockSignals(False)
-        self.set_style(current)
 
-    def set_style(self, name: str) -> None:
+    def set_style(self, name: str, params: dict | None = None) -> None:
+        previous = self.state["style"]
+        self._style_params[previous] = dict(self.state.get("params", {}))
         model = self.dither_combo.model()
         for row in range(self.dither_combo.count()):
             idx = model.index(row, 0)
@@ -244,13 +364,21 @@ class ControlPanel(QWidget):
                 self.dither_combo.setCurrentIndex(row)
                 break
         self.state["style"] = name
+        if params is not None:
+            self._style_params[name] = dict(params)
+        self.state["params"] = dict(self._style_params.get(name, {}))
+        self._rebuild_parameter_controls()
         self.changed.emit()
 
     # ---- signal handlers ----------------------------------------------------
     def _on_style_changed(self, _index: int) -> None:
         data = self.dither_combo.currentData(Qt.ItemDataRole.UserRole)
         if data is not None:
+            previous = self.state["style"]
+            self._style_params[previous] = dict(self.state.get("params", {}))
             self.state["style"] = data
+            self.state["params"] = dict(self._style_params.get(data, {}))
+            self._rebuild_parameter_controls()
             self.changed.emit()
 
     def _on_scale_changed(self, value: int) -> None:
@@ -342,6 +470,7 @@ class ControlPanel(QWidget):
 
     def _on_mode_changed(self, text: str) -> None:
         self.state["color_mode"] = text
+        self.source_dither_row.setVisible(text == "source")
         self.changed.emit()
 
     def _on_mapping_changed(self, text: str) -> None:

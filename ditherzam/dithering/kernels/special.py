@@ -6,58 +6,66 @@ from ditherzam.dithering import registry
 
 
 @njit(cache=True, parallel=True)
-def _radial_burst(img, thr):
+def _radial_burst(img, thr, rays, phase, center_x, center_y, threshold_span):
     h, w = img.shape
-    cx = w / 2.0
-    cy = h / 2.0
-    rays = 24.0
+    cx = w / 2.0 + center_x
+    cy = h / 2.0 + center_y
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
             ang = math.atan2(y - cy, x - cx)
-            t = (math.sin(ang * rays) * 0.5 + 0.5) * 255.0
+            t = 127.5 + math.sin(ang * rays + phase * math.pi / 180.0) * threshold_span
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _wave(img, thr):
+def _wave(img, thr, xfreq, yfreq, phase, xweight, amplitude, line_spacing):
     h, w = img.shape
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
-            t = ((math.sin(x * 0.15) + math.sin(y * 0.15)) * 0.25 + 0.5) * 255.0
+            wx = xweight / 100.0
+            p = phase * math.pi / 180.0
+            spacing = line_spacing / 100.0
+            t = 127.5 + (math.sin(x * xfreq / (100.0 * spacing) + p) * wx + math.sin(y * yfreq / (100.0 * spacing) + p) * (1.0 - wx)) * amplitude
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
 
 @njit(cache=True)
-def _noise(img, thr):
-    np.random.seed(0)
+def _noise(img, thr, amplitude, seed, bias, grain, image_mix):
+    np.random.seed(seed)
     h, w = img.shape
     out = np.empty_like(img)
     for y in range(h):
         for x in range(w):
-            n = (np.random.random() - 0.5) * 255.0
-            out[y, x] = 255.0 if (img[y, x] + n) >= thr else 0.0
+            if grain == 1:
+                n = (np.random.random() - 0.5) * amplitude + bias
+            else:
+                gy = (y // grain) * grain
+                gx = (x // grain) * grain
+                np.random.seed(seed + gy * 65537 + gx)
+                n = (np.random.random() - 0.5) * amplitude + bias
+            value = img[y, x] * image_mix / 100.0
+            out[y, x] = 255.0 if (value + n) >= thr else 0.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _topography(img, warp):
+def _topography(img, warp, bands, warp_freq, sample_step, phase):
     h, w = img.shape
-    bands = 8.0
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
-            sx = int(x + math.sin(y * 0.1) * warp)
+            sx = int(x + math.sin(y * warp_freq / 100.0 + phase * math.pi / 180.0) * warp)
             if sx < 0:
                 sx = 0
             elif sx >= w:
                 sx = w - 1
             b0 = int(img[y, sx] / 256.0 * bands)
-            xr = sx + 1 if sx + 1 < w else sx
-            yd = y + 1 if y + 1 < h else y
+            xr = sx + sample_step if sx + sample_step < w else sx
+            yd = y + sample_step if y + sample_step < h else y
             br = int(img[y, xr] / 256.0 * bands)
             bd = int(img[int(yd), sx] / 256.0 * bands)
             out[y, x] = 0.0 if (b0 != br or b0 != bd) else 255.0
@@ -65,36 +73,39 @@ def _topography(img, warp):
 
 
 @njit(cache=True, parallel=True)
-def _thresholder(img, freq):
+def _thresholder(img, freq, xscale, yscale, amplitude, phase):
     h, w = img.shape
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
-            t = 128.0 + math.sin(x / freq) * math.cos(y / freq) * 64.0
+            p = phase * math.pi / 180.0
+            t = 128.0 + math.sin(x * xscale / freq + p) * math.cos(y * yscale / freq + p) * amplitude
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _diagonal(img, sensitivity):
+def _diagonal(img, sensitivity, xweight, yweight, radius, edge_bias):
     h, w = img.shape
     out = np.empty_like(img)
-    thr_edge = 200.0 / sensitivity
     for y in prange(h):
         for x in range(w):
-            xl = x - 1 if x > 0 else x
-            xr = x + 1 if x < w - 1 else x
-            yu = y - 1 if y > 0 else y
-            yd = y + 1 if y < h - 1 else y
-            gx = img[y, xr] - img[y, xl]
-            gy = img[int(yd), x] - img[int(yu), x]
+            xl = x - radius if x >= radius else x
+            xr = x + radius if x + radius < w else x
+            yu = y - radius if y >= radius else y
+            yd = y + radius if y + radius < h else y
+            gx = (img[y, xr] - img[y, xl]) * xweight / 100.0
+            gy = (img[int(yd), x] - img[int(yu), x]) * yweight / 100.0
             mag = math.sqrt(gx * gx + gy * gy)
-            out[y, x] = 0.0 if mag > thr_edge else 255.0
+            # Tone-aware gating keeps a constant-slope ramp from collapsing to
+            # all white while preserving this style as an edge drawing.
+            tone_gate = (200.0 / sensitivity) * (0.05 + img[y, x] / 255.0)
+            out[y, x] = 0.0 if mag > tone_gate + edge_bias else 255.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _displace_contour(img, contour_thr, line_mode, smoothing, line_space):
+def _displace_contour(img, contour_thr, line_mode, smoothing, line_space, displacement):
     h, w = img.shape
     bands = line_space if line_space >= 1 else 1
     thick = line_mode if line_mode >= 1 else 1
@@ -102,11 +113,15 @@ def _displace_contour(img, contour_thr, line_mode, smoothing, line_space):
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
-            val = img[y, x]
+            sx = int(x + math.sin(y * 0.1) * displacement)
+            if sx < 0: sx = 0
+            elif sx >= w: sx = w - 1
+            val = img[y, sx]
             b0 = int(val / step)
             is_line = False
             for t in range(thick):
-                xr = x + 1 + t if x + 1 + t < w else w - 1
+                reach = 1 + t + smoothing
+                xr = sx + reach if sx + reach < w else w - 1
                 yd = y + 1 + t if y + 1 + t < h else h - 1
                 if int(img[y, xr] / step) != b0 or int(img[yd, x] / step) != b0:
                     is_line = True
@@ -116,23 +131,24 @@ def _displace_contour(img, contour_thr, line_mode, smoothing, line_space):
 
 
 @njit(cache=True, parallel=True)
-def _sine_wave_modulation(img, freq, wave_thr):
+def _sine_wave_modulation(img, freq, wave_thr, yfreq, phase, contrast, line_spacing):
     h, w = img.shape
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
             darkness = 1.0 - img[y, x] / 255.0
-            line = math.sin(x * freq * 0.05 + y * 0.1) * 0.5 + 0.5
-            gate = darkness * (wave_thr / 15.0)
+            spacing = line_spacing / 100.0
+            line = math.sin((x * freq * 0.05 + y * yfreq / 100.0) / spacing + phase * math.pi / 180.0) * 0.5 + 0.5
+            gate = darkness * (wave_thr / 15.0) * contrast / 100.0
             out[y, x] = 0.0 if line < gate else 255.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _vortex(img, thr):
+def _vortex(img, thr, arms, radial_freq, phase, center_x, center_y):
     h, w = img.shape
-    cx = w / 2.0
-    cy = h / 2.0
+    cx = w / 2.0 + center_x
+    cy = h / 2.0 + center_y
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
@@ -140,163 +156,179 @@ def _vortex(img, thr):
             dy = y - cy
             ang = math.atan2(dy, dx)
             r = math.sqrt(dx * dx + dy * dy)
-            t = (math.sin(ang * 6.0 + r * 0.15) * 0.5 + 0.5) * 255.0
+            t = (math.sin(ang * arms + r * radial_freq / 100.0 + phase * math.pi / 180.0) * 0.5 + 0.5) * 255.0
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _concentric(img, thr):
+def _concentric(img, thr, frequency, phase, center_x, center_y, ellipticity):
     h, w = img.shape
-    cx = w / 2.0
-    cy = h / 2.0
+    cx = w / 2.0 + center_x
+    cy = h / 2.0 + center_y
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
             dx = x - cx
             dy = y - cy
-            r = math.sqrt(dx * dx + dy * dy)
-            t = (math.sin(r * 0.3) * 0.5 + 0.5) * 255.0
+            r = math.sqrt(dx * dx + dy * dy * ellipticity * ellipticity / 10000.0)
+            t = (math.sin(r * frequency / 100.0 + phase * math.pi / 180.0) * 0.5 + 0.5) * 255.0
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _wireframe_alt(img, sensitivity):
+def _wireframe_alt(img, sensitivity, xweight, yweight, diagweight, radius):
     h, w = img.shape
     out = np.empty_like(img)
-    thr_edge = 160.0 / sensitivity
     for y in prange(h):
         for x in range(w):
-            xl = x - 1 if x > 0 else x
-            xr = x + 1 if x < w - 1 else x
-            yu = y - 1 if y > 0 else y
-            yd = y + 1 if y < h - 1 else y
-            gx = img[y, xr] - img[y, xl]
-            gy = img[int(yd), x] - img[int(yu), x]
-            gd = img[int(yd), xr] - img[int(yu), xl]
+            xl = x - radius if x >= radius else x
+            xr = x + radius if x + radius < w else x
+            yu = y - radius if y >= radius else y
+            yd = y + radius if y + radius < h else y
+            gx = (img[y, xr] - img[y, xl]) * xweight / 100.0
+            gy = (img[int(yd), x] - img[int(yu), x]) * yweight / 100.0
+            gd = (img[int(yd), xr] - img[int(yu), xl]) * diagweight / 100.0
             mag = math.sqrt(gx * gx + gy * gy + gd * gd)
-            out[y, x] = 0.0 if mag > thr_edge else 255.0
+            # The larger base compensates for the additional diagonal channel;
+            # luminance modulation gives smooth ramps an actual wire gradient.
+            tone_gate = (640.0 / sensitivity) * (0.05 + img[y, x] / 255.0)
+            out[y, x] = 0.0 if mag > tone_gate else 255.0
     return out
 
 
 @njit(cache=True, parallel=True)
-def _crosshatch_alt(img, s):
+def _crosshatch_alt(img, s, vertical_gate, horizontal_gate, diagonal_gate, steep_gate):
     h, w = img.shape
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
             darkness = 1.0 - img[y, x] / 255.0
             hit = False
-            if darkness > 0.15 and (x % s == 0):
+            if darkness > vertical_gate / 100.0 and (x % s == 0):
                 hit = True
-            if darkness > 0.40 and (y % s == 0):
+            if darkness > horizontal_gate / 100.0 and (y % s == 0):
                 hit = True
-            if darkness > 0.65 and ((x + y) % s == 0):
+            if darkness > diagonal_gate / 100.0 and ((x + y) % s == 0):
                 hit = True
-            if darkness > 0.85 and ((x - y) % s == 0):
+            if darkness > steep_gate / 100.0 and ((x - y) % s == 0):
                 hit = True
             out[y, x] = 0.0 if hit else 255.0
     return out
 
 
 # ── Kernel: Radial Burst · Special Effects · dims=2 · no sliders ──
-@registry.register("Radial Burst", "Special Effects", dims=2)
+@registry.register("Radial Burst", "Special Effects", dims=2,
+                   param_sliders=("ray_count_slider", "ray_phase_slider", "center_x_slider", "center_y_slider", "threshold_span_slider"))
 def radial_burst(image_array, parameter, luminance_threshold_value):
-    return _radial_burst(image_array.astype(np.float32), luminance_threshold_value)
+    rays, phase, cx, cy, span = _unpack5(parameter, 24, 0, 0, 0, 128)
+    return _radial_burst(image_array.astype(np.float32), luminance_threshold_value, float(rays), float(phase), float(cx), float(cy), _half_span(span))
 
 
 # ── Kernel: Wave · Special Effects · dims=2 · no sliders ──
-@registry.register("Wave", "Special Effects", dims=2)
+@registry.register("Wave", "Special Effects", dims=2,
+                   param_sliders=("wave_x_frequency_slider", "wave_y_frequency_slider", "special_wave_phase_slider", "wave_x_weight_slider", "wave_amplitude_slider", "wave_line_spacing_slider"))
 def wave(image_array, parameter, luminance_threshold_value):
-    return _wave(image_array.astype(np.float32), luminance_threshold_value)
+    xf, yf, phase, xw, amp, spacing = _unpack6(parameter, 15, 15, 0, 50, 128, 100)
+    return _wave(image_array.astype(np.float32), luminance_threshold_value, float(xf), float(yf), float(phase), float(xw), _half_span(amp), float(spacing))
 
 
 # ── Kernel: Noise · Special Effects · dims=2 · no sliders ──
-@registry.register("Noise", "Special Effects", dims=2)
+@registry.register("Noise", "Special Effects", dims=2,
+                   param_sliders=("noise_amplitude_slider", "noise_seed_slider", "noise_bias_slider", "noise_grain_slider", "noise_image_mix_slider"))
 def noise(image_array, parameter, luminance_threshold_value):
-    return _noise(image_array.astype(np.float32), luminance_threshold_value)
+    amp, seed, bias, grain, mix = _unpack5(parameter, 220, 0, 0, 2, 100)
+    return _noise(image_array.astype(np.float32), luminance_threshold_value, float(amp), int(seed), float(bias), max(1, int(grain)), float(mix))
 
 
 # ── Kernel: Topography · Special Effects · dims=2 · Warp Intensity 1-20-1 ──
 @registry.register("Topography", "Special Effects", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=("dither_parameter_slider", "topo_band_count_slider", "topo_warp_frequency_slider", "topo_sample_step_slider", "topo_phase_slider"))
 def topography(image_array, parameter, luminance_threshold_value):
-    warp = float(parameter) if parameter else 1.0
-    return _topography(image_array.astype(np.float32), warp)
+    warp, bands, freq, step, phase = _unpack5(parameter, 3, 12, 10, 2, 0)
+    return _topography(image_array.astype(np.float32), float(warp), float(bands), float(freq), max(1, int(step)), float(phase))
 
 
 # ── Kernel: Thresholder · Special Effects · dims=2 · Modulation Frequency 1-20-1 ──
 @registry.register("Thresholder", "Special Effects", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=("dither_parameter_slider", "threshold_x_scale_slider", "threshold_y_scale_slider", "threshold_amplitude_slider", "threshold_phase_slider"))
 def thresholder(image_array, parameter, luminance_threshold_value):
-    freq = float(parameter) if parameter else 1.0
+    freq, xs, ys, amp, phase = _unpack5(parameter, 1, 1, 1, 64, 0)
+    freq = float(freq)
     if freq < 1.0:
         freq = 1.0
-    return _thresholder(image_array.astype(np.float32), freq)
+    return _thresholder(image_array.astype(np.float32), freq, float(xs), float(ys), float(amp), float(phase))
 
 
 # ── Kernel: Diagonal · Special Effects · dims=2 · Edge Sensitivity 1-20-1 ──
 @registry.register("Diagonal", "Special Effects", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=("dither_parameter_slider", "edge_x_weight_slider", "edge_y_weight_slider", "edge_radius_slider", "edge_bias_slider"))
 def diagonal(image_array, parameter, luminance_threshold_value):
-    s = float(parameter) if parameter else 1.0
+    s, xw, yw, radius, bias = _unpack5(parameter, 8, 100, 35, 1, 0)
+    s = float(s)
     if s < 1.0:
         s = 1.0
-    return _diagonal(image_array.astype(np.float32), s)
+    return _diagonal(image_array.astype(np.float32), s, float(xw), float(yw), max(1, int(radius)), float(bias))
 
 
 # ── Kernel: Displace Contour · Special Effects · dims=2 ──
 #    sliders (Contour Threshold 0-100-50, Line Mode 1-3-1, Smoothing 0-5-0, Line Spacing 1-5-1)
 @registry.register("Displace Contour", "Special Effects", dims=2,
                    param_sliders=("contour_thresh_slider", "line_mode_slider",
-                                  "smoothing_slider", "line_space_slider"))
+                                  "smoothing_slider", "line_space_slider", "contour_displacement_slider"))
 def displace_contour(image_array, parameter, luminance_threshold_value):
-    ct, lm, sm, ls = _unpack4(parameter, 50, 1, 0, 1)
+    ct, lm, sm, ls, displacement = _unpack5(parameter, 70, 2, 0, 3, 4)
     return _displace_contour(image_array.astype(np.float32),
-                             float(ct), int(lm), int(sm), int(ls))
+                             float(ct), int(lm), int(sm), int(ls), float(displacement))
 
 
 # ── Kernel: Sine Wave Modulation · Special Effects · dims=2 ──
 #    sliders (Wave Frequency 1-20-5, Wave Threshold 1-30-10)
 @registry.register("Sine Wave Modulation", "Special Effects", dims=2,
-                   param_sliders=("wave_frequency_slider", "wave_threshold_slider"))
+                   param_sliders=("wave_frequency_slider", "wave_threshold_slider", "sine_y_frequency_slider", "sine_phase_slider", "sine_contrast_slider", "wave_line_spacing_slider"))
 def sine_wave_modulation(image_array, parameter, luminance_threshold_value):
-    freq, wthr = _unpack2s(parameter, 5, 10)
+    freq, wthr, yfreq, phase, contrast, spacing = _unpack6(parameter, 5, 10, 10, 0, 100, 100)
     return _sine_wave_modulation(image_array.astype(np.float32),
-                                 float(freq), float(wthr))
+                                 float(freq), float(wthr), float(yfreq), float(phase), float(contrast), float(spacing))
 
 
 # ── Kernel: Vortex · Special Effects · dims=2 · no sliders (extra) ──
-@registry.register("Vortex", "Special Effects", dims=2)
+@registry.register("Vortex", "Special Effects", dims=2,
+                   param_sliders=("vortex_arms_slider", "vortex_radial_frequency_slider", "vortex_phase_slider", "center_x_slider", "center_y_slider"))
 def vortex(image_array, parameter, luminance_threshold_value):
-    return _vortex(image_array.astype(np.float32), luminance_threshold_value)
+    arms, rf, phase, cx, cy = _unpack5(parameter, 6, 15, 0, 0, 0)
+    return _vortex(image_array.astype(np.float32), luminance_threshold_value, float(arms), float(rf), float(phase), float(cx), float(cy))
 
 
 # ── Kernel: Concentric Rings · Special Effects · dims=2 · no sliders (extra) ──
-@registry.register("Concentric Rings", "Special Effects", dims=2)
+@registry.register("Concentric Rings", "Special Effects", dims=2,
+                   param_sliders=("ring_frequency_slider", "ring_phase_slider", "center_x_slider", "center_y_slider", "ring_ellipticity_slider"))
 def concentric_rings(image_array, parameter, luminance_threshold_value):
-    return _concentric(image_array.astype(np.float32), luminance_threshold_value)
+    freq, phase, cx, cy, ellipse = _unpack5(parameter, 30, 0, 0, 0, 100)
+    return _concentric(image_array.astype(np.float32), luminance_threshold_value, float(freq), float(phase), float(cx), float(cy), float(ellipse))
 
 
 # ── Kernel: Wireframe Alt · Special Effects · dims=2 · Edge Sensitivity 1-20-1 (extra) ──
 @registry.register("Wireframe Alt", "Special Effects", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=("dither_parameter_slider", "wire_x_weight_slider", "wire_y_weight_slider", "wire_diagonal_weight_slider", "wire_radius_slider"))
 def wireframe_alt(image_array, parameter, luminance_threshold_value):
-    s = float(parameter) if parameter else 1.0
+    s, xw, yw, dw, radius = _unpack5(parameter, 8, 70, 70, 140, 2)
+    s = float(s)
     if s < 1.0:
         s = 1.0
-    return _wireframe_alt(image_array.astype(np.float32), s)
+    return _wireframe_alt(image_array.astype(np.float32), s, float(xw), float(yw), float(dw), max(1, int(radius)))
 
 
 # ── Kernel: Crosshatch Alt · Special Effects · dims=2 · Line Spacing 1-20-1 (extra) ──
 @registry.register("Crosshatch Alt", "Special Effects", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=("dither_parameter_slider", "hatch_vertical_gate_slider", "hatch_horizontal_gate_slider", "hatch_diagonal_gate_slider", "hatch_steep_gate_slider"))
 def crosshatch_alt(image_array, parameter, luminance_threshold_value):
-    s = int(parameter) if parameter else 4
+    s, vg, hg, dg, sg = _unpack5(parameter, 4, 15, 40, 65, 85)
+    s = int(s)
     if s < 1:
         s = 1
-    return _crosshatch_alt(image_array.astype(np.float32), s)
+    return _crosshatch_alt(image_array.astype(np.float32), s, float(vg), float(hg), float(dg), float(sg))
 
 
 # ── Tuple-unpack helpers (plain Python) ──
@@ -313,3 +345,21 @@ def _unpack2s(parameter, d0, d1):
         b = parameter[1] if len(parameter) > 1 else d1
         return a, b
     return parameter, d1
+
+
+def _unpack5(parameter, d0, d1, d2, d3, d4):
+    if isinstance(parameter, (tuple, list)):
+        defaults = (d0, d1, d2, d3, d4)
+        return tuple(parameter[i] if i < len(parameter) else defaults[i] for i in range(5))
+    return (parameter if parameter not in (None, 0) else d0), d1, d2, d3, d4
+
+
+def _unpack6(parameter, d0, d1, d2, d3, d4, d5):
+    if isinstance(parameter, (tuple, list)):
+        defaults = (d0, d1, d2, d3, d4, d5)
+        return tuple(parameter[i] if i < len(parameter) else defaults[i] for i in range(6))
+    return (parameter if parameter not in (None, 0) else d0), d1, d2, d3, d4, d5
+
+
+def _half_span(value):
+    return max(0.0, float(value) - 0.5)
