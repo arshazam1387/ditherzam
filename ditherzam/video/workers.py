@@ -14,6 +14,7 @@ from .ffmpeg import (
     assemble_video, cmd_extract_frames, run_command,
 )
 from .frames import dither_frames
+from ..threading_policy import export_budget, numba_threads
 
 
 class WorkerSignals(QObject):
@@ -60,11 +61,14 @@ class VideoDitherWorker(QRunnable):
     @Slot()
     def run(self) -> None:
         try:
-            written = dither_frames(
-                self.in_dir, self.out_dir, self.pipeline, self.settings,
-                progress=lambda done, total: self.signals.progress.emit(done, total),
-                is_cancelled=lambda: self._is_canceled,
-            )
+            # This runs async on a pool thread while the UI stays live; drop to the
+            # export budget so a concurrent interactive render keeps its reserve.
+            with numba_threads(export_budget()):
+                written = dither_frames(
+                    self.in_dir, self.out_dir, self.pipeline, self.settings,
+                    progress=lambda done, total: self.signals.progress.emit(done, total),
+                    is_cancelled=lambda: self._is_canceled,
+                )
             self.signals.finished.emit(written)
         except Exception as e:  # noqa: BLE001
             self.signals.error.emit(str(e))
