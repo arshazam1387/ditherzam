@@ -165,7 +165,7 @@ class ImageEditor(QMainWindow):
 
         self.viewport = CustomGraphicsView()
         self.panel = ControlPanel()
-        self.panel.set_registry_categories(self._registry.by_category())
+        self.panel.set_registry(self._registry)
         self.panel.changed.connect(self.schedule_render)
         self.panel.from_image_requested.connect(self._on_from_image_requested)
         self.panel.palette_preview.connect(self._on_palette_preview)
@@ -393,6 +393,7 @@ class ImageEditor(QMainWindow):
         value = int(self.panel.extract_slider.value())
         palette = generate_palette(self._base_rgb, unit, value)
         self.panel.set_working_palette(palette)
+        self.panel.mode_combo.setCurrentText("source")
 
     def _current_color_engine(self):
         """ColorEngine reflecting the panel's Palette + Mode, or None when off."""
@@ -406,6 +407,8 @@ class ImageEditor(QMainWindow):
             palette,
             self._color_mode(),
             context_cache=self._color_context_cache,
+            source_rgb=self._base_rgb if self._color_mode() == "source" else None,
+            source_dither=self.panel.state.get("source_dither", 100),
         )
 
     def _current_effect_stack(self):
@@ -468,7 +471,6 @@ class ImageEditor(QMainWindow):
         panel.scale_slider.setValue(int(settings.scale))
         panel.invert_toggle.setChecked(bool(settings.invert))
         panel.preview_toggle.setChecked(bool(settings.preview_disabled))
-        panel.state["params"] = dict(settings.params)
         from ..effects.glow_params import glow_state_from_params, GLOW_DEFAULTS
         panel.effects_list.clear()
         glow_state = None
@@ -488,7 +490,7 @@ class ImageEditor(QMainWindow):
                 slider.setValue(int(glow_state.get(key, GLOW_DEFAULTS[key])))
         if palette is not None:
             panel.set_working_palette(palette)
-        panel.set_style(settings.style)
+        panel.set_style(settings.style, settings.params)
         if self._base_gray is not None:
             self.render_now()
 

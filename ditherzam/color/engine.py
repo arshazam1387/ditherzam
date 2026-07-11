@@ -230,13 +230,18 @@ def _to_rgb(img: np.ndarray) -> np.ndarray:
 class ColorEngine:
     def __init__(self, palette: Palette, mode: str = "nearest", *,
                  depth: int = 2, mapping: str = "match", phase: float = 0.0,
-                 context_cache: ColorContextCache | None = None) -> None:
+                 context_cache: ColorContextCache | None = None,
+                 source_rgb: np.ndarray | None = None,
+                 source_dither: float = 100.0) -> None:
         self.palette = palette
         self.mode = mode
         self.depth = depth
         self.mapping = mapping
         self.phase = phase
         self.context_cache = context_cache or DEFAULT_COLOR_CONTEXT_CACHE
+        self.source_rgb = (None if source_rgb is None else
+                           np.asarray(source_rgb, dtype=np.float32)[..., :3])
+        self.source_dither = max(0.0, min(100.0, float(source_dither)))
 
     @property
     def context(self):
@@ -253,7 +258,8 @@ class ColorEngine:
 
     def with_settings(self, **changes) -> "ColorEngine":
         """Return an engine derived from this one without mutating shared state."""
-        allowed = {"palette", "mode", "depth", "mapping", "phase"}
+        allowed = {"palette", "mode", "depth", "mapping", "phase", "source_rgb",
+                   "source_dither"}
         unknown = changes.keys() - allowed
         if unknown:
             raise TypeError(f"unknown color settings: {sorted(unknown)!r}")
@@ -264,9 +270,40 @@ class ColorEngine:
             mapping=changes.get("mapping", self.mapping),
             phase=changes.get("phase", self.phase),
             context_cache=self.context_cache,
+            source_rgb=changes.get("source_rgb", self.source_rgb),
+            source_dither=changes.get("source_dither", self.source_dither),
         )
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
+        if self.mode == "source":
+            if self.source_rgb is None:
+                rgb = _to_rgb(gray_or_rgb_f32)
+            else:
+                rgb = self.source_rgb
+                target = np.asarray(gray_or_rgb_f32).shape[:2]
+                if rgb.shape[:2] != target:
+                    th, tw = target
+                    sh, sw = rgb.shape[:2]
+                    ys = np.minimum((np.arange(th) * sh) // max(th, 1), sh - 1)
+                    xs = np.minimum((np.arange(tw) * sw) // max(tw, 1), sw - 1)
+                    rgb = rgb[ys][:, xs]
+            pal = self.context.palette_colors
+            simplified = pal[nearest_indices(rgb, pal)]
+            influence = np.float32(self.source_dither / 100.0)
+            if influence == 0.0:
+                return clamp_u8(simplified)
+            dither_luma = np.asarray(gray_or_rgb_f32, dtype=np.float32)
+            if dither_luma.ndim == 3:
+                dither_luma = dither_luma[..., :3] @ np.array(
+                    [0.299, 0.587, 0.114], np.float32)
+            # Color the dither marks themselves: the locally simplified source
+            # supplies hue/chroma, while the selected dither supplies lightness.
+            # This is not a color layer beneath a monochrome pattern.
+            peak = np.maximum(np.max(simplified, axis=2, keepdims=True), 1.0)
+            local_hue = simplified / peak
+            colored_dither = local_hue * dither_luma[..., None]
+            return clamp_u8(simplified * (np.float32(1.0) - influence) +
+                            colored_dither * influence)
         if self.mode == "ramp":
             if RAMP_EXACT_BLAS_LUMINANCE:
                 # Option B: exact pre-5eb0ee6 behavior, BLAS matmul and all.

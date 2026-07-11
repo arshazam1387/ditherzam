@@ -17,20 +17,20 @@ def test_special_single_binary_shape():
         assert set(np.unique(out).tolist()) <= {0.0, 255.0}, n
 
 
-def test_displace_contour_takes_4_tuple():
+def test_displace_contour_takes_native_tuple():
     e = registry.get_entry("Displace Contour")
-    assert e is not None and len(e.param_sliders) == 4
+    assert e is not None and len(e.param_sliders) == 5
     img = np.tile(np.linspace(0, 255, 24, dtype=np.float32), (24, 1))
-    out = e.func(img.copy(), (50, 1, 0, 1), 128.0)
+    out = e.func(img.copy(), (70, 2, 0, 3, 4), 128.0)
     assert out.shape == img.shape
     assert set(np.unique(out).tolist()) <= {0.0, 255.0}
 
 
-def test_sine_wave_modulation_takes_2_tuple():
+def test_sine_wave_modulation_takes_native_tuple():
     e = registry.get_entry("Sine Wave Modulation")
-    assert e is not None and len(e.param_sliders) == 2
+    assert e is not None and len(e.param_sliders) == 6
     img = np.tile(np.linspace(0, 255, 24, dtype=np.float32), (24, 1))
-    out = e.func(img.copy(), (5, 10), 128.0)
+    out = e.func(img.copy(), (5, 10, 10, 0, 100, 100), 128.0)
     assert out.shape == img.shape
     assert set(np.unique(out).tolist()) <= {0.0, 255.0}
 

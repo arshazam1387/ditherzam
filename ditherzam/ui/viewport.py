@@ -81,6 +81,27 @@ class CustomGraphicsView(QGraphicsView):
         self._scene.setSceneRect(self._pix_item.sceneBoundingRect())
         if refit:
             self.fit_image_to_viewport()
+        else:
+            self._update_pixmap_filtering()
+
+    def _update_pixmap_filtering(self) -> None:
+        """Avoid screen-space moire when a fine dither is being reduced.
+
+        Nearest-neighbour display is desirable at 1:1 and above, but while a
+        pixmap is smaller on screen than its raster dimensions it drops whole
+        rows/columns.  Repeating dither patterns then appear as large blank
+        rectangles or density bands.  Smooth only that reduction; zoomed-in
+        pixels remain crisp.
+        """
+        pixmap = self._pix_item.pixmap()
+        if pixmap.isNull():
+            smooth = False
+        else:
+            item_scale = abs(self._pix_item.transform().m11())
+            view_scale = abs(self.transform().m11())
+            device_scale = item_scale * view_scale * self.devicePixelRatioF()
+            smooth = device_scale < 1.0 - 1e-9
+        self.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, smooth)
 
     def viewport_device_demand(self) -> tuple[int, int]:
         """Drawable viewport dimensions in physical display pixels."""
@@ -92,6 +113,7 @@ class CustomGraphicsView(QGraphicsView):
     def fit_image_to_viewport(self) -> None:
         if not self._pix_item.pixmap().isNull():
             self.fitInView(self._pix_item, Qt.AspectRatioMode.KeepAspectRatio)
+        self._update_pixmap_filtering()
         self.zoom_changed.emit(self.current_zoom_percent())
 
     def current_zoom_percent(self) -> int:
@@ -108,6 +130,7 @@ class CustomGraphicsView(QGraphicsView):
             return
         factor = 1.2 if direction > 0 else 0.8
         self.scale(factor, factor)
+        self._update_pixmap_filtering()
         self.zoom_changed.emit(self.current_zoom_percent())
 
     def zoom_in(self) -> None:

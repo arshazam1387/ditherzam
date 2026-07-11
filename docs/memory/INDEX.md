@@ -3,6 +3,13 @@
 > One line per entry. Load this first on any session (`/zam-memory`). Entry bodies
 > live in the `NNN-slug.md` files, never here.
 
+- [progress|phase 8|done] Creative dither controls added — universal mix/orientation/offset/jitter/seed plus native per-style sliders, exact defaults (042-creative-dither-controls.md)
+- [progress|phase 8|done] At least five native controls per style — all 73 parameterized; wave/modulation styles add Line Spacing; exact defaults (043-five-native-controls-per-style.md)
+- [gotcha|phase 8|done] Checkers midpoint collapse fixed — complementary thresholds were identical at 127.5; now alternate ±64 (044-checkers-midpoint-collapse-fixed.md)
+- [progress|phase 8|done] Full 73-style quality audit — broken defaults/endpoints/duplicates fixed; 341 green; zero collapse or duplicate flags (045-full-style-quality-audit.md)
+- [progress|phase 8|done] Source-faithful From Image colors — RGB palette quantization preserves hue positions; palette count controls simplification (046-source-faithful-color-mode.md)
+- [progress|phase 8|in-progress] Smart Mask plan awaiting approval — approved still-image spec plus 17-task TDD plan before execution ledger (047-smart-mask-planning-handoff.md)
+
 - [constraint|phase -|n/a] Clean-room — no Studio AAA code/strings/binaries (001-clean-room.md)
 - [constraint|phase -|n/a] Core is Qt-free; only ui/app/video-workers import PySide6 (002-qt-free-core.md)
 - [constraint|phase -|n/a] Python 3.12 only; tests use NUMBA_DISABLE_JIT=1 (003-python-and-tests.md)
@@ -41,3 +48,6 @@
 - [progress|phase 8|done] Task 4.1 shipped: capped async latest-wins animation/video screen previews; export never reads cap (poisoned-callable tests); render_preview temporal_field passthrough (036-capped-media-previews-shipped.md)
 - [progress|phase 8|done] High-res Wave 4 COMPLETE (HEAD b5649b6, 915/0 JIT-off): 4.1 media previews, 4.3 thread bench, 4.5 warmup, 4.4 threading policy, 4.2 export contexts, 4.6 acceptance; opus review ✅ ready-to-merge; next=4K GUI QA + finish branch (037-high-res-wave4-complete.md)
 - [progress|phase 8|done] Eight generative dither styles shipped on feat/generative-dithers; exact JIT parity, 934 green JIT-off (038-generative-dither-styles-shipped.md)
+- [gotcha|phase 8|done] Low-scale preview aliasing fixed — adaptive smooth reduction removes rectangular dropout/density bands without changing exports (039-low-scale-preview-aliasing-fixed.md)
+- [progress|phase 8|done] Twenty curated palettes added — cinematic, nature, pastel, neon, cool, and warm sets with strong tonal coverage (040-twenty-curated-palettes-added.md)
+- [progress|phase 8|done] Dither style search added — live category-preserving filter with safe active-style retention (041-dither-style-search-added.md)

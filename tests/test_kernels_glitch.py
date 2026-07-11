@@ -7,10 +7,10 @@ SINGLE = [
     "Stucki Diffusion Lines", "Contrast Aware Y", "Contrast Aware X",
 ]
 MULTI = {
-    "Uniform Modulation Y": (4, 0.5, 20.0),
-    "Uniform Modulation X": (4, 0.5, 20.0),
-    "Smooth Diffuse": (4, 5),
-    "Atkinson Line Modulation": (5, 5),
+    "Uniform Modulation Y": (4, 50, 20, 100, 0),
+    "Uniform Modulation X": (4, 50, 20, 100, 0),
+    "Smooth Diffuse": (4, 5, 100, 100, 0),
+    "Atkinson Line Modulation": (5, 5, 8, 100, 100),
 }
 
 

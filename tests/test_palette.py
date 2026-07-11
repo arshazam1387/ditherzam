@@ -74,6 +74,29 @@ def test_added_builtin_palettes_present_and_valid():
         assert float(p.colors.min()) >= 0.0 and float(p.colors.max()) <= 255.0
 
 
+def test_twenty_curated_builtin_palettes_are_valid_and_tonally_useful():
+    b = builtin_palettes()
+    added = {
+        "midnight_bloom": "cinematic", "desert_film": "cinematic",
+        "noir_teal": "cinematic", "velvet_gold": "cinematic",
+        "forest_mist": "nature", "ocean_glass": "nature",
+        "alpine_lake": "nature", "autumn_earth": "nature",
+        "lavender_milk": "pastel", "peach_sorbet": "pastel",
+        "mint_cloud": "pastel", "berry_cream": "pastel",
+        "electric_night": "neon", "laser_lime": "neon",
+        "ultraviolet": "neon", "arctic_signal": "cool",
+        "blue_hour": "cool", "coral_sunset": "warm",
+        "honey_ink": "warm", "rosewood": "warm",
+    }
+    assert added.keys() <= b.keys()
+    for name, category in added.items():
+        palette = b[name]
+        assert palette.category == category
+        assert palette.colors.shape == (6, 3)
+        luminance = palette.colors @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+        assert float(luminance.max() - luminance.min()) >= 120.0
+
+
 def test_extract_returns_k_colors():
     img = np.random.RandomState(0).randint(0, 256, (32, 32, 3), dtype=np.uint8)
     p = extract_palette(img, k=8)

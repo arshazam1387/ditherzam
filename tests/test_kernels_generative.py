@@ -20,7 +20,8 @@ def test_generative_kernels_are_registered_in_existing_categories():
         entry = registry.get_entry(name)
         assert entry is not None
         assert entry.category == category
-        assert entry.param_sliders == ("dither_parameter_slider",)
+        assert entry.param_sliders[0] == "dither_parameter_slider"
+        assert len(entry.param_sliders) >= 5
         assert not entry.supports_levels
 
 

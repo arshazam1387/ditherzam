@@ -35,33 +35,66 @@ _CLUSTER4 = ((_CLUSTER4_IDX + 0.5) / 16.0 * 255.0).astype(np.float32)
 
 
 @njit(cache=True, parallel=True)
-def _ordered(img, thresholds, levels=2):
+def _ordered(img, thresholds, levels=2, contrast=100.0, bias=0.0,
+             rotation=0, offset_x=0, offset_y=0):
     h, w = img.shape
     mh, mw = thresholds.shape
     out = np.empty_like(img)
     if levels <= 2:
         for y in prange(h):
             for x in range(w):
-                out[y, x] = 255.0 if img[y, x] >= thresholds[y % mh, x % mw] else 0.0
+                yy = (y + offset_y) % mh
+                xx = (x + offset_x) % mw
+                r = rotation % 4
+                if r == 1:
+                    yy, xx = xx % mh, (mw - 1 - yy) % mw
+                elif r == 2:
+                    yy, xx = (mh - 1 - yy) % mh, (mw - 1 - xx) % mw
+                elif r == 3:
+                    yy, xx = (mh - 1 - xx) % mh, yy % mw
+                t = 128.0 + (thresholds[yy, xx] - 128.0) * contrast / 100.0 + bias
+                out[y, x] = 255.0 if img[y, x] >= t else 0.0
         return out
     step = 255.0 / (levels - 1)
     for y in prange(h):
         for x in range(w):
             # thresholds are 0..255; recenter to [-0.5,0.5]*step as a sub-step offset
-            off = (thresholds[y % mh, x % mw] / 255.0 - 0.5) * step
+            yy = (y + offset_y) % mh
+            xx = (x + offset_x) % mw
+            r = rotation % 4
+            if r == 1:
+                yy, xx = xx % mh, (mw - 1 - yy) % mw
+            elif r == 2:
+                yy, xx = (mh - 1 - yy) % mh, (mw - 1 - xx) % mw
+            elif r == 3:
+                yy, xx = (mh - 1 - xx) % mh, yy % mw
+            t = 128.0 + (thresholds[yy, xx] - 128.0) * contrast / 100.0 + bias
+            off = (t / 255.0 - 0.5) * step
             out[y, x] = quantize_to_levels(img[y, x] + off, levels)
     return out
 
 
 @njit(cache=True)
-def _random_ordered(img):
-    np.random.seed(0)
+def _random_ordered(img, seed=0, contrast=100.0, bias=0.0, grain_x=1, grain_y=1):
+    np.random.seed(seed)
     h, w = img.shape
     out = np.empty_like(img)
-    for y in range(h):
-        for x in range(w):
-            t = np.random.random() * 255.0
-            out[y, x] = 255.0 if img[y, x] >= t else 0.0
+    if grain_x == 1 and grain_y == 1:
+        for y in range(h):
+            for x in range(w):
+                t = np.random.random() * 255.0
+                t = 128.0 + (t - 128.0) * contrast / 100.0 + bias
+                out[y, x] = 255.0 if img[y, x] >= t else 0.0
+    else:
+        for y in range(h):
+            for x in range(w):
+                gy = y // grain_y
+                gx = x // grain_x
+                # Coordinate hash makes each rectangular grain deterministic.
+                z = (gx * 374761393 + gy * 668265263 + seed * 69069) & 0x7fffffff
+                t = (z % 104729) / 104728.0 * 255.0
+                t = 128.0 + (t - 128.0) * contrast / 100.0 + bias
+                out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
 
@@ -127,7 +160,11 @@ def _modulated_bayer(img, thresholds):
     for y in prange(h):
         for x in range(w):
             local = img[y, x] / 255.0
+            # Keep the locally modulated threshold in the valid luminance
+            # domain.  Without the upper clamp, bright Bayer cells can exceed
+            # 255, leaving black holes even in a pure-white image.
             t = thresholds[y % mh, x % mw] * (0.5 + local)
+            t = min(255.0, max(0.0, t))
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
@@ -148,80 +185,163 @@ def _dot_screen(img, cell):
     return out
 
 
+@njit(cache=True, parallel=True)
+def _dot_screen_45(img, cell):
+    """A 45-degree round-dot screen, distinct from the axis-aligned screen."""
+    h, w = img.shape
+    c = cell if cell >= 2 else 2
+    half = c / 2.0
+    inv_sqrt2 = 0.7071067811865476
+    r2max = half * half * 2.0
+    out = np.empty_like(img)
+    for y in prange(h):
+        for x in range(w):
+            xr = (x - y) * inv_sqrt2
+            yr = (x + y) * inv_sqrt2
+            dx = (xr % c) - half
+            dy = (yr % c) - half
+            t = (dx * dx + dy * dy) / r2max * 255.0
+            out[y, x] = 255.0 if img[y, x] >= t else 0.0
+    return out
+
+
+def _unpack(parameter, defaults):
+    if isinstance(parameter, (tuple, list, np.ndarray)):
+        return tuple(parameter[i] if i < len(parameter) else defaults[i]
+                     for i in range(len(defaults)))
+    if parameter is None:
+        return defaults
+    return (parameter,) + defaults[1:]
+
+
+_ORDERED_SLIDERS = ("threshold_contrast_slider", "threshold_bias_slider",
+                    "matrix_rotation_slider", "matrix_offset_x_slider",
+                    "matrix_offset_y_slider")
+
+
+def _ordered_entry(image_array, parameter, base, levels):
+    contrast, bias, rotation, ox, oy = _unpack(parameter, (100, 0, 0, 0, 0))
+    return _ordered(image_array.astype(np.float32), base, levels, float(contrast),
+                    float(bias), int(rotation), int(ox), int(oy))
+
+
+_PRIMARY_ORDERED_SLIDERS = ("dither_parameter_slider", "threshold_contrast_slider",
+                            "threshold_bias_slider", "matrix_offset_x_slider",
+                            "matrix_offset_y_slider")
+_MATRIX_ORDERED_SLIDERS = ("matrix_size_slider", "threshold_contrast_slider",
+                           "threshold_bias_slider", "matrix_offset_x_slider",
+                           "matrix_offset_y_slider")
+_MOSAIC_SLIDERS = ("dither_parameter_slider", "tile_threshold_scale_slider",
+                   "threshold_bias_slider", "matrix_offset_x_slider",
+                   "matrix_offset_y_slider")
+
+
+def _input_controls(image_array, parameter, default_primary):
+    primary, contrast, bias, ox, oy = _unpack(
+        parameter, (default_primary, 100, 0, 0, 0))
+    img = image_array.astype(np.float32)
+    if float(contrast) != 100.0 or float(bias) != 0.0:
+        img = np.clip(128.0 + (img - 128.0) * float(contrast) / 100.0 +
+                      float(bias), 0.0, 255.0).astype(np.float32)
+    if int(ox) or int(oy):
+        img = np.roll(img, (int(oy), int(ox)), axis=(0, 1))
+    return img, primary, int(ox), int(oy)
+
+
+def _unphase(out, ox, oy):
+    return np.roll(out, (-oy, -ox), axis=(0, 1)) if ox or oy else out
+
+
 # ── Kernel: Bayer-Matrix 2x2 · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Bayer-Matrix 2x2", "Ordered Dither", dims=2, supports_levels=True)
+@registry.register("Bayer-Matrix 2x2", "Ordered Dither", dims=2, supports_levels=True,
+                   param_sliders=_ORDERED_SLIDERS)
 def bayer_2(image_array, parameter, luminance_threshold_value, levels=2):
-    return _ordered(image_array.astype(np.float32), _BAYER2, levels)
+    return _ordered_entry(image_array, parameter, _BAYER2, levels)
 
 
 # ── Kernel: Bayer-Matrix 8x8 · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Bayer-Matrix 8x8", "Ordered Dither", dims=2, supports_levels=True)
+@registry.register("Bayer-Matrix 8x8", "Ordered Dither", dims=2, supports_levels=True,
+                   param_sliders=_ORDERED_SLIDERS)
 def bayer_8(image_array, parameter, luminance_threshold_value, levels=2):
-    return _ordered(image_array.astype(np.float32), _BAYER8, levels)
+    return _ordered_entry(image_array, parameter, _BAYER8, levels)
 
 
 # ── Kernel: Bayer-Matrix 16x16 · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Bayer-Matrix 16x16", "Ordered Dither", dims=2, supports_levels=True)
+@registry.register("Bayer-Matrix 16x16", "Ordered Dither", dims=2, supports_levels=True,
+                   param_sliders=_ORDERED_SLIDERS)
 def bayer_16(image_array, parameter, luminance_threshold_value, levels=2):
-    return _ordered(image_array.astype(np.float32), _BAYER16, levels)
+    return _ordered_entry(image_array, parameter, _BAYER16, levels)
 
 
 # ── Kernel: Bayer-Ordered · Ordered Dither · dims=2 · alias of 4x4 ──
-@registry.register("Bayer-Ordered", "Ordered Dither", dims=2, supports_levels=True)
+@registry.register("Bayer-Ordered", "Ordered Dither", dims=2, supports_levels=True,
+                   param_sliders=_ORDERED_SLIDERS)
 def bayer_ordered(image_array, parameter, luminance_threshold_value, levels=2):
-    return _ordered(image_array.astype(np.float32), _BAYER4, levels)
+    # Keep this useful beside the canonical Bayer-Matrix 4x4 style by giving
+    # the generic ordered variant a quarter-turn default orientation.
+    contrast, bias, rotation, ox, oy = _unpack(parameter, (100, 0, 1, 0, 0))
+    return _ordered(image_array.astype(np.float32), _BAYER4, levels,
+                    float(contrast), float(bias), int(rotation), int(ox), int(oy))
 
 
 # ── Kernel: Bayer-Void · Ordered Dither · dims=2 · Warp Intensity 1-50-10 ──
 @registry.register("Bayer-Void", "Ordered Dither", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=_PRIMARY_ORDERED_SLIDERS)
 def bayer_void(image_array, parameter, luminance_threshold_value):
-    warp = float(parameter) if parameter else 10.0
-    return _bayer_void(image_array.astype(np.float32), warp,
-                       luminance_threshold_value, _BAYER4)
+    img, warp, ox, oy = _input_controls(image_array, parameter, 10)
+    return _unphase(_bayer_void(img, float(warp), luminance_threshold_value, _BAYER4), ox, oy)
 
 
 # ── Kernel: Random Ordered · Ordered Dither · dims=2 · no sliders ──
-@registry.register("Random Ordered", "Ordered Dither", dims=2)
+@registry.register("Random Ordered", "Ordered Dither", dims=2,
+                   param_sliders=("random_seed_slider", "threshold_contrast_slider",
+                                  "threshold_bias_slider", "grain_width_slider",
+                                  "grain_height_slider"))
 def random_ordered(image_array, parameter, luminance_threshold_value):
-    return _random_ordered(image_array.astype(np.float32))
+    seed, contrast, bias, gx, gy = _unpack(parameter, (0, 100, 0, 1, 1))
+    return _random_ordered(image_array.astype(np.float32), int(seed), float(contrast),
+                           float(bias), max(1, int(gx)), max(1, int(gy)))
 
 
 # ── Kernel: Bit Tone · Ordered Dither · dims=2 · Dot Size 1-20-1 ──
 @registry.register("Bit Tone", "Ordered Dither", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=_PRIMARY_ORDERED_SLIDERS)
 def bit_tone(image_array, parameter, luminance_threshold_value):
-    dot = int(parameter) if parameter else 1
-    return _bit_tone(image_array.astype(np.float32), dot, _BAYER4)
+    img, dot, ox, oy = _input_controls(image_array, parameter, 2)
+    return _unphase(_bit_tone(img, int(dot), _BAYER4), ox, oy)
 
 
 # ── Kernel: Mosaic · Ordered Dither · dims=2 · Block Size 1-50-10 ──
 @registry.register("Mosaic", "Ordered Dither", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=_MOSAIC_SLIDERS)
 def mosaic(image_array, parameter, luminance_threshold_value):
-    block = int(parameter) if parameter else 10
-    return _mosaic(image_array.astype(np.float32), block,
-                   luminance_threshold_value)
+    block, threshold_scale, bias, ox, oy = _unpack(parameter, (10, 100, 0, 0, 0))
+    img = image_array.astype(np.float32)
+    if int(ox) or int(oy):
+        img = np.roll(img, (int(oy), int(ox)), axis=(0, 1))
+    threshold = float(luminance_threshold_value) * float(threshold_scale) / 100.0 + float(bias)
+    return _unphase(_mosaic(img, int(block), threshold), int(ox), int(oy))
 
 
 # ── Kernel: Modulated Bayer Dither · Ordered Dither · dims=2 · Matrix Size 2-3-2 ──
 @registry.register("Modulated Bayer Dither", "Ordered Dither", dims=2,
-                   param_sliders=("matrix_size_slider",))
+                   param_sliders=_MATRIX_ORDERED_SLIDERS)
 def modulated_bayer(image_array, parameter, luminance_threshold_value):
-    size = int(parameter) if parameter else 2
+    img, size, ox, oy = _input_controls(image_array, parameter, 2)
     thr = _BAYER8 if size >= 3 else _BAYER4
-    return _modulated_bayer(image_array.astype(np.float32), thr)
+    return _unphase(_modulated_bayer(img, thr), ox, oy)
 
 
 # ── Kernel: Cluster-Dot · Ordered Dither · dims=2 · no sliders (extra) ──
-@registry.register("Cluster-Dot", "Ordered Dither", dims=2, supports_levels=True)
+@registry.register("Cluster-Dot", "Ordered Dither", dims=2, supports_levels=True,
+                   param_sliders=_ORDERED_SLIDERS)
 def cluster_dot(image_array, parameter, luminance_threshold_value, levels=2):
-    return _ordered(image_array.astype(np.float32), _CLUSTER4, levels)
+    return _ordered_entry(image_array, parameter, _CLUSTER4, levels)
 
 
 # ── Kernel: Halftone-Ordered · Ordered Dither · dims=2 · Cell Size 2-20-6 (extra) ──
 @registry.register("Halftone-Ordered", "Ordered Dither", dims=2,
-                   param_sliders=("dither_parameter_slider",))
+                   param_sliders=_PRIMARY_ORDERED_SLIDERS)
 def halftone_ordered(image_array, parameter, luminance_threshold_value):
-    cell = int(parameter) if parameter else 6
-    return _dot_screen(image_array.astype(np.float32), cell)
+    img, cell, ox, oy = _input_controls(image_array, parameter, 6)
+    return _unphase(_dot_screen_45(img, int(cell)), ox, oy)
