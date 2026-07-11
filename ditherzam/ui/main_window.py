@@ -296,7 +296,8 @@ class ImageEditor(QMainWindow):
 
         self.anim_controller = AnimationController(
             self.timeline_panel, self.pipeline,
-            self._provide_animation_base, self.timeline, seed=0)
+            self._provide_animation_base, self.timeline, seed=0,
+            cap_provider=self._policy_cap)
         self.anim_controller.on_frame = self._show_animation_frame
         self.timeline_panel.keyframe_requested.connect(self._add_keyframe_at)
         self.timeline_panel.export_requested.connect(self._export_animation)
@@ -307,9 +308,12 @@ class ImageEditor(QMainWindow):
         return self._base_gray, self._collect_settings()
 
     def _show_animation_frame(self, rgb_u8) -> None:
+        # rgb_u8 may be a capped raster (async, latest-wins, Task 4.1); pass
+        # the full source-logical size so the viewport scales it correctly
+        # instead of distorting geometry, same as the still-image capped path.
         qimg = numpy_to_qimage(rgb_u8)
         self.last_qimage = qimg
-        self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+        self.viewport.set_pixmap(QPixmap.fromImage(qimg), logical_size=self._reference_size())
 
     def _add_keyframe_at(self, frame_index: int) -> None:
         from ..animation.timeline import Keyframe
@@ -335,6 +339,7 @@ class ImageEditor(QMainWindow):
             self.pipeline,
             settings_provider=self._collect_settings,
             expert_provider=lambda: self.expert_mode,
+            cap_provider=self._policy_cap,
         )
         self.menuBar().addMenu(self.video_controller.build_menu())
 

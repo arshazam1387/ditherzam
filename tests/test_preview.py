@@ -93,3 +93,47 @@ def test_render_preview_is_cheaper_shape_wise():
     s = RenderSettings(style="Floyd-Steinberg", scale=5)
     out = render_preview(pipe, base, s, max_side=640)
     assert out.shape == (360, 640, 3)
+
+
+# ---- Task 4.1: temporal field shape consistency (hazard #1) ----------------
+
+def test_render_preview_accepts_full_res_temporal_field_no_crash():
+    # A field built at the FULL-resolution small_shape (h//scale, w//scale)
+    # fed into a CAPPED render must not crash and must produce a correctly
+    # capped-size output -- apply_dither's internal nearest resize reshapes
+    # the field to whatever the capped raster's own downscale shape is.
+    pipe = RenderPipeline(registry)
+    h, w, scale, cap = 1080, 1920, 5, 640
+    base = np.random.default_rng(3).uniform(0, 255, (h, w)).astype(np.float32)
+    s = RenderSettings(style="Bayer-Matrix 4x4", scale=scale)
+    field = np.random.default_rng(3).uniform(-20, 20, (h // scale, w // scale)).astype(np.float32)
+    out = render_preview(pipe, base, s, max_side=cap, temporal_field=field)
+    assert out.shape == (int(round(h * cap / w)), cap, 3)
+    assert out.dtype == np.uint8
+
+
+def test_render_preview_temporal_field_shape_consistent_across_scale_cap_combos():
+    pipe = RenderPipeline(registry)
+    base = np.random.default_rng(4).uniform(0, 255, (720, 1280)).astype(np.float32)
+    for scale, cap in ((1, 480), (3, 480), (5, 720), (7, 1440), (2, 1280)):
+        h, w = base.shape
+        s = RenderSettings(style="Floyd-Steinberg", scale=scale)
+        field = np.random.default_rng(scale).uniform(-15, 15, (h // scale, w // scale)).astype(np.float32)
+        out = render_preview(pipe, base, s, max_side=cap, temporal_field=field)
+        assert out.dtype == np.uint8
+        assert out.shape[2] == 3
+        assert max(out.shape[:2]) <= cap
+
+
+def test_render_preview_temporal_field_changes_capped_output_between_frames():
+    # Different fields (different "frames") must produce different capped
+    # rasters -- the field must actually be consumed by the capped path.
+    pipe = RenderPipeline(registry)
+    base = np.random.default_rng(5).uniform(0, 255, (1080, 1920)).astype(np.float32)
+    s = RenderSettings(style="Bayer-Matrix 4x4", scale=4)
+    h, w = base.shape
+    field_a = np.random.default_rng(11).uniform(-30, 30, (h // 4, w // 4)).astype(np.float32)
+    field_b = np.random.default_rng(22).uniform(-30, 30, (h // 4, w // 4)).astype(np.float32)
+    out_a = render_preview(pipe, base, s, max_side=640, temporal_field=field_a)
+    out_b = render_preview(pipe, base, s, max_side=640, temporal_field=field_b)
+    assert not np.array_equal(out_a, out_b)

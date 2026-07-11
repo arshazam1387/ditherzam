@@ -90,19 +90,31 @@ def proxy_scale(scale: int, factor: int) -> int:
 
 
 def render_preview(pipeline, base_gray, settings, max_side: int,
-                    is_cancelled=None) -> np.ndarray:
+                    is_cancelled=None, temporal_field=None) -> np.ndarray:
     """Render and return a capped proxy raster (uint8 HxWx3).
 
     Falls back to a normal full render when the image already fits within
     ``max_side`` (factor 1), in which case the output is identical to
     ``pipeline.render(base_gray, settings)``.
+
+    ``temporal_field`` (animation only) is forwarded as-is to
+    ``pipeline.render``'s ``temporal_field``. The dither stage resizes
+    whatever field it receives (nearest-neighbour) to match its own internal
+    downscaled shape (``apply_dither``'s ``_resize_field_nearest``), so a
+    field built at the FULL-resolution shape stays shape-consistent with the
+    capped raster's downscale automatically -- no separate capped-shape field
+    needs to be computed here. The resulting pattern is approximate (not
+    byte-identical to an export-time full-res field), which is expected for a
+    screen preview.
     """
     h, w = base_gray.shape[:2]
     factor = proxy_factor(h, w, max_side)
     if factor <= 1:
-        return pipeline.render(base_gray, settings, is_cancelled=is_cancelled)
+        return pipeline.render(base_gray, settings, temporal_field=temporal_field,
+                               is_cancelled=is_cancelled)
     target_h, target_w = preview_target_size(h, w, max_side)
     small = nearest_upscale_to(base_gray, (target_w, target_h))
     psettings = replace(settings, scale=proxy_scale(settings.scale, factor))
-    rgb_small = pipeline.render(small, psettings, is_cancelled=is_cancelled)
+    rgb_small = pipeline.render(small, psettings, temporal_field=temporal_field,
+                                is_cancelled=is_cancelled)
     return np.asarray(rgb_small, dtype=np.uint8)
