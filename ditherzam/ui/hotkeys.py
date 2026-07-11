@@ -16,6 +16,7 @@ _BINDINGS = {
     "open_image": "{mod}+O",
     "save": "{mod}+S",
     "help": "{mod}+H",
+    "full_quality_preview": "{mod}+Return",
 }
 
 

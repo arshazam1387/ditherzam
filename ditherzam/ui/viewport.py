@@ -3,14 +3,20 @@ from __future__ import annotations
 import time
 
 from PySide6.QtCore import QPointF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QPainter, QPixmap
+from PySide6.QtGui import QColor, QPainter, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
 )
 
-from .viewport_math import clamp_velocity, inertia_step, next_zoom, zoom_percent
+from .viewport_math import (
+    clamp_velocity,
+    inertia_step,
+    next_zoom,
+    viewport_device_size,
+    zoom_percent,
+)
 
 
 class CustomGraphicsView(QGraphicsView):
@@ -45,10 +51,43 @@ class CustomGraphicsView(QGraphicsView):
         self._timer.timeout.connect(self._on_inertia_tick)
 
     # ---- image / zoom -------------------------------------------------------
-    def set_pixmap(self, pixmap: QPixmap) -> None:
+    def set_pixmap(self, pixmap: QPixmap, logical_size=None, refit=True) -> None:
+        """Display *pixmap* in source-logical scene coordinates.
+
+        ``logical_size`` is the source ``(width, height)`` represented by a
+        potentially capped raster.  Set ``refit=False`` for an ordinary
+        preview-quality replacement so the user's view transform is retained.
+        """
         self._pix_item.setPixmap(pixmap)
-        self._scene.setSceneRect(self._pix_item.boundingRect())
-        self.fit_image_to_viewport()
+        bounds = self._pix_item.boundingRect()
+        if logical_size is None:
+            logical_width, logical_height = bounds.width(), bounds.height()
+        elif hasattr(logical_size, "width"):
+            logical_width = logical_size.width()
+            logical_height = logical_size.height()
+        else:
+            logical_width, logical_height = logical_size
+        if (not pixmap.isNull()
+                and (logical_width <= 0 or logical_height <= 0)):
+            raise ValueError("logical source dimensions must be positive")
+
+        if pixmap.isNull():
+            self._pix_item.setTransform(QTransform())
+        else:
+            self._pix_item.setTransform(QTransform.fromScale(
+                logical_width / bounds.width(),
+                logical_height / bounds.height(),
+            ))
+        self._scene.setSceneRect(self._pix_item.sceneBoundingRect())
+        if refit:
+            self.fit_image_to_viewport()
+
+    def viewport_device_demand(self) -> tuple[int, int]:
+        """Drawable viewport dimensions in physical display pixels."""
+        viewport = self.viewport()
+        return viewport_device_size(
+            viewport.width(), viewport.height(), viewport.devicePixelRatioF(),
+        )
 
     def fit_image_to_viewport(self) -> None:
         if not self._pix_item.pixmap().isNull():
@@ -59,7 +98,7 @@ class CustomGraphicsView(QGraphicsView):
         return zoom_percent(self.transform().m11())
 
     def is_image_zoomed(self) -> bool:
-        rect = self._pix_item.boundingRect()
+        rect = self._pix_item.sceneBoundingRect()
         vp = self.viewport().rect()
         return (rect.width() * self.transform().m11() > vp.width()
                 or rect.height() * self.transform().m22() > vp.height())

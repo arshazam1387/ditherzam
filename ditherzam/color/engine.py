@@ -1,11 +1,23 @@
 from __future__ import annotations
 
+import os
+
 import numpy as np
 from numba import njit, prange
 
 from ..imaging import clamp_u8
 from .palette import Palette
-from .ramp import build_ramp
+from .context import DEFAULT_COLOR_CONTEXT_CACHE, ColorContextCache
+
+# Dev/regression setting: reproduce the pre-5eb0ee6 "Option B" legacy ramp
+# luminance path (BLAS matmul, position-dependent under SIMD block/remainder
+# splits) instead of the default position-independent "Option A" scalar
+# kernels. Global (not per-engine) so preview and export never diverge from
+# each other. Intended to be set via the env var at process start; flipping
+# it mid-session with a warm render cache may surface stale cached output.
+RAMP_EXACT_BLAS_LUMINANCE = os.environ.get(
+    "DITHERZAM_RAMP_EXACT_BLAS", ""
+).strip().lower() in ("1", "true", "yes", "on")
 
 
 @njit(cache=True, parallel=True)
@@ -49,26 +61,148 @@ def nearest_indices(rgb_f32: np.ndarray, palette_f32: np.ndarray) -> np.ndarray:
     return _nearest_indices_njit(rgb, pal)
 
 
-def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+@njit(cache=True, parallel=True)
+def _ordered_rgb_njit(rgb_f32, pal_f32, bayer_f32):
+    """Bayer-bias and palette-map RGB directly, without frame intermediates."""
+    h, w = rgb_f32.shape[:2]
+    k = pal_f32.shape[0]
+    mh, mw = bayer_f32.shape
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    spread = np.float32(255.0 / max(1, k - 1))
+    for y in prange(h):
+        for x in range(w):
+            offset = bayer_f32[y % mh, x % mw] * spread
+            r = rgb_f32[y, x, 0] + offset
+            g = rgb_f32[y, x, 1] + offset
+            b = rgb_f32[y, x, 2] + offset
+
+            dr = r - pal_f32[0, 0]
+            dg = g - pal_f32[0, 1]
+            db = b - pal_f32[0, 2]
+            best_distance = (dr * dr + dg * dg) + db * db
+            best_index = 0
+            for i in range(1, k):
+                dr = r - pal_f32[i, 0]
+                dg = g - pal_f32[i, 1]
+                db = b - pal_f32[i, 2]
+                distance = (dr * dr + dg * dg) + db * db
+                if distance < best_distance:
+                    best_distance = distance
+                    best_index = i
+
+            # Palette colors are constrained to 0..255. Assignment preserves
+            # clamp_u8's truncation for fractional extracted-palette colors.
+            out[y, x, 0] = pal_f32[best_index, 0]
+            out[y, x, 1] = pal_f32[best_index, 1]
+            out[y, x, 2] = pal_f32[best_index, 2]
+    return out
+
+
+@njit(cache=True)
+def _floyd_steinberg_rgb_njit(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+    """Sequential scalar RGB Floyd-Steinberg with first-minimum palette ties."""
     h, w = rgb.shape[:2]
-    work = rgb.astype(np.float32).copy()
+    work = rgb.copy()
     out = np.empty((h, w, 3), dtype=np.float32)
+    weight_right = np.float32(7.0 / 16.0)
+    weight_down_left = np.float32(3.0 / 16.0)
+    weight_down = np.float32(5.0 / 16.0)
+    weight_down_right = np.float32(1.0 / 16.0)
     for y in range(h):
         for x in range(w):
-            old = work[y, x].copy()
-            diff = pal - old
-            idx = int((diff * diff).sum(axis=1).argmin())
-            new = pal[idx]
-            out[y, x] = new
-            err = old - new
+            old_r = work[y, x, 0]
+            old_g = work[y, x, 1]
+            old_b = work[y, x, 2]
+
+            dr = pal[0, 0] - old_r
+            dg = pal[0, 1] - old_g
+            db = pal[0, 2] - old_b
+            best_distance = (dr * dr + dg * dg) + db * db
+            best_index = 0
+            for i in range(1, pal.shape[0]):
+                dr = pal[i, 0] - old_r
+                dg = pal[i, 1] - old_g
+                db = pal[i, 2] - old_b
+                distance = (dr * dr + dg * dg) + db * db
+                if distance < best_distance:
+                    best_distance = distance
+                    best_index = i
+
+            new_r = pal[best_index, 0]
+            new_g = pal[best_index, 1]
+            new_b = pal[best_index, 2]
+            out[y, x, 0] = new_r
+            out[y, x, 1] = new_g
+            out[y, x, 2] = new_b
+            err_r = old_r - new_r
+            err_g = old_g - new_g
+            err_b = old_b - new_b
             if x + 1 < w:
-                work[y, x + 1] += err * (7.0 / 16.0)
+                work[y, x + 1, 0] += err_r * weight_right
+                work[y, x + 1, 1] += err_g * weight_right
+                work[y, x + 1, 2] += err_b * weight_right
             if y + 1 < h:
                 if x - 1 >= 0:
-                    work[y + 1, x - 1] += err * (3.0 / 16.0)
-                work[y + 1, x] += err * (5.0 / 16.0)
+                    work[y + 1, x - 1, 0] += err_r * weight_down_left
+                    work[y + 1, x - 1, 1] += err_g * weight_down_left
+                    work[y + 1, x - 1, 2] += err_b * weight_down_left
+                work[y + 1, x, 0] += err_r * weight_down
+                work[y + 1, x, 1] += err_g * weight_down
+                work[y + 1, x, 2] += err_b * weight_down
                 if x + 1 < w:
-                    work[y + 1, x + 1] += err * (1.0 / 16.0)
+                    work[y + 1, x + 1, 0] += err_r * weight_down_right
+                    work[y + 1, x + 1, 1] += err_g * weight_down_right
+                    work[y + 1, x + 1, 2] += err_b * weight_down_right
+    return out
+
+
+def _floyd_steinberg_rgb(rgb: np.ndarray, pal: np.ndarray) -> np.ndarray:
+    rgb_f32 = np.ascontiguousarray(rgb, dtype=np.float32)
+    pal_f32 = np.ascontiguousarray(pal, dtype=np.float32)
+    return _floyd_steinberg_rgb_njit(rgb_f32, pal_f32)
+
+
+@njit(cache=True, parallel=True)
+def _ramp_gray_njit(gray_f32: np.ndarray, ramp_f32: np.ndarray) -> np.ndarray:
+    """Map grayscale directly to a ramp without RGB, level, or mapped frames."""
+    h, w = gray_f32.shape
+    depth = ramp_f32.shape[0]
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for y in prange(h):
+        for x in range(w):
+            # A 2D input is already luminance, so do not manufacture RGB merely
+            # to apply weights whose float32 sum is 1.0.
+            gray = gray_f32[y, x]
+            level = 0
+            if depth > 1:
+                scaled = gray / np.float32(255.0) * np.float32(depth - 1)
+                level = int(np.rint(scaled))
+                level = min(depth - 1, max(0, level))
+            out[y, x, 0] = ramp_f32[level, 0]
+            out[y, x, 1] = ramp_f32[level, 1]
+            out[y, x, 2] = ramp_f32[level, 2]
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _ramp_rgb_njit(rgb_f32: np.ndarray, ramp_f32: np.ndarray) -> np.ndarray:
+    """Fuse Rec.601 luminance, banker rounding, clipping, and ramp lookup."""
+    h, w = rgb_f32.shape[:2]
+    depth = ramp_f32.shape[0]
+    out = np.empty((h, w, 3), dtype=np.uint8)
+    for y in prange(h):
+        for x in range(w):
+            gray = ((rgb_f32[y, x, 0] * np.float32(0.299)
+                     + rgb_f32[y, x, 1] * np.float32(0.587))
+                    + rgb_f32[y, x, 2] * np.float32(0.114))
+            level = 0
+            if depth > 1:
+                scaled = gray / np.float32(255.0) * np.float32(depth - 1)
+                level = int(np.rint(scaled))
+                level = min(depth - 1, max(0, level))
+            out[y, x, 0] = ramp_f32[level, 0]
+            out[y, x, 1] = ramp_f32[level, 1]
+            out[y, x, 2] = ramp_f32[level, 2]
     return out
 
 
@@ -95,52 +229,73 @@ def _to_rgb(img: np.ndarray) -> np.ndarray:
 
 class ColorEngine:
     def __init__(self, palette: Palette, mode: str = "nearest", *,
-                 depth: int = 2, mapping: str = "match", phase: float = 0.0) -> None:
+                 depth: int = 2, mapping: str = "match", phase: float = 0.0,
+                 context_cache: ColorContextCache | None = None) -> None:
         self.palette = palette
         self.mode = mode
         self.depth = depth
         self.mapping = mapping
         self.phase = phase
-        self._ramp = None
-        self._ramp_key = None
+        self.context_cache = context_cache or DEFAULT_COLOR_CONTEXT_CACHE
+
+    @property
+    def context(self):
+        # Keep legacy direct field assignment source-compatible while ensuring
+        # derived state always follows the engine's current complete settings.
+        return self.context_cache.get(
+            self.palette, self.mode, self.depth, self.mapping, self.phase
+        )
 
     def _get_ramp(self) -> np.ndarray:
-        key = (self.palette.colors.tobytes(), int(self.depth),
-               self.mapping, float(self.phase))
-        if self._ramp_key != key:
-            self._ramp = build_ramp(self.palette, self.depth, self.mapping, self.phase)
-            self._ramp_key = key
-        return self._ramp
+        if self.context.ramp is None:
+            raise RuntimeError("ramp requested from a non-ramp color context")
+        return self.context.ramp
+
+    def with_settings(self, **changes) -> "ColorEngine":
+        """Return an engine derived from this one without mutating shared state."""
+        allowed = {"palette", "mode", "depth", "mapping", "phase"}
+        unknown = changes.keys() - allowed
+        if unknown:
+            raise TypeError(f"unknown color settings: {sorted(unknown)!r}")
+        return ColorEngine(
+            changes.get("palette", self.palette),
+            changes.get("mode", self.mode),
+            depth=changes.get("depth", self.depth),
+            mapping=changes.get("mapping", self.mapping),
+            phase=changes.get("phase", self.phase),
+            context_cache=self.context_cache,
+        )
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
+        if self.mode == "ramp":
+            if RAMP_EXACT_BLAS_LUMINANCE:
+                # Option B: exact pre-5eb0ee6 behavior, BLAS matmul and all.
+                rgb = _to_rgb(gray_or_rgb_f32)
+                ramp = self._get_ramp()
+                depth = ramp.shape[0]
+                gray = rgb[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32)
+                if depth == 1:
+                    level = np.zeros(gray.shape, np.int64)
+                else:
+                    level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1)
+                    level = level.astype(np.int64)
+                return clamp_u8(ramp[level])
+            image = np.asarray(gray_or_rgb_f32, dtype=np.float32)
+            ramp = np.ascontiguousarray(self._get_ramp(), dtype=np.float32)
+            if image.ndim == 2:
+                return _ramp_gray_njit(np.ascontiguousarray(image), ramp)
+            return _ramp_rgb_njit(np.ascontiguousarray(image[..., :3]), ramp)
         rgb = _to_rgb(gray_or_rgb_f32)
         if self.mode == "off":
             return clamp_u8(rgb)
-        if self.mode == "ramp":
-            ramp = self._get_ramp()
-            depth = ramp.shape[0]
-            gray = rgb[..., :3] @ np.array([0.299, 0.587, 0.114], np.float32) \
-                if rgb.ndim == 3 else rgb
-            if depth == 1:
-                level = np.zeros(gray.shape, dtype=np.int64)
-            else:
-                level = np.clip(np.round(gray / 255.0 * (depth - 1)), 0, depth - 1)
-                level = level.astype(np.int64)
-            return clamp_u8(ramp[level])
-        pal = self.palette.colors.astype(np.float32)
+        pal = self.context.palette_colors
         if self.mode == "nearest":
             idx = nearest_indices(rgb, pal)
             return clamp_u8(pal[idx])
         if self.mode == "ordered":
-            k = pal.shape[0]
-            spread = 255.0 / max(1, k - 1)
-            h, w = rgb.shape[:2]
-            mh, mw = _BAYER4.shape
-            offset = _BAYER4[np.arange(h)[:, None] % mh,
-                             np.arange(w)[None, :] % mw]
-            biased = rgb + offset[:, :, None] * spread
-            idx = nearest_indices(biased.astype(np.float32), pal)
-            return clamp_u8(pal[idx])
+            rgb_f32 = np.ascontiguousarray(rgb, dtype=np.float32)
+            pal_f32 = np.ascontiguousarray(pal, dtype=np.float32)
+            return _ordered_rgb_njit(rgb_f32, pal_f32, _BAYER4)
         if self.mode == "diffused":
             return clamp_u8(_floyd_steinberg_rgb(rgb, pal))
         raise ValueError(f"unknown ColorEngine mode: {self.mode!r}")

@@ -1,5 +1,6 @@
 from ditherzam.ui.viewport_math import (
     next_zoom, inertia_step, clamp_velocity, zoom_percent,
+    viewport_device_size,
 )
 
 
@@ -44,3 +45,16 @@ def test_clamp_velocity_scales_and_bounds():
 def test_zoom_percent_truncates():
     assert zoom_percent(1.239) == 123
     assert zoom_percent(0.01) == 1
+
+
+def test_viewport_device_size_applies_dpr_and_rounds_up():
+    assert viewport_device_size(639, 359, 1.5) == (959, 539)
+
+
+def test_viewport_device_size_rejects_invalid_inputs():
+    import pytest
+
+    with pytest.raises(ValueError):
+        viewport_device_size(0, 100, 1.0)
+    with pytest.raises(ValueError):
+        viewport_device_size(100, 100, 0.0)

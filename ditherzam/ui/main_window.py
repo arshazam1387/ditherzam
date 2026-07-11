@@ -3,8 +3,8 @@ from __future__ import annotations
 import sys
 
 import numpy as np
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, QTimer, Signal
-from PySide6.QtGui import QAction, QImage, QKeySequence, QPixmap
+from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QMainWindow,
@@ -14,12 +14,20 @@ from PySide6.QtWidgets import (
 )
 
 from ditherzam.dithering import registry as _dither_registry
-from ditherzam.render import RenderPipeline
+from ditherzam.color.context import ColorContextCache
+from ditherzam.render import RenderCancelled, RenderPipeline
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
-from .preview import render_preview
-from .render_scheduler import RenderCoalescer
+from .preview import auto_preview_resolution, preview_cap, render_preview, zoom_preview_bucket
+from .preview_preferences import (
+    PREVIEW_RESOLUTIONS,
+    PreviewPreferences,
+    load_preview_preferences,
+    save_preview_preferences,
+)
+from .render_request import RenderKind, RenderRequest
+from .render_scheduler import RenderScheduler
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
 from .settings_map import settings_from_controls
@@ -38,55 +46,96 @@ _EFFECT_DEFAULTS: dict[str, dict] = {
     "Sharpen": {"amount": 1.0},
     "Chromatic Aberration": {"shift": 2},
     "JPEG Glitch": {"quality": 15},
-    "Epsilon Glow": {"radius": 4.0, "strength": 0.5},
+    "Epsilon Glow": {"threshold": 64.0, "smoothing": 32.0, "radius": 8.0,
+                     "intensity": 1.0, "epsilon": 0.4, "falloff": 0.5,
+                     "distance_scale": 1.0, "aspect": 1.0},
 }
 
 
 class _RenderSignals(QObject):
-    finished = Signal(QImage, int)
-    failed = Signal(int)
+    finished = Signal(QImage, object)   # (image, RenderRequest)
+    failed = Signal(object)             # RenderRequest
+    cancelled = Signal(object)          # RenderRequest -- distinct from failed: not an error
 
 
 class _RenderWorker(QRunnable):
-    """Runs one render off the GUI thread and emits (QImage, generation token)."""
+    """Runs one render off the GUI thread for an immutable RenderRequest."""
 
-    def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray, settings,
-                 token: int, mode: str = "full", proxy_max_side: int = 640):
+    def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray,
+                 request: RenderRequest, is_cancelled=None):
         super().__init__()
         self._pipeline = pipeline
         self._base_gray = base_gray
-        self._settings = settings
-        self._token = token
-        self._mode = mode
-        self._proxy_max_side = proxy_max_side
+        self._request = request
+        self._is_cancelled = is_cancelled
         self.signals = _RenderSignals()
 
     def run(self) -> None:
         # A render raising here would otherwise never emit `finished`, so the
-        # coalescer's `_busy` flag would stick True and freeze all future renders.
-        # Always report an outcome (finished OR failed) so the coalescer recovers.
+        # scheduler's `_busy` flag would stick True and freeze all future renders.
+        # Always report an outcome (finished, failed, OR cancelled) so the
+        # scheduler recovers -- exactly one terminal signal per run.
         try:
-            if self._mode == "proxy":
-                rgb = render_preview(self._pipeline, self._base_gray, self._settings,
-                                     self._proxy_max_side)
+            # Apply the request's snapshotted color/effect context -- never the
+            # pipeline's *current* attributes, which the GUI thread may have
+            # since reassigned for a newer request.
+            self._pipeline.color_engine = self._request.color_engine
+            self._pipeline.effect_stack = self._request.effect_stack
+            if self._request.mode == "proxy":
+                rgb = render_preview(self._pipeline, self._base_gray,
+                                     self._request.settings,
+                                     self._request.target_max_side,
+                                     is_cancelled=self._is_cancelled)
             else:
-                rgb = self._pipeline.render_cached(self._base_gray, self._settings)
+                rgb = self._pipeline.render_cached(self._base_gray, self._request.settings,
+                                                    is_cancelled=self._is_cancelled)
             qimg = numpy_to_qimage(rgb)
+        except RenderCancelled:
+            self.signals.cancelled.emit(self._request)
+            return
         except Exception:
             import traceback
             traceback.print_exc()
-            self.signals.failed.emit(self._token)
+            self.signals.failed.emit(self._request)
             return
-        self.signals.finished.emit(qimg, self._token)
+        self.signals.finished.emit(qimg, self._request)
+
+
+class _DecodeSignals(QObject):
+    finished = Signal(object, object)   # (gray_f32, rgb_u8)
+
+
+class _DecodeWorker(QRunnable):
+    """Decodes an image file off the GUI thread for the initial drop/import."""
+
+    def __init__(self, path: str):
+        super().__init__()
+        self._path = path
+        self.signals = _DecodeSignals()
+
+    def run(self) -> None:
+        from PIL import Image
+        from ditherzam.imaging import to_gray_f32
+        try:
+            img = Image.open(self._path)
+            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
+            gray = to_gray_f32(img)
+        except Exception:
+            return  # swallow decode failures, same as the old synchronous path
+        self.signals.finished.emit(gray, rgb)
 
 
 class ImageEditor(QMainWindow):
     def __init__(self, registry=None, color_engine=None, effect_stack=None,
-                 debounce_ms: int = 20, settle_ms: int = 160,
-                 proxy_max_side: int = 640, parent=None):
+                 debounce_ms: int = 20, settle_ms: int = 160, zoom_debounce_ms: int = 150,
+                 proxy_max_side: int = 640, parent=None, preference_store=None):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
         self._registry = registry or _dither_registry
+        # Engines are immutable request snapshots, while their palette-derived
+        # data is safe to reuse for the lifetime of this editor.  Keeping the
+        # cache editor-owned avoids global cross-document retention.
+        self._color_context_cache = ColorContextCache()
         self.pipeline = RenderPipeline(self._registry, color_engine, effect_stack)
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
@@ -95,9 +144,20 @@ class ImageEditor(QMainWindow):
         self._pool = QThreadPool.globalInstance()
         self._debounce_ms = debounce_ms
         self._settle_ms = settle_ms
+        self._zoom_debounce_ms = zoom_debounce_ms
         self._proxy_max_side = proxy_max_side
-        self._render_mode = "full"
-        self._coalescer = RenderCoalescer()
+        self._scheduler = RenderScheduler()
+        self._preference_store = preference_store or QSettings()
+        self.preview_preferences = load_preview_preferences(self._preference_store)
+        # Set by the Full Quality Preview action; makes the next settle tick
+        # exact/uncapped, then any further edit resets it via schedule_render().
+        self._full_preview_requested = False
+        # True only for the paint right after a new source loads -- refits the
+        # viewport once, then ordinary renders keep the user's zoom/pan.
+        self._pending_refit = False
+        # Longest-side bucket of the last zoom-triggered render, so we schedule
+        # a bucket at most once until the user zooms back out below it.
+        self._last_zoom_bucket: int | None = None
 
         central = QWidget()
         central.setObjectName("central_widget")
@@ -110,14 +170,28 @@ class ImageEditor(QMainWindow):
         self.panel.from_image_requested.connect(self._on_from_image_requested)
         self.panel.palette_preview.connect(self._on_palette_preview)
         self.viewport.image_dropped.connect(self._on_image_dropped)
+        self.viewport.zoom_changed.connect(self._on_zoom_changed)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(self.panel)
+        from PySide6.QtWidgets import QTabWidget
+        from .glow_panel import GlowPanel
+
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setWidget(self.panel)
+
+        self.glow_panel = GlowPanel()
+        self.glow_panel.changed.connect(self.schedule_render)
+        glow_scroll = QScrollArea()
+        glow_scroll.setWidgetResizable(True)
+        glow_scroll.setWidget(self.glow_panel)
+
+        self.tabs = QTabWidget()
+        self.tabs.addTab(editor_scroll, "Editor")
+        self.tabs.addTab(glow_scroll, "Glow")
 
         splitter = QSplitter(Qt.Orientation.Horizontal, central)
         splitter.addWidget(self.viewport)
-        splitter.addWidget(scroll)
+        splitter.addWidget(self.tabs)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 0)
         # single-child layout for the central widget
@@ -136,11 +210,77 @@ class ImageEditor(QMainWindow):
         self._settle.setSingleShot(True)
         self._settle.timeout.connect(self._do_full_render)
 
+        # Debounces zoom bursts (wheel/pinch spam) before considering a bucketed
+        # refinement render; only fires the optional Task-2.4 zoom refinement.
+        self._zoom_debounce = QTimer(self)
+        self._zoom_debounce.setSingleShot(True)
+        self._zoom_debounce.timeout.connect(self._on_zoom_debounced)
+
         self.expert_mode = False
         self._install_shortcuts()
+        self._wire_preview_preferences()
         self._wire_export()
         self._wire_video()
         self._wire_animation()
+
+    def _wire_preview_preferences(self) -> None:
+        """Build the View menu controls for application-level preview policy."""
+        self.view_menu = self.menuBar().addMenu("&View")
+        self.preview_resolution_menu = self.view_menu.addMenu("Preview Resolution")
+        self.preview_resolution_group = QActionGroup(self)
+        self.preview_resolution_group.setExclusive(True)
+        self.preview_resolution_actions: dict[str, QAction] = {}
+
+        for resolution in PREVIEW_RESOLUTIONS:
+            action = QAction(resolution, self)
+            action.setCheckable(True)
+            action.setChecked(resolution == self.preview_preferences.resolution)
+            action.triggered.connect(
+                lambda _checked=False, value=resolution:
+                    self._set_preview_resolution(value)
+            )
+            self.preview_resolution_group.addAction(action)
+            self.preview_resolution_menu.addAction(action)
+            self.preview_resolution_actions[resolution] = action
+
+        self.view_menu.addSeparator()
+        self.rerender_on_zoom_action = QAction(
+            "Rerender Preview When Zooming In", self
+        )
+        self.rerender_on_zoom_action.setCheckable(True)
+        self.rerender_on_zoom_action.setChecked(
+            self.preview_preferences.rerender_on_zoom
+        )
+        self.rerender_on_zoom_action.toggled.connect(self._set_rerender_on_zoom)
+        self.view_menu.addAction(self.rerender_on_zoom_action)
+
+        self.view_menu.addSeparator()
+        self.view_menu.addAction(self._actions["full_quality_preview"])
+
+    def _set_preview_resolution(self, resolution: str) -> None:
+        self.preview_preferences = PreviewPreferences(
+            resolution, self.preview_preferences.rerender_on_zoom
+        )
+        self._save_preview_preferences_and_schedule()
+
+    def _set_rerender_on_zoom(self, enabled: bool) -> None:
+        self.preview_preferences = PreviewPreferences(
+            self.preview_preferences.resolution, enabled
+        )
+        self._save_preview_preferences_and_schedule()
+
+    def _save_preview_preferences_and_schedule(self) -> None:
+        save_preview_preferences(self._preference_store, self.preview_preferences)
+        # Task 2.3 owns the one-off Full action. If that state has been introduced,
+        # any policy edit supersedes it without coupling these controls to its shape.
+        if hasattr(self, "_full_preview_requested"):
+            self._full_preview_requested = False
+        self.schedule_render()
+
+    def _on_zoom_changed(self, _percent: int) -> None:
+        """viewport.zoom_changed fires on every zoom/fit step; debounce bursts
+        before evaluating whether a higher-res refinement render is due."""
+        self._zoom_debounce.start(self._zoom_debounce_ms)
 
     # ---- animation (Phase 8, UI layer only) ---------------------------------
     def _wire_animation(self) -> None:
@@ -156,7 +296,9 @@ class ImageEditor(QMainWindow):
 
         self.anim_controller = AnimationController(
             self.timeline_panel, self.pipeline,
-            self._provide_animation_base, self.timeline, seed=0)
+            self._provide_animation_base, self.timeline, seed=0,
+            cap_provider=self._policy_cap,
+            export_pipeline_provider=self._export_pipeline)
         self.anim_controller.on_frame = self._show_animation_frame
         self.timeline_panel.keyframe_requested.connect(self._add_keyframe_at)
         self.timeline_panel.export_requested.connect(self._export_animation)
@@ -167,9 +309,12 @@ class ImageEditor(QMainWindow):
         return self._base_gray, self._collect_settings()
 
     def _show_animation_frame(self, rgb_u8) -> None:
+        # rgb_u8 may be a capped raster (async, latest-wins, Task 4.1); pass
+        # the full source-logical size so the viewport scales it correctly
+        # instead of distorting geometry, same as the still-image capped path.
         qimg = numpy_to_qimage(rgb_u8)
         self.last_qimage = qimg
-        self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+        self.viewport.set_pixmap(QPixmap.fromImage(qimg), logical_size=self._reference_size())
 
     def _add_keyframe_at(self, frame_index: int) -> None:
         from ..animation.timeline import Keyframe
@@ -195,6 +340,8 @@ class ImageEditor(QMainWindow):
             self.pipeline,
             settings_provider=self._collect_settings,
             expert_provider=lambda: self.expert_mode,
+            cap_provider=self._policy_cap,
+            export_pipeline_provider=self._export_pipeline,
         )
         self.menuBar().addMenu(self.video_controller.build_menu())
 
@@ -255,16 +402,24 @@ class ImageEditor(QMainWindow):
         if palette is None:
             return None
         from ..color.engine import ColorEngine
-        return ColorEngine(palette, self._color_mode())
+        return ColorEngine(
+            palette,
+            self._color_mode(),
+            context_cache=self._color_context_cache,
+        )
 
     def _current_effect_stack(self):
         from ..effects.stack import EffectStack
+        from ..effects.glow_params import glow_params_from_state
         names = self.panel.state.get("effects", []) or []
-        if not names:
+        glow_on = bool(self.glow_panel.state.get("glow_enabled"))
+        if not names and not glow_on:
             return None
         stack = EffectStack()
         for name in names:
             stack.add(name, **_EFFECT_DEFAULTS.get(name, {}))
+        if glow_on:
+            stack.add("Epsilon Glow", **glow_params_from_state(self.glow_panel.state))
         return stack
 
     def _sync_pipeline(self) -> None:
@@ -282,11 +437,25 @@ class ImageEditor(QMainWindow):
         h, w = self._base_gray.shape[:2]
         return (int(w), int(h))
 
+    def _export_pipeline(self) -> RenderPipeline:
+        """A dedicated render pipeline snapshotting the current color engine and
+        effects, decoupled from the live preview pipeline.
+
+        Exports must render from an immutable context: a later UI edit (which
+        reassigns ``self.pipeline.color_engine``/``effect_stack`` via
+        ``_sync_pipeline``) or a preview render must never change an in-flight
+        export. This builds a fresh pipeline with its own cache, so still, batch,
+        video, and animation exports each own their snapshot.
+        """
+        return RenderPipeline(
+            self._registry, self._current_color_engine(),
+            self._current_effect_stack())
+
     def _rendered_rgb(self) -> np.ndarray:
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
-        self._sync_pipeline()
-        return self.pipeline.render(self._base_gray, self._collect_settings())
+        return self._export_pipeline().render(
+            self._base_gray, self._collect_settings())
 
     def _apply_preset(self, settings, palette, effects) -> None:
         panel = self.panel
@@ -300,10 +469,23 @@ class ImageEditor(QMainWindow):
         panel.invert_toggle.setChecked(bool(settings.invert))
         panel.preview_toggle.setChecked(bool(settings.preview_disabled))
         panel.state["params"] = dict(settings.params)
+        from ..effects.glow_params import glow_state_from_params, GLOW_DEFAULTS
         panel.effects_list.clear()
-        for name, _params in effects:
-            panel.effects_list.addItem(name)
-        panel.state["effects"] = [name for name, _params in effects]
+        glow_state = None
+        non_glow = []
+        for name, params in effects:
+            if name == "Epsilon Glow":
+                glow_state = glow_state_from_params(params)
+            else:
+                panel.effects_list.addItem(name)
+                non_glow.append(name)
+        panel.state["effects"] = non_glow
+        # push glow params into the Glow tab (enable + sliders), or disable if absent
+        gp = self.glow_panel
+        gp.enable_toggle.setChecked(bool(glow_state))
+        if glow_state:
+            for key, slider in gp._sliders.items():
+                slider.setValue(int(glow_state.get(key, GLOW_DEFAULTS[key])))
         if palette is not None:
             panel.set_working_palette(palette)
         panel.set_style(settings.style)
@@ -403,7 +585,7 @@ class ImageEditor(QMainWindow):
         out = Path(folder) / "batch_processed"
         processed, skipped = batch_process(
             folder, out, self._collect_settings(),
-            self.pipeline, self._reference_size(),
+            self._export_pipeline(), self._reference_size(),
         )
         QMessageBox.information(
             self, "Batch",
@@ -415,6 +597,7 @@ class ImageEditor(QMainWindow):
         self._base_gray = np.asarray(gray_f32, dtype=np.float32)
         self._base_rgb = None if rgb_u8 is None else np.asarray(rgb_u8, dtype=np.uint8)
         self.pipeline.clear_cache()  # drop the previous image's cached intermediates
+        self._pending_refit = True  # a new source: the next paint should fit
 
     def set_style(self, name: str) -> None:
         self.panel.set_style(name)
@@ -425,79 +608,172 @@ class ImageEditor(QMainWindow):
             raise RuntimeError("No image loaded")
         self._debounce.stop()
         self._settle.stop()
-        self._coalescer.invalidate()  # supersede any in-flight background render
+        self._scheduler.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
         rgb = self.pipeline.render_cached(self._base_gray, settings)
         qimg = numpy_to_qimage(rgb)
         self.last_qimage = qimg
-        self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+        refit = self._pending_refit
+        self._pending_refit = False
+        self.viewport.set_pixmap(QPixmap.fromImage(qimg),
+                                 logical_size=self._reference_size(), refit=refit)
         return qimg
 
     def schedule_render(self) -> None:
+        self._full_preview_requested = False       # any edit returns to the cap
+        self._last_zoom_bucket = None               # a normal edit re-settles the baseline
         self._debounce.start(self._debounce_ms)   # fast proxy
         self._settle.start(self._settle_ms)        # full-res once idle
 
     # ---- internals ----------------------------------------------------------
+    def _policy_cap(self) -> int:
+        """Settled longest-side cap from the current preview preference + viewport."""
+        w, h = self._reference_size()
+        source_longest = max(w, h)
+        if source_longest <= 0:
+            return 1440  # no image loaded yet; a reasonable default
+        resolution = self.preview_preferences.resolution
+        if resolution == "Auto":
+            vp = self.viewport.viewport()
+            vw, vh = vp.width(), vp.height()
+            if vw <= 0 or vh <= 0:
+                return preview_cap("Auto", source_longest)
+            dpr = self.viewport.devicePixelRatioF()
+            return auto_preview_resolution((h, w), (vw, vh), dpr)
+        return preview_cap(resolution, source_longest)
+
+    def _build_request(self, kind: RenderKind, target_max_side: int | None = None) -> RenderRequest:
+        """Snapshot current UI state into an immutable request. ``generation``
+        is a placeholder here -- the scheduler stamps the real value in
+        ``request()``/``on_finished()``. A non-``None`` ``target_max_side``
+        override wins over the kind-derived cap (used by zoom refinement to
+        request a specific bucket)."""
+        self._sync_pipeline()
+        settings = settings_from_controls(self.panel.state)
+        logical_size = self._reference_size()  # (w, h)
+        if target_max_side is None:
+            if kind is RenderKind.FULL:
+                target_max_side = max(logical_size)
+            elif kind is RenderKind.DRAG:
+                target_max_side = min(self._proxy_max_side, self._policy_cap())
+            else:  # SETTLE, ZOOM
+                target_max_side = self._policy_cap()
+        return RenderRequest(
+            generation=0,
+            kind=kind,
+            settings=settings,
+            source_id=id(self._base_gray),
+            target_max_side=target_max_side,
+            logical_size=logical_size,
+            color_engine=self.pipeline.color_engine,
+            effect_stack=self.pipeline.effect_stack,
+        )
+
     def _do_render(self) -> None:
         """Debounce tick: request a fast proxy render."""
         if self._base_gray is None:
             return
-        self._render_mode = "proxy"
-        token = self._coalescer.request()
-        if token is not None:
-            self._launch_worker(token)
+        req = self._scheduler.request(self._build_request(RenderKind.DRAG))
+        if req is not None:
+            self._launch_worker(req)
 
     def _do_full_render(self) -> None:
-        """Settle tick: request the exact full-resolution render."""
+        """Settle tick: request the settled (policy-capped) render, or an exact
+        full render if Full Quality Preview was requested."""
         if self._base_gray is None:
             return
-        self._render_mode = "full"
-        token = self._coalescer.request()
-        if token is not None:
-            self._launch_worker(token)
+        kind = RenderKind.FULL if self._full_preview_requested else RenderKind.SETTLE
+        req = self._scheduler.request(self._build_request(kind))
+        if req is not None:
+            self._launch_worker(req)
 
-    def _launch_worker(self, token: int) -> None:
-        """Snapshot the current state + mode and start one background render."""
-        self._sync_pipeline()
-        settings = settings_from_controls(self.panel.state)
-        worker = _RenderWorker(self.pipeline, self._base_gray, settings, token,
-                               mode=self._render_mode,
-                               proxy_max_side=self._proxy_max_side)
+    def _do_full_quality_preview(self) -> None:
+        """View > Full Quality Preview: force one exact, uncapped render now."""
+        if self._base_gray is None:
+            return
+        self._full_preview_requested = True
+        req = self._scheduler.request(self._build_request(RenderKind.FULL))
+        if req is not None:
+            self._launch_worker(req)
+
+    def _zoom_required_pixels(self) -> int:
+        """Device pixels the full source spans at the current viewport zoom."""
+        source_longest = max(self._reference_size())
+        scale = self.viewport.transform().m11() * self.viewport.devicePixelRatioF()
+        return int(round(source_longest * scale))
+
+    def _on_zoom_debounced(self) -> None:
+        """Zoom-debounce tick: optionally schedule one bucketed refinement
+        render, at most once per bucket, respecting the resolution ceiling."""
+        if not self.preview_preferences.rerender_on_zoom:
+            return
+        if self._base_gray is None:
+            return
+        source_longest = max(self._reference_size())
+        ceiling = preview_cap(self.preview_preferences.resolution, source_longest)
+        baseline = self._policy_cap()
+        required = self._zoom_required_pixels()
+        bucket = zoom_preview_bucket(baseline, required, ceiling, source_longest)
+        if bucket <= baseline:
+            self._last_zoom_bucket = None  # zoomed back out to the settled baseline
+            return
+        if bucket == self._last_zoom_bucket:
+            return  # already rendered this bucket
+        self._last_zoom_bucket = bucket
+        req = self._scheduler.request(self._build_request(RenderKind.ZOOM, target_max_side=bucket))
+        if req is not None:
+            self._launch_worker(req)
+
+    def _launch_worker(self, request: RenderRequest) -> None:
+        """Start one background render for an already-stamped request."""
+        worker = _RenderWorker(self.pipeline, self._base_gray, request,
+                                is_cancelled=lambda: self._scheduler.should_cancel(request))
         worker.signals.finished.connect(self._on_rendered)
         worker.signals.failed.connect(self._on_render_failed)
+        worker.signals.cancelled.connect(self._on_render_cancelled)
         self._pool.start(worker)
 
-    def _on_rendered(self, qimg: QImage, token: int) -> None:
+    def _on_rendered(self, qimg: QImage, request: RenderRequest) -> None:
         # Drop stale/out-of-order results; only the most-recently-started render
         # is painted.
-        if self._coalescer.is_current(token):
+        if self._scheduler.is_current(request):
             self.last_qimage = qimg
-            self.viewport.set_pixmap(QPixmap.fromImage(qimg))
+            refit = self._pending_refit
+            self._pending_refit = False
+            self.viewport.set_pixmap(QPixmap.fromImage(qimg),
+                                     logical_size=request.logical_size, refit=refit)
         # If state changed while this render was in flight, run one trailing render
-        # with the freshest state.
-        nxt = self._coalescer.on_finished()
+        # with the freshest, highest-priority state.
+        nxt = self._scheduler.on_finished()
         if nxt is not None:
             self._launch_worker(nxt)
 
-    def _on_render_failed(self, token: int) -> None:
+    def _on_render_failed(self, request: RenderRequest) -> None:
         # A background render raised (already logged in the worker). Don't paint,
-        # but release the coalescer so rendering recovers instead of freezing.
-        nxt = self._coalescer.on_finished()
+        # but release the scheduler so rendering recovers instead of freezing.
+        nxt = self._scheduler.on_finished()
+        if nxt is not None:
+            self._launch_worker(nxt)
+
+    def _on_render_cancelled(self, request: RenderRequest) -> None:
+        # Obsolete by design, not an error -- don't paint, but still release the
+        # scheduler and run the trailing request that made this one obsolete.
+        nxt = self._scheduler.on_finished()
         if nxt is not None:
             self._launch_worker(nxt)
 
     def _on_image_dropped(self, path: str) -> None:
-        from PIL import Image
+        worker = _DecodeWorker(path)
+        worker.signals.finished.connect(self._on_image_decoded)
+        self._decode_worker = worker  # keep the signals QObject alive until it fires
+        self._pool.start(worker)
 
-        from ditherzam.imaging import to_gray_f32
-        try:
-            img = Image.open(path)
-            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
-            self.load_array(to_gray_f32(img), rgb)
-        except Exception:
-            return
-        self.render_now()
+    def _on_image_decoded(self, gray_f32, rgb_u8) -> None:
+        """GUI-thread slot: decode finished off-thread; paint a capped preview
+        immediately instead of blocking on a synchronous exact render."""
+        self.load_array(gray_f32, rgb_u8)
+        self.schedule_render()
 
     def _install_shortcuts(self) -> None:
         hk = get_hotkeys(sys.platform)
@@ -506,6 +782,7 @@ class ImageEditor(QMainWindow):
             "zoom_in": self.viewport.zoom_in,
             "zoom_out": self.viewport.zoom_out,
             "zoom_reset": self.viewport.reset_zoom,
+            "full_quality_preview": self._do_full_quality_preview,
         }
         for action_name, slot in bindings.items():
             act = QAction(self)

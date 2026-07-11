@@ -1,14 +1,8 @@
 """Interactive preview proxy (Qt-free).
 
-While a control is actively being dragged, render a downscaled proxy for instant
-feedback, then a full-resolution pass once the drag settles. The proxy is an
-approximation shown on screen only; the committed/exported image always comes
-from the full-resolution ``render``/``render_cached`` path.
-
-To keep the proxy visually close to the full render, the base is downscaled by
-``proxy_factor`` and the dither block size (``scale``) is reduced by the same
-factor, then the result is nearest-upscaled back to the display resolution so the
-pixel-art blocks stay crisp and the on-screen image size does not pop.
+Resolution policy and rendering in this module are Qt-free. Capped previews are
+approximate screen pixels only; committed and exported images always use the
+full-resolution ``render``/``render_cached`` path.
 """
 from __future__ import annotations
 
@@ -17,7 +11,69 @@ from dataclasses import replace
 
 import numpy as np
 
-from ..imaging import nearest_downscale, nearest_upscale_to
+from ..imaging import nearest_upscale_to
+from .preview_preferences import PREVIEW_RESOLUTIONS, normalize_preview_resolution
+
+
+_NUMERIC_RESOLUTIONS = (480, 720, 1080, 1440, 2160)
+_AUTO_BUCKETS = (720, 1080, 1440)
+
+
+def preview_cap(resolution, source_longest: int, auto_cap: int = 1440) -> int:
+    """Resolve a policy label to a longest-side cap, bounded by the source."""
+    source_longest = max(1, int(source_longest))
+    normalized = normalize_preview_resolution(resolution)
+    if normalized == "Full":
+        return source_longest
+    cap = int(auto_cap) if normalized == "Auto" else int(normalized)
+    return min(source_longest, max(1, cap))
+
+
+def preview_target_size(h: int, w: int, max_side: int) -> tuple[int, int]:
+    """Aspect-preserving capped ``(height, width)`` without upscaling."""
+    h, w = max(1, int(h)), max(1, int(w))
+    longest = max(h, w)
+    cap = max(1, int(max_side))
+    if longest <= cap:
+        return h, w
+    ratio = cap / float(longest)
+    return max(1, int(round(h * ratio))), max(1, int(round(w * ratio)))
+
+
+def resize_preview_bucket(required_pixels: float) -> int:
+    """Choose the smallest deterministic Auto bucket covering device pixels."""
+    required = max(0.0, float(required_pixels))
+    for bucket in _AUTO_BUCKETS:
+        if required <= bucket:
+            return bucket
+    return _AUTO_BUCKETS[-1]
+
+
+def auto_preview_resolution(source_hw: tuple[int, int], viewport_wh: tuple[int, int],
+                            device_pixel_ratio: float = 1.0) -> int:
+    """Choose Auto's 720--1440 cap from fitted viewport device-pixel demand."""
+    h, w = (max(1, int(v)) for v in source_hw)
+    viewport_w, viewport_h = (max(1, int(v)) for v in viewport_wh)
+    fit = min(viewport_w / float(w), viewport_h / float(h))
+    fitted_longest = max(h * fit, w * fit) * max(0.01, float(device_pixel_ratio))
+    return min(max(h, w), resize_preview_bucket(fitted_longest))
+
+
+def zoom_preview_bucket(current: int, required_pixels: float, ceiling: int,
+                        source_longest: int) -> int:
+    """Return a higher quality bucket only when zoom demand crosses one.
+
+    ``ceiling`` represents the selected policy (1440 for Auto, the numeric cap,
+    or the source longest side for Full).
+    """
+    current = max(1, int(current))
+    limit = min(max(1, int(ceiling)), max(1, int(source_longest)))
+    if required_pixels <= current or current >= limit:
+        return min(current, limit)
+    candidates = (*_NUMERIC_RESOLUTIONS, limit)
+    target = next((value for value in candidates
+                   if value > current and value >= required_pixels), limit)
+    return min(target, limit)
 
 
 def proxy_factor(h: int, w: int, max_side: int) -> int:
@@ -33,18 +89,32 @@ def proxy_scale(scale: int, factor: int) -> int:
     return max(1, int(round(int(scale) / float(factor))))
 
 
-def render_preview(pipeline, base_gray, settings, max_side: int) -> np.ndarray:
-    """Downscaled proxy render upscaled back to full display size (uint8 HxWx3).
+def render_preview(pipeline, base_gray, settings, max_side: int,
+                    is_cancelled=None, temporal_field=None) -> np.ndarray:
+    """Render and return a capped proxy raster (uint8 HxWx3).
 
     Falls back to a normal full render when the image already fits within
     ``max_side`` (factor 1), in which case the output is identical to
     ``pipeline.render(base_gray, settings)``.
+
+    ``temporal_field`` (animation only) is forwarded as-is to
+    ``pipeline.render``'s ``temporal_field``. The dither stage resizes
+    whatever field it receives (nearest-neighbour) to match its own internal
+    downscaled shape (``apply_dither``'s ``_resize_field_nearest``), so a
+    field built at the FULL-resolution shape stays shape-consistent with the
+    capped raster's downscale automatically -- no separate capped-shape field
+    needs to be computed here. The resulting pattern is approximate (not
+    byte-identical to an export-time full-res field), which is expected for a
+    screen preview.
     """
     h, w = base_gray.shape[:2]
     factor = proxy_factor(h, w, max_side)
     if factor <= 1:
-        return pipeline.render(base_gray, settings)
-    small = nearest_downscale(base_gray, factor)
+        return pipeline.render(base_gray, settings, temporal_field=temporal_field,
+                               is_cancelled=is_cancelled)
+    target_h, target_w = preview_target_size(h, w, max_side)
+    small = nearest_upscale_to(base_gray, (target_w, target_h))
     psettings = replace(settings, scale=proxy_scale(settings.scale, factor))
-    rgb_small = pipeline.render(small, psettings)
-    return nearest_upscale_to(rgb_small, (int(w), int(h))).astype(np.uint8)
+    rgb_small = pipeline.render(small, psettings, temporal_field=temporal_field,
+                                is_cancelled=is_cancelled)
+    return np.asarray(rgb_small, dtype=np.uint8)

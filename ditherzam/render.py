@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import inspect
 import threading
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import numpy as np
 
@@ -11,6 +13,47 @@ from .adjustments import (
 )
 from .dithering.pipeline import apply_dither
 from .imaging import clamp_u8
+from .render_cache import DEFAULT_CACHE_BUDGET_BYTES, RenderCache
+
+
+class RenderCancelled(Exception):
+    """Raised at a stage boundary when ``is_cancelled`` reports obsolete work."""
+
+
+def _check_cancelled(is_cancelled) -> None:
+    # Boundary-only: never interrupts a running stage mid-computation, so a
+    # stage's private buffers are always left in a consistent state.
+    if is_cancelled is not None and is_cancelled():
+        raise RenderCancelled
+
+
+@lru_cache(maxsize=None)
+def _accepts_out(fn) -> bool:
+    # True iff ``fn`` can receive ``out=`` -- either an explicit ``out``
+    # parameter (real adjustment funcs) or a ``**kwargs`` catch-all (e.g. a
+    # MagicMock, whose signature is ``(*args, **kwargs)``). Cached per function
+    # object (monkeypatched doubles are distinct objects, so each is inspected
+    # once). Dispatch stays OUT of the live execution path: no try/except around
+    # the stage body, so a real error propagates and the stage runs exactly once.
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "out" in params or any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+
+
+def _tonal_stage(fn, img, value, buf):
+    """Call a tonal-adjustment stage through the shared L1 buffer (task 3.2:
+    contrast/midtones/highlights must share ONE private buffer) when ``fn``
+    accepts ``out=``. Production stages always do, so they take the fused
+    ``out=buf`` branch every call; 2-arg test doubles take the allocating
+    branch. The stage runs exactly once -- dispatch is by signature, not by
+    catching a TypeError around live execution."""
+    if _accepts_out(fn):
+        return fn(img, value, out=buf)
+    return fn(img, value)
 
 
 def _params_sig(params: dict):
@@ -22,7 +65,21 @@ def _params_sig(params: dict):
 def _color_sig(engine):
     if engine is None:
         return (None,)
-    return (engine.mode, engine.palette.name, engine.palette.colors.tobytes())
+    context = getattr(engine, "context", None)
+    if context is not None:
+        return context.key
+    colors = np.asarray(engine.palette.colors)
+    return (engine.mode, colors.shape, colors.dtype.str,
+            colors.tobytes(order="C"), getattr(engine, "depth", None),
+            getattr(engine, "mapping", None), getattr(engine, "phase", None))
+
+
+def _engine_for_settings(engine, settings):
+    if engine is not None and getattr(engine, "mode", None) == "ramp":
+        return engine.with_settings(
+            depth=settings.depth, mapping=settings.color_mapping
+        )
+    return engine
 
 
 def _effect_sig(stack):
@@ -60,22 +117,36 @@ class RenderPipeline:
         "color", "saturation", "effects", "invert",
     )
 
-    def __init__(self, registry, color_engine=None, effect_stack=None) -> None:
+    def __init__(self, registry, color_engine=None, effect_stack=None, *,
+                 cache_budget_bytes=DEFAULT_CACHE_BUDGET_BYTES) -> None:
         self.registry = registry
         self.color_engine = color_engine
         self.effect_stack = effect_stack
-        self._cache: dict = {}
+        self._cache = RenderCache(cache_budget_bytes)
         self._cache_lock = threading.Lock()
 
+    @property
+    def cache_metrics(self):
+        """Read-only snapshot of staged-cache memory and eviction metrics."""
+        return self._cache.metrics
+
     def render(self, base_gray_f32, settings: RenderSettings,
-               temporal_field=None) -> np.ndarray:
+               temporal_field=None, is_cancelled=None) -> np.ndarray:
         g = np.asarray(base_gray_f32, dtype=np.float32)
 
-        # 1-4: tonal adjustments (grayscale float32, 0..255)
-        g = apply_contrast(g, settings.contrast)
-        g = apply_midtones(g, settings.midtones)
-        g = apply_highlights(g, settings.highlights)
+        # 1-4: tonal adjustments (grayscale float32, 0..255). Contrast/midtones/
+        # highlights share ONE private buffer (proven byte-identical to three
+        # separate allocations, memory 032/a9a80c9) instead of each allocating;
+        # a true single-pass fusion changes pixel values, so three passes remain.
+        buf = np.empty_like(g)
+        g = _tonal_stage(apply_contrast, g, settings.contrast, buf)
+        _check_cancelled(is_cancelled)
+        g = _tonal_stage(apply_midtones, g, settings.midtones, buf)
+        _check_cancelled(is_cancelled)
+        g = _tonal_stage(apply_highlights, g, settings.highlights, buf)
+        _check_cancelled(is_cancelled)
         g = apply_blur(g, settings.blur)
+        _check_cancelled(is_cancelled)
 
         # 5: dither (downscale -> kernel -> upscale); temporal field forwarded
         d = apply_dither(
@@ -89,6 +160,7 @@ class RenderPipeline:
             threshold_field=temporal_field,
             levels=settings.depth,
         )
+        _check_cancelled(is_cancelled)
 
         # 6: color — palette map, or broadcast grayscale to RGB. Snapshot the
         # engine once: the GUI thread can reassign self.color_engine (via
@@ -96,31 +168,36 @@ class RenderPipeline:
         # split read would dereference None mid-render.
         engine = self.color_engine
         if engine is not None:
-            if getattr(engine, "mode", None) == "ramp":
-                engine.depth = settings.depth
-                engine.mapping = settings.color_mapping
-            rgb = engine.map(d).astype(np.float32)
+            engine = _engine_for_settings(engine, settings)
+            rgb = engine.map(d)
         else:
-            rgb = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
+            rgb = np.asarray(d, np.float32)
+        _check_cancelled(is_cancelled)
 
-        # 7: saturation (RGB float32) then clamp to uint8
-        rgb = apply_saturation(rgb, settings.saturation)
-        rgb_u8 = clamp_u8(rgb)
+        # 7: saturation and clamp fused into the final RGB uint8 allocation.
+        rgb_u8 = apply_saturation(rgb, settings.saturation, output_u8=True)
+        _check_cancelled(is_cancelled)
 
         # 8: effects stack (RGB uint8) — snapshot once, same reassignment race.
         stack = self.effect_stack
         if stack is not None:
             rgb_u8 = stack.apply(rgb_u8)
+        _check_cancelled(is_cancelled)
 
-        # 9: invert LAST (on RGB)
+        # 9: invert LAST (on RGB). Task 3.4: route through ONE call-private
+        # float32 scratch buffer (never cached, never returned as itself --
+        # the returned array is always the fresh clamp_u8 uint8 result)
+        # instead of four full-image allocations. Proven byte-identical:
+        # tests/test_render_scratch_reuse.py.
         if settings.invert:
-            rgb_u8 = clamp_u8(apply_invert(rgb_u8.astype(np.float32), True))
+            buf = np.empty_like(rgb_u8, dtype=np.float32)
+            rgb_u8 = clamp_u8(apply_invert(rgb_u8, True, out=buf), inplace=True)
 
         return np.asarray(rgb_u8, np.uint8)
 
     # ------------------------------------------------------------------ cache
     def render_cached(self, base_gray_f32, settings: RenderSettings,
-                      temporal_field=None) -> np.ndarray:
+                      temporal_field=None, is_cancelled=None) -> np.ndarray:
         """Output-identical to ``render()`` but reuses intermediate arrays whose
         inputs are unchanged since the last call. Intended for interactive editing
         where one control moves at a time. Not on the frozen ``render()`` contract;
@@ -135,7 +212,11 @@ class RenderPipeline:
           L6 invert
         """
         with self._cache_lock:
-            c = self._cache
+            cache_key = id(base_gray_f32)
+            cached = self._cache.get(cache_key)
+            # Never mutate a retained group: admission/eviction is atomic and a
+            # failed or oversized render cannot publish a partial chain.
+            c = dict(cached) if cached is not None else {}
             g_in = np.asarray(base_gray_f32, dtype=np.float32)
             dirty = False
 
@@ -144,15 +225,20 @@ class RenderPipeline:
                        settings.highlights, settings.blur)
             if (c.get("_base") is not base_gray_f32 or c.get("adj_sig") != adj_sig
                     or "g" not in c):
-                g = apply_contrast(g_in, settings.contrast)
-                g = apply_midtones(g, settings.midtones)
-                g = apply_highlights(g, settings.highlights)
+                # Fresh, call-private buffer -- never the shared/module-global
+                # kind, so a later render's in-place work can't corrupt this
+                # cached array once it's stored below.
+                buf = np.empty_like(g_in)
+                g = _tonal_stage(apply_contrast, g_in, settings.contrast, buf)
+                g = _tonal_stage(apply_midtones, g, settings.midtones, buf)
+                g = _tonal_stage(apply_highlights, g, settings.highlights, buf)
                 g = apply_blur(g, settings.blur)
                 c["_base"] = base_gray_f32
                 c["adj_sig"] = adj_sig
                 c["g"] = g
                 dirty = True
             g = c["g"]
+            _check_cancelled(is_cancelled)
 
             # L2: dither. A temporal field changes every frame, so it bypasses the
             # dither cache (and invalidates any stored non-temporal result).
@@ -184,31 +270,32 @@ class RenderPipeline:
                     c["d"] = d
                     dirty = True
             d = c["d"]
+            _check_cancelled(is_cancelled)
 
             # L3: color map (or grayscale->RGB broadcast). Snapshot the engine
             # once — a concurrent GUI-thread reassignment must not split reads.
             engine = self.color_engine
-            col_sig = _color_sig(engine) + (settings.depth, settings.color_mapping)
+            engine = _engine_for_settings(engine, settings)
+            col_sig = _color_sig(engine)
             if dirty or c.get("col_sig") != col_sig or "colored" not in c:
                 if engine is not None:
-                    if getattr(engine, "mode", None) == "ramp":
-                        engine.depth = settings.depth
-                        engine.mapping = settings.color_mapping
-                    colored = engine.map(d).astype(np.float32)
+                    colored = engine.map(d)
                 else:
-                    colored = np.repeat(np.asarray(d, np.float32)[..., None], 3, axis=2)
+                    colored = np.asarray(d, np.float32)
                 c["col_sig"] = col_sig
                 c["colored"] = colored
                 dirty = True
             colored = c["colored"]
+            _check_cancelled(is_cancelled)
 
             # L4: saturation then clamp to uint8
             if dirty or c.get("sat_sig") != settings.saturation or "satout" not in c:
-                satout = clamp_u8(apply_saturation(colored, settings.saturation))
+                satout = apply_saturation(colored, settings.saturation, output_u8=True)
                 c["sat_sig"] = settings.saturation
                 c["satout"] = satout
                 dirty = True
             satout = c["satout"]
+            _check_cancelled(is_cancelled)
 
             # L5: effects stack — snapshot once (same reassignment race).
             stack = self.effect_stack
@@ -219,11 +306,17 @@ class RenderPipeline:
                 c["fx"] = fx
                 dirty = True
             fx = c["fx"]
+            _check_cancelled(is_cancelled)
 
-            # L6: invert LAST (cheap; recomputed each call)
+            # L6: invert LAST (recomputed each call; never cached). Same
+            # call-private scratch route as render()'s L9 (task 3.4).
             if settings.invert:
-                return clamp_u8(apply_invert(np.asarray(fx, np.float32), True))
-            return np.asarray(fx, np.uint8)
+                buf = np.empty_like(fx, dtype=np.float32)
+                result = clamp_u8(apply_invert(fx, True, out=buf), inplace=True)
+            else:
+                result = np.asarray(fx, np.uint8)
+            self._cache.put(cache_key, c)
+            return result
 
     def clear_cache(self) -> None:
         with self._cache_lock:

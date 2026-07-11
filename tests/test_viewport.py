@@ -39,3 +39,63 @@ def test_zoom_hard_cap_no_crash(qapp_fixture):
     for _ in range(200):                          # spam past the 100x cap
         v.zoom_in()
     assert v.transform().m11() <= 100.0
+
+
+def test_capped_pixmap_uses_source_logical_scene_bounds(qapp_fixture):
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    v = CustomGraphicsView()
+    v.resize(800, 600)
+    v.set_pixmap(_pixmap(400, 225), logical_size=(3840, 2160))
+
+    bounds = v._pix_item.sceneBoundingRect()
+    assert bounds.width() == pytest.approx(3840.0)
+    assert bounds.height() == pytest.approx(2160.0)
+    assert v.sceneRect().width() == pytest.approx(3840.0)
+    assert v.sceneRect().height() == pytest.approx(2160.0)
+
+
+def test_ordinary_pixmap_replacement_preserves_view_transform(qapp_fixture):
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    v = CustomGraphicsView()
+    v.resize(800, 600)
+    v.set_pixmap(_pixmap(400, 225), logical_size=(3840, 2160))
+    v.zoom_in()
+    before = v.transform()
+
+    v.set_pixmap(_pixmap(640, 360), logical_size=(3840, 2160), refit=False)
+
+    assert v.transform() == before
+    assert v._pix_item.sceneBoundingRect().width() == pytest.approx(3840.0)
+
+
+def test_source_replacement_can_refit(qapp_fixture):
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    v = CustomGraphicsView()
+    v.resize(800, 600)
+    v.set_pixmap(_pixmap(400, 225), logical_size=(3840, 2160))
+    v.zoom_in()
+    zoomed = v.transform().m11()
+
+    v.set_pixmap(_pixmap(300, 400), logical_size=(1200, 1600), refit=True)
+
+    assert v.transform().m11() != pytest.approx(zoomed)
+    assert v._pix_item.sceneBoundingRect().size().width() == pytest.approx(1200.0)
+    assert v._pix_item.sceneBoundingRect().size().height() == pytest.approx(1600.0)
+
+
+def test_viewport_device_demand_reports_drawable_pixels(qapp_fixture):
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    v = CustomGraphicsView()
+    v.resize(640, 360)
+    logical_w = v.viewport().width()
+    logical_h = v.viewport().height()
+    dpr = v.viewport().devicePixelRatioF()
+
+    assert v.viewport_device_demand() == (
+        int(__import__("math").ceil(logical_w * dpr)),
+        int(__import__("math").ceil(logical_h * dpr)),
+    )

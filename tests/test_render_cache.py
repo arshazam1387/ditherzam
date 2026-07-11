@@ -27,7 +27,7 @@ def _duo():
 def _stack():
     s = EffectStack()
     s.add("Chromatic Aberration", shift=2)
-    s.add("Epsilon Glow", radius=3.0, strength=0.4)
+    s.add("Epsilon Glow", threshold=40.0, radius=3.0, intensity=1.0)
     return s
 
 
@@ -82,6 +82,24 @@ def test_cached_matches_with_no_color_and_no_effects():
     base = _base(2)
     for sat in (50, 90, 10, 50):
         _assert_identical(pipe, None, None, base, RenderSettings(style="Floyd-Steinberg", saturation=sat))
+
+
+def test_no_color_render_passes_gray_directly_to_fused_saturation(monkeypatch):
+    pipe = _fresh_pipeline(None, None)
+    base = _base(22)
+    seen = []
+
+    original = R.apply_saturation
+
+    def record(gray_or_rgb, value, **kwargs):
+        seen.append(gray_or_rgb.ndim)
+        return original(gray_or_rgb, value, **kwargs)
+
+    monkeypatch.setattr(R, "apply_saturation", record)
+    settings = RenderSettings(style="None", saturation=73)
+    pipe.render(base, settings)
+    pipe.render_cached(base, settings)
+    assert seen == [2, 2]
 
 
 def test_cached_invalidates_on_new_base():

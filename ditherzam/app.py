@@ -22,6 +22,11 @@ def main() -> int:
     window.resize(1100, 720)
     window.show()
 
+    # Bound interactive renders to the measured thread budget before warming, so
+    # the kernels compile at the same thread count they will run at.
+    from ditherzam.threading_policy import install_interactive_budget
+    install_interactive_budget()
+
     # Compile the common JIT kernels in the background so the first drag is snappy.
     from ditherzam.warmup import start_warmup_thread
     start_warmup_thread()

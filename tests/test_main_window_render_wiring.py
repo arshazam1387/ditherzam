@@ -59,6 +59,33 @@ def test_default_state_does_not_blur_the_image(app):
         "default render altered a sharp image (blur applied by default?)"
 
 
+def test_export_pipeline_snapshots_and_isolates_from_later_edits(app):
+    """A dedicated export pipeline must capture color+effects at launch and stay
+    immutable when the user edits afterward (Task 4.2)."""
+    win = ImageEditor()
+    win.load_array(_gradient())
+    win.panel.set_style("Floyd-Steinberg")
+    win.panel._on_palette_changed("gameboy")
+    win.panel.state["color_mode"] = "nearest"
+
+    exp = win._export_pipeline()
+    assert exp is not win.pipeline                      # dedicated context
+    assert exp.color_engine is not None
+    assert exp.color_engine.mode == "nearest"
+    assert exp.effect_stack is None
+
+    # user changes mode + adds an effect after the snapshot is taken
+    win.panel.state["color_mode"] = "ordered"
+    win.panel.state["effects"] = ["Chromatic Aberration"]
+    win._sync_pipeline()                                 # mutates the live pipeline
+
+    assert exp.color_engine.mode == "nearest"           # snapshot untouched
+    assert exp.effect_stack is None
+    exp2 = win._export_pipeline()                        # a fresh snapshot moves on
+    assert exp2.color_engine.mode == "ordered"
+    assert exp2.effect_stack is not None
+
+
 def test_adding_effect_changes_output_without_crashing(app):
     win = ImageEditor()
     win.load_array(_gradient())

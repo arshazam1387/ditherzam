@@ -3,7 +3,7 @@ from ditherzam.ui.hotkeys import get_hotkeys
 ACTIONS = {
     "change_theme", "export_image", "copy_to_clipboard", "import_image",
     "restart_application", "zoom_in", "zoom_out", "zoom_reset", "show_help",
-    "cycle_theme", "open_image", "save", "help",
+    "cycle_theme", "open_image", "save", "help", "full_quality_preview",
 }
 
 
@@ -14,6 +14,7 @@ def test_windows_bindings():
     assert hk["zoom_out"] == "Ctrl+-"
     assert hk["zoom_reset"] == "Ctrl+0"
     assert hk["export_image"] == "Ctrl+Shift+S"
+    assert hk["full_quality_preview"] == "Ctrl+Return"
 
 
 def test_macos_uses_meta():
@@ -22,6 +23,7 @@ def test_macos_uses_meta():
     assert hk["zoom_in"] == "Meta+="
     assert hk["change_theme"] == "Meta+Shift+T"
     assert hk["restart_application"] == "Meta+Alt+R"
+    assert hk["full_quality_preview"] == "Meta+Return"
 
 
 def test_all_actions_present_and_differ_per_platform():
