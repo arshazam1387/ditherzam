@@ -227,3 +227,27 @@ def test_export_output_identical_regardless_of_selected_cap():
     assert len(frames_small_cap) == len(frames_large_cap)
     for a, b in zip(frames_small_cap, frames_large_cap):
         np.testing.assert_array_equal(a, b)
+
+
+def test_export_renders_from_export_pipeline_snapshot(monkeypatch):
+    """When an export-pipeline provider is set, export() renders the animation
+    from that snapshot, not the live preview pipeline (Task 4.2)."""
+    import ditherzam.animation as anim_mod
+    base = np.full((16, 16), 128.0, np.float32)
+    ctrl = _sync_controller(base)
+    snapshot = object()
+    ctrl.export_pipeline_provider = lambda: snapshot
+
+    captured = {}
+
+    def fake_export_animation(pipeline, *a, **k):
+        captured["pipeline"] = pipeline
+        return "out.mp4"
+
+    monkeypatch.setattr(anim_mod, "export_animation", fake_export_animation)
+
+    result = ctrl.export("out.mp4", fps=24)
+
+    assert captured["pipeline"] is snapshot
+    assert captured["pipeline"] is not ctrl.pipeline
+    assert result == "out.mp4"

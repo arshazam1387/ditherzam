@@ -297,7 +297,8 @@ class ImageEditor(QMainWindow):
         self.anim_controller = AnimationController(
             self.timeline_panel, self.pipeline,
             self._provide_animation_base, self.timeline, seed=0,
-            cap_provider=self._policy_cap)
+            cap_provider=self._policy_cap,
+            export_pipeline_provider=self._export_pipeline)
         self.anim_controller.on_frame = self._show_animation_frame
         self.timeline_panel.keyframe_requested.connect(self._add_keyframe_at)
         self.timeline_panel.export_requested.connect(self._export_animation)
@@ -340,6 +341,7 @@ class ImageEditor(QMainWindow):
             settings_provider=self._collect_settings,
             expert_provider=lambda: self.expert_mode,
             cap_provider=self._policy_cap,
+            export_pipeline_provider=self._export_pipeline,
         )
         self.menuBar().addMenu(self.video_controller.build_menu())
 
@@ -435,11 +437,25 @@ class ImageEditor(QMainWindow):
         h, w = self._base_gray.shape[:2]
         return (int(w), int(h))
 
+    def _export_pipeline(self) -> RenderPipeline:
+        """A dedicated render pipeline snapshotting the current color engine and
+        effects, decoupled from the live preview pipeline.
+
+        Exports must render from an immutable context: a later UI edit (which
+        reassigns ``self.pipeline.color_engine``/``effect_stack`` via
+        ``_sync_pipeline``) or a preview render must never change an in-flight
+        export. This builds a fresh pipeline with its own cache, so still, batch,
+        video, and animation exports each own their snapshot.
+        """
+        return RenderPipeline(
+            self._registry, self._current_color_engine(),
+            self._current_effect_stack())
+
     def _rendered_rgb(self) -> np.ndarray:
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
-        self._sync_pipeline()
-        return self.pipeline.render(self._base_gray, self._collect_settings())
+        return self._export_pipeline().render(
+            self._base_gray, self._collect_settings())
 
     def _apply_preset(self, settings, palette, effects) -> None:
         panel = self.panel
@@ -569,7 +585,7 @@ class ImageEditor(QMainWindow):
         out = Path(folder) / "batch_processed"
         processed, skipped = batch_process(
             folder, out, self._collect_settings(),
-            self.pipeline, self._reference_size(),
+            self._export_pipeline(), self._reference_size(),
         )
         QMessageBox.information(
             self, "Batch",

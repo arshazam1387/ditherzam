@@ -215,3 +215,31 @@ def test_export_video_worker_args_identical_regardless_of_cap(tmp_path, monkeypa
         results.append(started[0].args)
 
     assert results[0] == results[1]
+
+
+def test_export_video_uses_export_pipeline_snapshot(tmp_path, monkeypatch):
+    """The async dither worker must receive the export-pipeline snapshot, not the
+    live shared pipeline that later UI edits mutate (Task 4.2)."""
+    live_pipeline, settings, snapshot = object(), object(), object()
+    win = _window()
+    ctrl = VideoController(win, live_pipeline, lambda: settings, lambda: False,
+                           cap_provider=lambda: 1440,
+                           export_pipeline_provider=lambda: snapshot)
+    ctrl.temp_dir = tmp_path
+    (tmp_path / "original_frames").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "dithered_frames").mkdir(parents=True, exist_ok=True)
+    ctrl.input_file = "in.mp4"
+    ctrl.framerate = 24.0
+    monkeypatch.setattr(vc_mod, "VideoDitherWorker", _FakeDitherWorker)
+    monkeypatch.setattr(vc_mod, "VideoAssembleWorker", _FakeAssembleWorker)
+    monkeypatch.setattr(vc_mod.QFileDialog, "getSaveFileName",
+                        lambda *a, **k: (str(tmp_path / "out.mp4"), ""))
+    started = []
+    monkeypatch.setattr(ctrl.pool, "start", started.append)
+
+    ctrl.export_video()
+
+    _, _, used_pipeline, used_settings = started[0].args
+    assert used_pipeline is snapshot
+    assert used_pipeline is not live_pipeline
+    assert used_settings is settings

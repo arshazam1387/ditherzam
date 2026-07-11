@@ -73,12 +73,15 @@ class VideoController:
     """Owns video state and wires the Video menu to workers."""
 
     def __init__(self, main_window, pipeline, settings_provider, expert_provider,
-                 cap_provider=None) -> None:
+                 cap_provider=None, export_pipeline_provider=None) -> None:
         self.win = main_window
         self.pipeline = pipeline
         self._settings_provider = settings_provider   # () -> RenderSettings
         self._expert_provider = expert_provider        # () -> bool
         self.cap_provider = cap_provider or (lambda: 1440)   # () -> int, Qt-free
+        # () -> RenderPipeline snapshot for EXACT export, isolated from live edits;
+        # falls back to the live pipeline when unset (tests/back-compat).
+        self.export_pipeline_provider = export_pipeline_provider
         self.pool = QThreadPool.globalInstance()
         self.temp_dir: Path | None = None
         self.input_file: str | None = None
@@ -164,9 +167,13 @@ class VideoController:
         in_dir = self.temp_dir / "original_frames"
         out_dir = self.temp_dir / "dithered_frames"
 
+        # Snapshot the render context at launch so a later UI edit cannot change
+        # this in-flight (async) export.
+        export_pipeline = (self.export_pipeline_provider()
+                           if self.export_pipeline_provider else self.pipeline)
         prog = QProgressDialog("Processing frames...", "Cancel", 0, 100, self.win)
         dither = VideoDitherWorker(
-            str(in_dir), str(out_dir), self.pipeline, self._settings_provider()
+            str(in_dir), str(out_dir), export_pipeline, self._settings_provider()
         )
         prog.canceled.connect(dither.cancel)
 

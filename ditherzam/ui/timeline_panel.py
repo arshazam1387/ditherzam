@@ -175,13 +175,17 @@ class AnimationController:
     _INACTIVE = {"", "none", "None", "off"}
 
     def __init__(self, panel: TimelinePanel, pipeline, provide_base, timeline,
-                 seed: int = 0, cap_provider=None) -> None:
+                 seed: int = 0, cap_provider=None,
+                 export_pipeline_provider=None) -> None:
         self.panel = panel
         self.pipeline = pipeline
         self.provide_base = provide_base    # () -> (gray_f32, RenderSettings) | None
         self.timeline = timeline
         self.seed = int(seed)
         self.cap_provider = cap_provider or (lambda: 1440)   # () -> int, Qt-free
+        # () -> RenderPipeline snapshot for EXACT export, isolated from live edits;
+        # falls back to the live pipeline when unset (tests/back-compat).
+        self.export_pipeline_provider = export_pipeline_provider
         self.on_frame = None                # callable(np.uint8 HxWx3) | None
         self._pool = QThreadPool.globalInstance()
         self._scheduler = RenderScheduler()
@@ -247,8 +251,10 @@ class AnimationController:
         if base is None:
             return None
         gray, settings = base
+        pipeline = (self.export_pipeline_provider() if self.export_pipeline_provider
+                    else self.pipeline)
         return export_animation(
-            self.pipeline, gray, settings, self.timeline,
+            pipeline, gray, settings, self.timeline,
             self.panel.pattern(), self.panel.amplitude(),
             out_path, fps=fps, seed=self.seed)
 
