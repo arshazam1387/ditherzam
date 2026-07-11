@@ -7,9 +7,12 @@ thread use with two levers chosen from the 2026-07-10 thread-scaling baseline
 * **Interactive budget** — the process default. Parallel color kernels plateau by
   ~4 threads, so interactive renders are capped at ``min(4, cpu)`` (snapped to a
   supported count). This is installed once at startup.
-* **Export budget** — what a long async export (video) drops to while it runs, so
-  the interactive budget stays reserved for a UI-triggered render: ``cpu`` minus
-  the interactive reserve, snapped, floored at 1.
+* **Export budget** — what a long async export (video) drops the process-global
+  count to while it runs: ``cpu`` minus the interactive reserve, snapped, floored
+  at 1. Because the count is process-global, this lowers *any* concurrent render
+  (including a UI-triggered one) rather than partitioning cores between them — the
+  goal is bounding total oversubscription during export, not a hard reservation.
+  On an 8-CPU host interactive and export are both 4, so it is moot there.
 
 Diffusion stays sequential regardless (its kernel is not parallel), and the heavy
 effect stack is GIL-bound and does not benefit from extra threads — neither needs
