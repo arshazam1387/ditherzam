@@ -24,6 +24,60 @@ def test_current_palette_none_when_off(qapp_fixture):
     assert win._current_palette() is None
 
 
+def test_color_off_has_no_engine(qapp_fixture):
+    win = _win(qapp_fixture)
+    win.panel.state["color_mode"] = "off"
+
+    assert win._current_color_engine() is None
+
+
+def test_fresh_engines_share_editor_owned_context(qapp_fixture):
+    win = _win(qapp_fixture)
+    win.panel.state["color_mode"] = "nearest"
+    win.panel._on_palette_changed("gameboy")
+
+    first = win._current_color_engine()
+    second = win._current_color_engine()
+
+    assert first is not second
+    assert first.context_cache is win._color_context_cache
+    assert second.context_cache is win._color_context_cache
+    assert first.context is second.context
+
+
+def test_same_name_palette_edit_misses_editor_context(qapp_fixture):
+    from ditherzam.color.palette import Palette
+
+    win = _win(qapp_fixture)
+    win.panel.state["color_mode"] = "nearest"
+    original = Palette.from_list("same", [[0, 0, 0], [255, 255, 255]])
+    edited = Palette.from_list("same", [[1, 0, 0], [255, 255, 255]])
+
+    win.panel.set_working_palette(original)
+    original_context = win._current_color_engine().context
+    win.panel.set_working_palette(edited)
+    edited_context = win._current_color_engine().context
+
+    assert edited_context is not original_context
+
+
+def test_palette_hover_then_revert_restores_cached_context(qapp_fixture):
+    from ditherzam.color.palette import Palette
+
+    win = _win(qapp_fixture)
+    win.panel.state["color_mode"] = "nearest"
+    win.panel._on_palette_changed("gameboy")
+    original_context = win._current_color_engine().context
+
+    win._on_palette_preview(Palette.from_list("hover", [[9, 9, 9], [99, 99, 99]]))
+    hover_context = win._current_color_engine().context
+    win._on_palette_preview(None)
+    restored_context = win._current_color_engine().context
+
+    assert hover_context is not original_context
+    assert restored_context is original_context
+
+
 def test_preview_palette_overrides_current(qapp_fixture):
     from ditherzam.color.palette import Palette
     win = _win(qapp_fixture)

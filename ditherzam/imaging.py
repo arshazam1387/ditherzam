@@ -13,7 +13,15 @@ def to_gray_f32(src) -> np.ndarray:
     return arr.astype(np.float32)
 
 
-def clamp_u8(arr) -> np.ndarray:
+def clamp_u8(arr, *, inplace: bool = False) -> np.ndarray:
+    if inplace:
+        # Caller attests exclusive ownership of `arr` (a call-private scratch
+        # buffer, never cached/returned as itself) -- clip mutates it instead
+        # of allocating a clipped copy. The final uint8 array is always a
+        # fresh allocation either way (clip can't cast float->uint8 in one
+        # ufunc step under 'same_kind' casting).
+        np.clip(arr, 0, 255, out=arr)
+        return arr.astype(np.uint8)
     return np.clip(arr, 0, 255).astype(np.uint8)
 
 

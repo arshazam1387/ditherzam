@@ -137,5 +137,35 @@ it only affects time-to-window, not time-to-first-render (which any render pays)
 | luminance       | 592 ms        | 484 ms (reuses adjustments only) |
 | contrast (top)  | 592 ms        | 520 ms (~full: nothing upstream to reuse) |
 
+## 2026-07-09 — Task 3.2 tonal adjustment fusion (JIT on)
+
+Command: `.venv/Scripts/python.exe -m benchmarks.adjustment_fusion`
+
+Deterministic float32 input; median of 5 warm runs at 1080p and 3 at 4K.
+Peak allocation is Python `tracemalloc` (useful for candidate comparison, not
+whole-process RSS). Hashes and the complete reproducible sweep are emitted as JSON.
+
+| operation/candidate | 1080p | 4K | 1080p peak | 4K peak | exact together output |
+|---|---:|---:|---:|---:|---|
+| contrast | 15.6 ms | 38.9 ms | 15.82 MiB | 63.28 MiB | n/a |
+| midtones | 62.4 ms | 183.0 ms | 15.82 MiB | 63.28 MiB | n/a |
+| highlights | 20.4 ms | 36.3 ms | 15.82 MiB | 63.28 MiB | n/a |
+| production three-call chain | 84.7 ms | 281.4 ms | 23.73 MiB | 94.92 MiB | reference |
+| in-place, three-pass candidate | **49.0 ms** | **162.2 ms** | **7.91 MiB** | **31.64 MiB** | **yes** |
+| compiled true one-pass candidate | 16.9 ms | 63.8 ms | 7.91 MiB | 31.64 MiB | **no** |
+
+The exact in-place candidate is 1.73× faster at both resolutions and cuts
+traced peak allocation by two thirds. It matched the production SHA-256 at
+1080p and 4K and matched all 100,009 adversarial/random values under two setting
+triples, including NaNs produced by negative inputs. The true one-pass Numba
+candidate is faster, but changed 1,482,787 / 2,073,600 values at 1080p and
+5,931,888 / 8,294,400 at 4K (maximum finite sweep error 0.0001220703125).
+
+**Recommendation:** implement the allocation-reduced three-pass helper, retaining
+the current float32 rounding boundaries and frozen stage semantics. Reject the
+true algebraic/compiled one-pass fusion because it is not byte-exact. Before
+production integration, preserve cancellation boundaries and public stage-call
+observability required by render-order tests.
+
 Downstream-of-color controls become cheap; top-of-pipeline controls need the
 preview proxy (#3) since there is no upstream intermediate to reuse.

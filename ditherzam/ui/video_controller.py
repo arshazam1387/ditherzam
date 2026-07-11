@@ -22,6 +22,7 @@ from ditherzam.video.workers import (
 )
 
 from .convert import numpy_to_qimage
+from .preview import preview_target_size
 
 _VIDEO_FILTER = "Video Files (*.mp4 *.avi *.mov *.mkv)"
 _MP4_FILTER = "MP4 Files (*.mp4)"
@@ -71,11 +72,16 @@ class FramePlayer:
 class VideoController:
     """Owns video state and wires the Video menu to workers."""
 
-    def __init__(self, main_window, pipeline, settings_provider, expert_provider) -> None:
+    def __init__(self, main_window, pipeline, settings_provider, expert_provider,
+                 cap_provider=None, export_pipeline_provider=None) -> None:
         self.win = main_window
         self.pipeline = pipeline
         self._settings_provider = settings_provider   # () -> RenderSettings
         self._expert_provider = expert_provider        # () -> bool
+        self.cap_provider = cap_provider or (lambda: 1440)   # () -> int, Qt-free
+        # () -> RenderPipeline snapshot for EXACT export, isolated from live edits;
+        # falls back to the live pipeline when unset (tests/back-compat).
+        self.export_pipeline_provider = export_pipeline_provider
         self.pool = QThreadPool.globalInstance()
         self.temp_dir: Path | None = None
         self.input_file: str | None = None
@@ -91,8 +97,21 @@ class VideoController:
         return menu
 
     def _show_frame(self, rgb_u8: np.ndarray) -> None:
-        # Convert the HxWx3 uint8 array to a pixmap for the graphics viewport.
-        self.win.viewport.set_pixmap(QPixmap.fromImage(numpy_to_qimage(rgb_u8)))
+        # Display-only: cap BEFORE QImage conversion (Task 4.1). The on-disk
+        # dithered frames (the export) are never touched -- only this
+        # in-memory copy shown in the viewport is downscaled.
+        h, w = rgb_u8.shape[:2]
+        cap = max(1, int(self.cap_provider()))
+        target_h, target_w = preview_target_size(h, w, cap)
+        display = rgb_u8
+        if (target_h, target_w) != (h, w):
+            display = np.asarray(
+                Image.fromarray(rgb_u8).resize((target_w, target_h), Image.NEAREST),
+                dtype=np.uint8)
+        qimg = numpy_to_qimage(display)
+        # Source-logical size preserved so the capped pixmap fills the
+        # viewport the same way the still-image capped preview does.
+        self.win.viewport.set_pixmap(QPixmap.fromImage(qimg), logical_size=(w, h))
 
     def _error(self, msg: str) -> None:
         QMessageBox.critical(self.win, "Video", msg)
@@ -148,9 +167,13 @@ class VideoController:
         in_dir = self.temp_dir / "original_frames"
         out_dir = self.temp_dir / "dithered_frames"
 
+        # Snapshot the render context at launch so a later UI edit cannot change
+        # this in-flight (async) export.
+        export_pipeline = (self.export_pipeline_provider()
+                           if self.export_pipeline_provider else self.pipeline)
         prog = QProgressDialog("Processing frames...", "Cancel", 0, 100, self.win)
         dither = VideoDitherWorker(
-            str(in_dir), str(out_dir), self.pipeline, self._settings_provider()
+            str(in_dir), str(out_dir), export_pipeline, self._settings_provider()
         )
         prog.canceled.connect(dither.cancel)
 
