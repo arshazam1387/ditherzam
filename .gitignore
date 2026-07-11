@@ -14,3 +14,14 @@ __pycache__/
 
 # local demo renders (not committed)
 demo_output/
+
+# Smart Mask model weights/binaries: never committed. Staged locally by
+# tools/stage_smart_mask_model.py and verified by ditherzam/masking, per the
+# provenance policy in assets/models/smart_mask/README.md.
+assets/models/smart_mask/*.onnx
+assets/models/smart_mask/*.pt
+assets/models/smart_mask/*.pth
+assets/models/smart_mask/*.bin
+assets/models/smart_mask/*.ckpt
+assets/models/smart_mask/*.safetensors
+assets/models/smart_mask/_staging/
