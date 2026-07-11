@@ -59,7 +59,7 @@ def _topography(img, warp):
             xr = sx + 1 if sx + 1 < w else sx
             yd = y + 1 if y + 1 < h else y
             br = int(img[y, xr] / 256.0 * bands)
-            bd = int(img[yd, sx] / 256.0 * bands)
+            bd = int(img[int(yd), sx] / 256.0 * bands)
             out[y, x] = 0.0 if (b0 != br or b0 != bd) else 255.0
     return out
 
@@ -87,7 +87,7 @@ def _diagonal(img, sensitivity):
             yu = y - 1 if y > 0 else y
             yd = y + 1 if y < h - 1 else y
             gx = img[y, xr] - img[y, xl]
-            gy = img[yd, x] - img[yu, x]
+            gy = img[int(yd), x] - img[int(yu), x]
             mag = math.sqrt(gx * gx + gy * gy)
             out[y, x] = 0.0 if mag > thr_edge else 255.0
     return out
@@ -173,8 +173,8 @@ def _wireframe_alt(img, sensitivity):
             yu = y - 1 if y > 0 else y
             yd = y + 1 if y < h - 1 else y
             gx = img[y, xr] - img[y, xl]
-            gy = img[yd, x] - img[yu, x]
-            gd = img[yd, xr] - img[yu, xl]
+            gy = img[int(yd), x] - img[int(yu), x]
+            gd = img[int(yd), xr] - img[int(yu), xl]
             mag = math.sqrt(gx * gx + gy * gy + gd * gd)
             out[y, x] = 0.0 if mag > thr_edge else 255.0
     return out
