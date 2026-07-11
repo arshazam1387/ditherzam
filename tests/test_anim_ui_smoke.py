@@ -1,6 +1,7 @@
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import types
 from dataclasses import replace
 
 import numpy as np
@@ -60,7 +61,9 @@ def _sync_controller(base, pipeline=None, cap_provider=None, settings=None, leng
     settings = settings or RenderSettings(style="Bayer-Matrix 4x4", scale=1)
     ctrl = AnimationController(
         p, pipeline, lambda: (base, settings), tl, seed=0, cap_provider=cap_provider)
-    ctrl._pool.start = lambda worker: worker.run()
+    # Run workers inline via a disposable stand-in pool; never mutate the shared
+    # QThreadPool.globalInstance() singleton (that leaks into other tests).
+    ctrl._pool = types.SimpleNamespace(start=lambda worker: worker.run())
     return ctrl
 
 
