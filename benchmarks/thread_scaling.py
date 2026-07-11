@@ -241,7 +241,9 @@ def _thread_list(requested) -> list[int]:
     return sorted(set(counts))
 
 
-def _report(threads_used: list[int], by_key: dict) -> None:
+def _report(threads_used: list[int], by_key: dict) -> int:
+    """Print the scaling table; return the number of hash-diverged cases."""
+    diverged = 0
     base_n = threads_used[0]
     width = max((len(k[1]) for k in by_key), default=12) + 4
     print(f"\n== thread scaling: warm ms and speedup vs {base_n} thread(s) ==")
@@ -265,7 +267,10 @@ def _report(threads_used: list[int], by_key: dict) -> None:
             speed.append(f"{base / v:>7.2f}" if (v and base) else f"{'--':>7}")
         peak = row.get(base_n, {}).get("peak_mb", 0.0)
         hashes = {r["sha16"] for r in row.values() if r.get("sha16")}
-        hstate = "ok" if len(hashes) <= 1 else "DIVERGED!"
+        ok = len(hashes) <= 1
+        hstate = "ok" if ok else "DIVERGED!"
+        if not ok:
+            diverged += 1
         print(f"{section:<10}{case:<{width}}{size:>6} " +
               " ".join(cells) + " " + " ".join(speed) +
               f"  {peak:>8.1f}  {hstate}")
@@ -279,6 +284,7 @@ def _report(threads_used: list[int], by_key: dict) -> None:
             if r:
                 print(f"  {t} thread(s): max stall {r['max_stall_ms']:>7.1f} ms "
                       f"over {r['render_ms']:.0f} ms render")
+    return diverged
 
 
 def _run_parent(args) -> None:
@@ -290,7 +296,11 @@ def _run_parent(args) -> None:
         for r in _spawn(t, args):
             key = (r["section"], r["case"], r["size"])
             by_key.setdefault(key, {})[r["threads"]] = r
-    _report(threads_used, by_key)
+    diverged = _report(threads_used, by_key)
+    if diverged:
+        # A kernel produced different output at different thread counts — a real
+        # correctness regression. Fail loudly so CI/automation can catch it.
+        raise SystemExit(f"FAIL: {diverged} case(s) diverged across thread counts")
 
 
 def parse_args(argv=None):

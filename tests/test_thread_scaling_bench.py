@@ -54,9 +54,10 @@ def test_report_flags_hash_divergence():
     }
     out = io.StringIO()
     with redirect_stdout(out):
-        ts._report([1, 2], by_key)
+        diverged = ts._report([1, 2], by_key)
     text = out.getvalue()
     assert "DIVERGED!" in text
+    assert diverged == 1                   # surfaced for the non-zero exit path
     assert "1.67" in text  # 100/60 speedup rendered
 
 
@@ -73,9 +74,10 @@ def test_report_marks_consistent_hashes_ok_and_skips_heartbeat():
     }
     out = io.StringIO()
     with redirect_stdout(out):
-        ts._report([1, 2], by_key)
+        diverged = ts._report([1, 2], by_key)
     text = out.getvalue()
     assert "DIVERGED!" not in text
+    assert diverged == 0
     assert "max stall" in text            # heartbeat reported separately
     # heartbeat never appears as a warm-ms table row (skipped by section)
     assert "nearest/k16 x3" not in text
