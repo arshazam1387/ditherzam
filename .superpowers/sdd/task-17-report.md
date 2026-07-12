@@ -27,6 +27,14 @@ performance claim.
 - Concrete certification hooks and an expanded disabled/target/outside/surface/
   lifecycle/cache/performance E2E matrix; approved bundles call hooks rather than
   an unconditional placeholder failure.
+- Certification evidence is now fail-closed: every approved case must carry an
+  executed flag, exact case identity, output hashes/dimensions/formats, canonical
+  evidence hash, and resilience/cache/performance fields where applicable.
+- The bounded `--offline-smoke` path verifies the lock, decodes the locked fixture,
+  runs a local adapter, produces masked PNG plus disabled JPEG, emits hashed JSON,
+  and exits without entering the Qt event loop. Synthetic injection tests it.
+- PyInstaller includes only the two exact locked DLL paths; a post-build verifier
+  rejects missing, corrupt, or extra DLLs.
 
 ## Verification
 

@@ -5,6 +5,10 @@ from pathlib import Path
 
 
 def main() -> int:
+    if "--offline-smoke" in sys.argv:
+        from ditherzam.offline_smoke import run
+        root = Path(__file__).resolve().parent.parent
+        return run(root / "packaging" / "smart-mask-release.lock.json")
     from PySide6.QtWidgets import QApplication
 
     from ditherzam.ui.main_window import ImageEditor

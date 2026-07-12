@@ -16,7 +16,7 @@ class ReleaseBundleError(RuntimeError):
     """The frozen distribution is incomplete or does not match its lock file."""
 
 
-REQUIRED_RECORDS = frozenset({"model_manifest", "license", "notice", "provenance"})
+REQUIRED_RECORDS = frozenset({"model_manifest", "license", "notice", "provenance", "smoke_fixture"})
 REQUIRED_ORT_DLLS = frozenset({"onnxruntime.dll", "onnxruntime_providers_shared.dll"})
 
 
@@ -55,7 +55,7 @@ def verify_release_bundle(bundle_root: str | Path, lock_path: str | Path) -> dic
         expected_parent = (root / "onnxruntime" / "capi").resolve()
         if path.name != name or path.parent != expected_parent or path.suffix.lower() != ".dll":
             raise ReleaseBundleError(f"{name} must be under onnxruntime/capi")
-    for role in ("license", "notice", "provenance"):
+    for role in ("license", "notice", "provenance", "smoke_fixture"):
         record = records[role]
         if record.get("content_id") != content_id:
             raise ReleaseBundleError(f"{role} does not identify this release content")
