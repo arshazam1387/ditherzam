@@ -64,3 +64,14 @@ Creative settings, source identity, and proxy geometry remain key partitions.
 
 - Focused JIT-off cache/integration/order gate: 21 passed.
 - Named real-JIT integration/color/style gate: 17 passed.
+
+## Stable exact identity and cold disabled path
+
+Exact masked export now uses only SourceIdentity, stable render-setting and
+color/effect content signatures, geometry, and an algorithm version. Equal
+independently reconstructed contexts hit the composite cache; creative changes
+miss. Disabled proxy, Full, synchronous, and export paths branch before reading
+`rendered_identity`, so they perform no mask signature or source-content hash.
+
+- Focused JIT-off gate: 23 passed.
+- Named real-JIT gate: 19 passed.
