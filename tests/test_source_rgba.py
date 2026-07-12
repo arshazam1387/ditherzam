@@ -139,13 +139,29 @@ def test_noncanonical_values_and_dtypes_fail_atomically(
     assert editor._base_rgba is old_rgba
 
 
-def test_owned_readonly_c_rgba_is_adopted_without_duplicate(qapp_fixture):
+def test_public_owned_readonly_rgba_is_still_defensively_copied(qapp_fixture):
     editor = _editor(qapp_fixture)
     gray = np.zeros((2, 2), dtype=np.float32)
     rgba = np.zeros((2, 2, 4), dtype=np.uint8)
     rgba.setflags(write=False)
 
     editor.load_array(gray, rgba[..., :3].copy(), rgba)
+
+    assert editor._base_rgba is not rgba
+    rgba.setflags(write=True)
+    rgba[:] = 255
+    assert np.all(editor._base_rgba == 0)
+
+
+def test_private_decode_receiver_adopts_worker_owned_rgba(qapp_fixture, monkeypatch):
+    editor = _editor(qapp_fixture)
+    gray = np.zeros((2, 2), dtype=np.float32)
+    rgb = np.zeros((2, 2, 3), dtype=np.uint8)
+    rgba = np.zeros((2, 2, 4), dtype=np.uint8)
+    rgba.setflags(write=False)
+    monkeypatch.setattr(editor, "schedule_render", lambda: None)
+
+    editor._on_image_decoded(gray, rgb, rgba)
 
     assert editor._base_rgba is rgba
 

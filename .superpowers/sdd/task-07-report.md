@@ -12,16 +12,17 @@
   rejected replacement leaves the prior source intact.
 - Canonical inputs are validated before coercion: gray is non-empty finite
   `float32` in `[0, 255]`; RGB/RGBA are exact non-empty `uint8` ndarrays.
-- Already-owned, read-only C-contiguous decoded RGBA is adopted without another
-  copy; mutable, borrowed, or strided programmatic RGBA is defensively copied.
+- The private decode receiver adopts its worker-owned, read-only C-contiguous RGBA
+  without another copy. Public `load_array` always defensively copies external
+  RGBA—even owned read-only arrays, whose owner can re-enable writes later.
 - No premultiplication or speculative source abstraction was introduced.
 
 ## Verification
 
 ```text
 QT_QPA_PLATFORM=offscreen NUMBA_DISABLE_JIT=1
-.venv/Scripts/python.exe -m pytest -q tests/test_source_rgba.py tests/test_preview_lifecycle.py --basetemp=.pytest-tmp-sm07-fix2
-31 passed in 108.08s
+.venv/Scripts/python.exe -m pytest -q tests/test_source_rgba.py tests/test_preview_lifecycle.py --basetemp=.pytest-tmp-sm07-owner
+32 passed in 131.64s
 ```
 
 The focused SM-07 suite has zero failures. The repository-wide known-red baseline
