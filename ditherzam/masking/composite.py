@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+from numba import njit, prange
 
 from ditherzam.masking.contracts import MaskContractError, validate_confidence_array, validate_rgba_u8
 from ditherzam.masking.settings import OutsideMode
@@ -51,7 +52,11 @@ class CompositeContext:
 
     def __post_init__(self) -> None:
         source = _validate_source(self.source_rgba)
-        _validate_mask(self.mask, source.shape[:2])
+        mask = _validate_mask(self.mask, source.shape[:2])
+        if source.flags.writeable or mask.flags.writeable:
+            raise MaskCompositeError(
+                "CompositeContext arrays must be immutable (writeable=False) request snapshots"
+            )
         if not isinstance(self.outside_mode, OutsideMode):
             raise MaskCompositeError(
                 f"outside_mode must be an OutsideMode, got {self.outside_mode!r}"
@@ -74,9 +79,71 @@ def _validate_rendered(rendered_rgb: object) -> np.ndarray:
     return rendered_rgb
 
 
-def _round_divide(numerator: np.ndarray, denominator: np.ndarray | int) -> np.ndarray:
-    """Nearest integer division with exact half ties rounded upward."""
-    return (numerator + denominator // 2) // denominator
+_MODE_ORIGINAL = 0
+_MODE_TRANSPARENT = 1
+_MODE_WHITE = 2
+_MODE_BLACK = 3
+_MODE_CODES = {
+    OutsideMode.ORIGINAL: _MODE_ORIGINAL,
+    OutsideMode.TRANSPARENT: _MODE_TRANSPARENT,
+    OutsideMode.WHITE: _MODE_WHITE,
+    OutsideMode.BLACK: _MODE_BLACK,
+}
+
+
+@njit(cache=True, parallel=True)
+def _composite_u8(rendered, source, mask, mode, channels):
+    """One allocation, exact byte-domain compositor (compiled when JIT is on)."""
+    height, width = mask.shape
+    out = np.empty((height, width, channels), dtype=np.uint8)
+    for y in prange(height):
+        for x in range(width):
+            coverage = int(float(mask[y, x]) * 255.0 + 0.5)
+            inverse = 255 - coverage
+            if mode == _MODE_ORIGINAL:
+                outside_alpha = int(source[y, x, 3])
+            elif mode == _MODE_TRANSPARENT:
+                outside_alpha = 0
+            else:
+                outside_alpha = 255
+            alpha_numerator = coverage * 255 + inverse * outside_alpha
+            alpha = (alpha_numerator + 127) // 255
+            for channel in range(3):
+                rendered_value = int(rendered[y, x, channel])
+                if mode == _MODE_ORIGINAL:
+                    outside_value = int(source[y, x, channel])
+                elif mode == _MODE_WHITE:
+                    outside_value = 255
+                elif mode == _MODE_BLACK:
+                    outside_value = 0
+                else:
+                    outside_value = rendered_value
+                if alpha_numerator == 0:
+                    value = rendered_value
+                else:
+                    numerator = (
+                        rendered_value * coverage * 255
+                        + outside_value * inverse * outside_alpha
+                    )
+                    value = (numerator + alpha_numerator // 2) // alpha_numerator
+                out[y, x, channel] = value
+            if channels == 4:
+                out[y, x, 3] = alpha
+    return out
+
+
+@njit(cache=True, parallel=True)
+def _flatten_white_u8(source):
+    height, width = source.shape[:2]
+    out = np.empty((height, width, 3), dtype=np.uint8)
+    for y in prange(height):
+        for x in range(width):
+            alpha = int(source[y, x, 3])
+            inverse = 255 - alpha
+            for channel in range(3):
+                numerator = int(source[y, x, channel]) * alpha + 255 * inverse
+                out[y, x, channel] = (numerator + 127) // 255
+    return out
 
 
 def composite_masked(
@@ -101,49 +168,13 @@ def composite_masked(
     if not isinstance(outside_mode, OutsideMode):
         raise MaskCompositeError(f"outside_mode must be an OutsideMode, got {outside_mode!r}")
 
-    # uint32 safely holds the maximum 255*255*255 contributions summed here.
-    cov = np.floor(coverage.astype(np.float64) * 255.0 + 0.5).astype(np.uint32)
-    inv = np.uint32(255) - cov
-    rendered_u32 = rendered.astype(np.uint32)
-
-    if outside_mode is OutsideMode.ORIGINAL:
-        outside_rgb = source[..., :3].astype(np.uint32)
-        outside_alpha = source[..., 3].astype(np.uint32)
-    elif outside_mode is OutsideMode.WHITE:
-        outside_rgb = np.full(rendered.shape, 255, dtype=np.uint32)
-        outside_alpha = np.full(rendered.shape[:2], 255, dtype=np.uint32)
-    elif outside_mode is OutsideMode.BLACK:
-        outside_rgb = np.zeros(rendered.shape, dtype=np.uint32)
-        outside_alpha = np.full(rendered.shape[:2], 255, dtype=np.uint32)
-    else:  # Transparent: hidden RGB deterministically follows the rendered branch.
-        outside_rgb = rendered_u32
-        outside_alpha = np.zeros(rendered.shape[:2], dtype=np.uint32)
-
-    alpha_numerator = cov * np.uint32(255) + inv * outside_alpha
-    alpha = _round_divide(alpha_numerator, 255).astype(np.uint8)
-    premultiplied = (
-        rendered_u32 * (cov * np.uint32(255))[..., None]
-        + outside_rgb * (inv * outside_alpha)[..., None]
-    )
-    safe_denominator = np.where(alpha_numerator == 0, 1, alpha_numerator)
-    straight = _round_divide(premultiplied, safe_denominator[..., None])
-    # Both contributions have zero alpha here. The completed branch is the one
-    # deterministic, useful hidden color for later compositing.
-    straight[alpha_numerator == 0] = rendered_u32[alpha_numerator == 0]
-    rgb = straight.astype(np.uint8)
-
     opaque = outside_mode in (OutsideMode.WHITE, OutsideMode.BLACK) or (
         outside_mode is OutsideMode.ORIGINAL and bool(np.all(source[..., 3] == 255))
     )
-    if opaque:
-        return rgb
-    return np.concatenate((rgb, alpha[..., None]), axis=2)
+    return _composite_u8(rendered, source, coverage, _MODE_CODES[outside_mode], 3 if opaque else 4)
 
 
 def flatten_rgba_white(rgba: np.ndarray) -> np.ndarray:
     """Flatten canonical straight RGBA onto opaque white with byte-exact math."""
     source = _validate_source(rgba)
-    rgb = source[..., :3].astype(np.uint32)
-    alpha = source[..., 3].astype(np.uint32)
-    numerator = rgb * alpha[..., None] + np.uint32(255) * (255 - alpha[..., None])
-    return _round_divide(numerator, 255).astype(np.uint8)
+    return _flatten_white_u8(source)

@@ -81,6 +81,25 @@ def test_flatten_rgba_white_has_no_dark_halo_and_uses_same_rounding():
     assert result.tolist() == [[[237, 147, 132], [255, 255, 255], [3, 4, 5]]]
 
 
+def test_transparent_edge_flattens_without_halo_on_dark_background():
+    rendered = _rgba([240, 120, 60])[..., :3]
+    transparent = composite_masked(rendered, _rgba([0, 0, 0]),
+                                   np.array([[0.25]], np.float32),
+                                   OutsideMode.TRANSPARENT)
+    alpha = int(transparent[0, 0, 3])
+    dark = ((transparent[0, 0, :3].astype(np.uint32) * alpha + 127) // 255).astype(np.uint8)
+    assert transparent[0, 0, :3].tolist() == [240, 120, 60]
+    assert dark.tolist() == [60, 30, 15]
+
+
+def test_grayscale_derived_canonical_source_composites_exactly():
+    gray = np.array([[37]], dtype=np.uint8)
+    source = np.dstack((gray, gray, gray, np.full_like(gray, 255)))
+    result = composite_masked(_rgba([237, 137, 37])[..., :3], source,
+                              np.zeros((1, 1), np.float32), OutsideMode.ORIGINAL)
+    assert result.tolist() == [[[37, 37, 37]]]
+
+
 def test_inputs_are_never_mutated_and_output_is_independent():
     rendered = _rgba([4, 5, 6])[..., :3].copy()
     source = _rgba([7, 8, 9], 10)
@@ -115,10 +134,66 @@ def test_flatten_rejects_non_rgba():
 
 
 def test_composite_context_is_frozen_and_validated():
-    context = CompositeContext(_rgba([1, 2, 3]), np.ones((1, 1), np.float32),
+    source = _rgba([1, 2, 3])
+    mask = np.ones((1, 1), np.float32)
+    source.flags.writeable = False
+    mask.flags.writeable = False
+    context = CompositeContext(source, mask,
                                OutsideMode.ORIGINAL)
     with pytest.raises(FrozenInstanceError):
         context.outside_mode = OutsideMode.BLACK
     with pytest.raises(MaskCompositeError):
         CompositeContext(_rgba([1, 2, 3]), np.ones((2, 1), np.float32),
                          OutsideMode.ORIGINAL)
+    with pytest.raises(ValueError):
+        context.mask[0, 0] = 0.0
+    with pytest.raises(ValueError):
+        context.source_rgba[0, 0, 0] = 0
+
+
+def test_composite_context_rejects_writable_payloads_without_copying():
+    source = _rgba([1, 2, 3])
+    mask = np.ones((1, 1), np.float32)
+    with pytest.raises(MaskCompositeError, match="immutable"):
+        CompositeContext(source, mask, OutsideMode.ORIGINAL)
+    assert source.flags.writeable and mask.flags.writeable
+
+
+@pytest.mark.parametrize("outside", list(OutsideMode))
+def test_compiled_compositor_matches_scalar_byte_contract(outside):
+    rng = np.random.default_rng(8472)
+    rendered = rng.integers(0, 256, (5, 7, 3), dtype=np.uint8)
+    source = rng.integers(0, 256, (5, 7, 4), dtype=np.uint8)
+    mask = rng.random((5, 7), dtype=np.float32)
+    actual = composite_masked(rendered, source, mask, outside)
+    expected = np.empty_like(actual)
+    for y in range(5):
+        for x in range(7):
+            coverage = int(float(mask[y, x]) * 255.0 + 0.5)
+            inverse = 255 - coverage
+            if outside is OutsideMode.ORIGINAL:
+                outside_rgb = source[y, x, :3]
+                outside_alpha = int(source[y, x, 3])
+            elif outside is OutsideMode.TRANSPARENT:
+                outside_rgb = rendered[y, x]
+                outside_alpha = 0
+            elif outside is OutsideMode.WHITE:
+                outside_rgb = (255, 255, 255)
+                outside_alpha = 255
+            else:
+                outside_rgb = (0, 0, 0)
+                outside_alpha = 255
+            alpha_numerator = coverage * 255 + inverse * outside_alpha
+            for channel in range(3):
+                if alpha_numerator == 0:
+                    value = int(rendered[y, x, channel])
+                else:
+                    numerator = (
+                        int(rendered[y, x, channel]) * coverage * 255
+                        + int(outside_rgb[channel]) * inverse * outside_alpha
+                    )
+                    value = (numerator + alpha_numerator // 2) // alpha_numerator
+                expected[y, x, channel] = value
+            if expected.shape[2] == 4:
+                expected[y, x, 3] = (alpha_numerator + 127) // 255
+    assert np.array_equal(actual, expected)
