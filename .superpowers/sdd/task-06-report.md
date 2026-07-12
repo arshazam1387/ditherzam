@@ -10,8 +10,8 @@ Implemented three explicit Smart Mask cache partitions in
 - Outer composites use `CompositeIdentity`, covering rendered output identity,
   mask identity, outside mode, source identity, and alpha algorithm version.
 - All partitions share one bounded LRU and unique NumPy backing-store accounting.
-  The default mask sub-budget is 64 MiB and cannot exceed the 192 MiB editor
-  retained-cache ceiling.
+  The default mask sub-budget is 64 MiB; the staged render-cache default is
+  now 128 MiB, making the combined per-editor allocation exactly 192 MiB.
 - Oversized entries are not retained, eviction is entry-atomic, source-scoped
   clearing spans all partitions, and cached derived/composite arrays are owned
   immutable snapshots.
@@ -21,6 +21,14 @@ Verification (JIT disabled, foreground):
 `pytest -q tests/test_mask_cache.py tests/test_render_cache.py tests/test_render_cache_budget.py --basetemp=.pytest-sm06`
 
 Result: **20 passed** in 1.76s.
+
+Reviewer follow-up fixed inference accounting by explicitly charging
+`ProbabilityMap.values` (the probability value object itself is not a generic
+container). Tests now cover oversized inference rejection, replacement/alias
+accounting, and a 50-source probability-map soak. The combined default budget
+policy is regression-tested at 128 MiB render + 64 MiB mask = 192 MiB.
+
+Follow-up result: **24 passed** in 3.13s using the same focused targets.
 
 The optional full suite was also started in the foreground with the documented
 environment and a dedicated basetemp, but exceeded the 120-second command limit
