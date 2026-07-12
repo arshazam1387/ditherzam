@@ -23,6 +23,7 @@ from ditherzam.video.workers import (
 
 from .convert import numpy_to_qimage
 from .preview import preview_target_size
+from ditherzam.masking.scope import mask_allows_media, unsupported_mask_message
 
 _VIDEO_FILTER = "Video Files (*.mp4 *.avi *.mov *.mkv)"
 _MP4_FILTER = "MP4 Files (*.mp4)"
@@ -73,7 +74,8 @@ class VideoController:
     """Owns video state and wires the Video menu to workers."""
 
     def __init__(self, main_window, pipeline, settings_provider, expert_provider,
-                 cap_provider=None, export_pipeline_provider=None) -> None:
+                 cap_provider=None, export_pipeline_provider=None,
+                 mask_settings_provider=None) -> None:
         self.win = main_window
         self.pipeline = pipeline
         self._settings_provider = settings_provider   # () -> RenderSettings
@@ -82,6 +84,7 @@ class VideoController:
         # () -> RenderPipeline snapshot for EXACT export, isolated from live edits;
         # falls back to the live pipeline when unset (tests/back-compat).
         self.export_pipeline_provider = export_pipeline_provider
+        self.mask_settings_provider = mask_settings_provider
         self.pool = QThreadPool.globalInstance()
         self.temp_dir: Path | None = None
         self.input_file: str | None = None
@@ -116,8 +119,17 @@ class VideoController:
     def _error(self, msg: str) -> None:
         QMessageBox.critical(self.win, "Video", msg)
 
+    def _mask_allows_video(self) -> bool:
+        if (self.mask_settings_provider is None
+                or mask_allows_media("video", self.mask_settings_provider())):
+            return True
+        QMessageBox.warning(self.win, "Smart Mask", unsupported_mask_message("video"))
+        return False
+
     # --- import ---
     def import_video(self) -> None:
+        if not self._mask_allows_video():
+            return
         path, _ = QFileDialog.getOpenFileName(self.win, "Import Video", "", _VIDEO_FILTER)
         if not path:
             return
@@ -160,6 +172,8 @@ class VideoController:
     # --- export ---
     def export_video(self) -> None:
         if self.temp_dir is None:
+            return
+        if not self._mask_allows_video():
             return
         out, _ = QFileDialog.getSaveFileName(self.win, "Export Video", "", _MP4_FILTER)
         if not out:

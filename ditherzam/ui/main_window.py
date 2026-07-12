@@ -540,6 +540,8 @@ class ImageEditor(QMainWindow):
         from PySide6.QtWidgets import QFileDialog
         if self._base_gray is None:
             return
+        if not self._mask_media_allowed("animation"):
+            return
         out, _ = QFileDialog.getSaveFileName(self, "Export Animation", "animation.mp4",
                                              "MP4 Video (*.mp4)")
         if not out:
@@ -556,6 +558,7 @@ class ImageEditor(QMainWindow):
             expert_provider=lambda: self.expert_mode,
             cap_provider=self._policy_cap,
             export_pipeline_provider=self._export_pipeline,
+            mask_settings_provider=lambda: self.panel.smart_mask_panel.settings,
         )
         self.menuBar().addMenu(self.video_controller.build_menu())
 
@@ -691,7 +694,7 @@ class ImageEditor(QMainWindow):
             caches=self._mask_caches, rendered_identity=rendered_identity,
             target_shape=source_gray.shape[:2])
 
-    def _apply_preset(self, settings, palette, effects) -> None:
+    def _apply_preset(self, settings, palette, effects, smart_mask=None) -> None:
         panel = self.panel
         for key in ("contrast", "midtones", "highlights", "luminance_threshold", "blur"):
             value = int(getattr(settings, key))
@@ -722,8 +725,13 @@ class ImageEditor(QMainWindow):
         if palette is not None:
             panel.set_working_palette(palette)
         panel.set_style(settings.style, settings.params)
+        if smart_mask is not None:
+            panel.smart_mask_panel.set_settings(smart_mask)
         if self._base_gray is not None:
             self.render_now()
+            if (smart_mask is not None and smart_mask.enabled
+                    and smart_mask.target is not MaskTarget.WHOLE_IMAGE):
+                self._request_mask_detection()
 
     # -- menu handlers --
     def _on_save_preset(self):
@@ -734,6 +742,7 @@ class ImageEditor(QMainWindow):
         preset = settings_to_preset(
             self._collect_settings(), self._current_palette(),
             self._current_effect_stack(), self._color_mode(),
+            self.panel.smart_mask_panel.settings,
         )
         self._preset_manager.save(name, preset)
         QMessageBox.information(self, "Presets", f"Preset '{name}' saved successfully!")
@@ -746,8 +755,9 @@ class ImageEditor(QMainWindow):
         name, ok = QInputDialog.getItem(self, "Load Preset", "Preset:", names, 0, False)
         if not ok:
             return
-        settings, palette, effects = preset_to_settings(self._preset_manager.load(name))
-        self._apply_preset(settings, palette, effects)
+        contents = preset_to_settings(self._preset_manager.load(name))
+        self._apply_preset(contents.settings, contents.palette, contents.effects,
+                           contents.smart_mask)
 
     def _on_import_preset(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
@@ -772,6 +782,7 @@ class ImageEditor(QMainWindow):
         preset = settings_to_preset(
             self._collect_settings(), self._current_palette(),
             self._current_effect_stack(), self._color_mode(),
+            self.panel.smart_mask_panel.settings,
         )
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(preset, f, sort_keys=False, allow_unicode=True)
@@ -788,6 +799,8 @@ class ImageEditor(QMainWindow):
     def _on_export_svg(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         if self._base_gray is None:
+            return
+        if not self._mask_media_allowed("SVG"):
             return
         cont = QMessageBox.warning(
             self, "Export as Vector",
@@ -811,6 +824,8 @@ class ImageEditor(QMainWindow):
 
     def _on_batch_folder(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
+        if not self._mask_media_allowed("batch"):
+            return
         folder = QFileDialog.getExistingDirectory(self, "Select Folder")
         if not folder:
             return
@@ -1004,6 +1019,15 @@ class ImageEditor(QMainWindow):
             source_gray=source_gray,
             show_mask_overlay=(show_overlay and mask_context is not None),
         )
+
+    def _mask_media_allowed(self, kind: str) -> bool:
+        """Defense-in-depth gate before any unsupported export work/dialog."""
+        from PySide6.QtWidgets import QMessageBox
+        from ditherzam.masking.scope import mask_allows_media, unsupported_mask_message
+        if mask_allows_media(kind, self.panel.smart_mask_panel.settings):
+            return True
+        QMessageBox.warning(self, "Smart Mask", unsupported_mask_message(kind))
+        return False
 
     def _do_render(self) -> None:
         """Debounce tick: request a fast proxy render."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import dataclass
 
 import numpy as np
 import yaml
@@ -8,6 +9,10 @@ import yaml
 from .render import RenderSettings
 from .color.palette import Palette
 from .color.ramp import RAMP_MODES
+from .masking.settings import (
+    EXPANSION_MAX_PX, EXPANSION_MIN_PX, MaskTarget, OutsideMode,
+    SmartMaskSettings,
+)
 
 # Allowed ranges used to clamp presets on load (spec §10.2).
 _ADJ_RANGE: dict[str, tuple[int, int]] = {
@@ -31,7 +36,8 @@ def _clamp_int(value, lo: int, hi: int) -> int:
 
 
 def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
-                       effect_stack=None, color_mode: str = "off") -> dict:
+                       effect_stack=None, color_mode: str = "off",
+                       smart_mask: SmartMaskSettings | None = None) -> dict:
     """Serialize a RenderSettings (+ optional palette/effect stack) to a preset dict."""
     preset: dict = {
         "adjustments": {
@@ -67,10 +73,43 @@ def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
             {"name": str(name), "params": dict(params)}
             for name, params in effect_stack.items
         ]
+    if smart_mask is not None:
+        preset["smart_mask"] = {
+            "enabled": smart_mask.enabled,
+            "target": smart_mask.target.value,
+            "sensitivity": smart_mask.sensitivity,
+            "feather_px": smart_mask.feather_px,
+            "expansion_px": smart_mask.expansion_px,
+            "invert": smart_mask.invert,
+            "outside": smart_mask.outside.value,
+        }
     return preset
 
 
-def preset_to_settings(preset: dict) -> tuple[RenderSettings, Palette | None, list[tuple[str, dict]]]:
+@dataclass(frozen=True)
+class PresetContents:
+    settings: RenderSettings
+    palette: Palette | None
+    effects: list[tuple[str, dict]]
+    smart_mask: SmartMaskSettings
+
+    def __iter__(self):
+        """Keep the historic three-value unpacking API source-compatible."""
+        return iter((self.settings, self.palette, self.effects))
+
+
+def _enum_value(enum_type, value, default):
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_bool(value, default: bool) -> bool:
+    return value if isinstance(value, bool) else default
+
+
+def preset_to_settings(preset: dict) -> PresetContents:
     """Deserialize a preset dict into RenderSettings, clamping every value to range."""
     if not isinstance(preset, dict):
         raise ValueError("Not a valid preset file.")
@@ -120,7 +159,20 @@ def preset_to_settings(preset: dict) -> tuple[RenderSettings, Palette | None, li
         if isinstance(item, dict) and "name" in item:
             effects.append((str(item["name"]), dict(item.get("params", {}) or {})))
 
-    return settings, palette, effects
+    mask_defaults = SmartMaskSettings()
+    raw_mask = preset.get("smart_mask")
+    mask = raw_mask if isinstance(raw_mask, dict) else {}
+    smart_mask = SmartMaskSettings(
+        enabled=_safe_bool(mask.get("enabled"), mask_defaults.enabled),
+        target=_enum_value(MaskTarget, mask.get("target"), mask_defaults.target),
+        sensitivity=_clamp_int(mask.get("sensitivity", mask_defaults.sensitivity), 0, 100),
+        feather_px=_clamp_int(mask.get("feather_px", mask_defaults.feather_px), 0, 256),
+        expansion_px=_clamp_int(mask.get("expansion_px", mask_defaults.expansion_px),
+                                EXPANSION_MIN_PX, EXPANSION_MAX_PX),
+        invert=_safe_bool(mask.get("invert"), mask_defaults.invert),
+        outside=_enum_value(OutsideMode, mask.get("outside"), mask_defaults.outside),
+    )
+    return PresetContents(settings, palette, effects, smart_mask)
 
 
 class PresetManager:
