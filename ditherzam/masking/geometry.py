@@ -15,7 +15,7 @@ from ditherzam.masking.settings import (
     SENSITIVITY_MIN,
 )
 
-GEOMETRY_ALGORITHM_VERSION: Final = "binary-morphology-v1"
+GEOMETRY_ALGORITHM_VERSION: Final = "integral-square-morphology-v1"
 FEATHER_ALGORITHM_VERSION: Final = "pillow-gaussian-v1"
 RESIZE_ALGORITHM_VERSION: Final = "pillow-box-v1"
 
@@ -56,16 +56,25 @@ def expand_contract(mask: np.ndarray, pixels: int) -> np.ndarray:
     """Dilate (positive) or erode (negative) a hard mask by source pixels."""
     source = _mask(mask)
     amount = _int_in_range(pixels, "pixels", EXPANSION_MIN_PX, EXPANSION_MAX_PX)
-    binary = (source >= 0.5).astype(np.uint8) * 255
+    binary = (source >= 0.5).astype(np.uint8)
     radius = abs(amount)
     if radius:
-        # Explicit zero padding freezes outside-image semantics and permits kernels
-        # larger than either source dimension.
+        # A summed-area table computes every square window in O(HW), independent
+        # of radius. Explicit zero padding freezes outside-image semantics.
         padded = np.pad(binary, radius, mode="constant", constant_values=0)
-        operation = ImageFilter.MaxFilter if amount > 0 else ImageFilter.MinFilter
-        filtered = Image.fromarray(padded, mode="L").filter(operation(2 * radius + 1))
-        binary = np.asarray(filtered, dtype=np.uint8)[radius:-radius, radius:-radius]
-    return _immutable(binary.astype(np.float32) / 255.0)
+        integral = np.pad(
+            padded.cumsum(axis=0, dtype=np.uint64).cumsum(axis=1, dtype=np.uint64),
+            ((1, 0), (1, 0)),
+        )
+        width = 2 * radius + 1
+        totals = (
+            integral[width:, width:]
+            - integral[:-width, width:]
+            - integral[width:, :-width]
+            + integral[:-width, :-width]
+        )
+        binary = totals > 0 if amount > 0 else totals == width * width
+    return _immutable(binary.astype(np.float32))
 
 
 def feather(mask: np.ndarray, pixels: int) -> np.ndarray:
@@ -117,10 +126,11 @@ def derive_master_mask(
         shape = source_shape
 
     if target is MaskTarget.WHOLE_IMAGE:
-        selected = np.ones(shape, dtype=np.float32)
-    else:
-        subject = (values >= threshold).astype(np.float32)
-        selected = subject if target is MaskTarget.SUBJECT else 1.0 - subject
+        # Whole Image is semantic, not geometry: controls disabled by the UI must
+        # not alter it when settings are restored from a preset or stale snapshot.
+        return _immutable(np.ones(shape, dtype=np.float32))
+    subject = (values >= threshold).astype(np.float32)
+    selected = subject if target is MaskTarget.SUBJECT else 1.0 - subject
     if invert:
         selected = 1.0 - selected
     shaped = expand_contract(selected, expansion_px)

@@ -52,6 +52,20 @@ def test_target_invert_geometry_feather_order_and_whole_image() -> None:
     assert np.array_equal(whole, np.ones((3, 4), dtype=np.float32))
 
 
+def test_whole_image_ignores_all_edit_controls_after_validating_them() -> None:
+    confidence = np.zeros((5, 6), dtype=np.float32)
+    whole = derive_master_mask(
+        confidence,
+        sensitivity=100,
+        target=MaskTarget.WHOLE_IMAGE,
+        invert=True,
+        expansion_px=-64,
+        feather_px=99,
+    )
+    assert np.array_equal(whole, np.ones((5, 6), dtype=np.float32))
+    assert not whole.flags.writeable
+
+
 def test_expand_contract_are_signed_and_preserve_structural_behavior() -> None:
     mask = np.zeros((9, 9), dtype=np.float32)
     mask[2:7, 2:7] = 1.0
@@ -62,6 +76,24 @@ def test_expand_contract_are_signed_and_preserve_structural_behavior() -> None:
     assert expanded[1, 4] == 1.0
     assert contracted[2, 4] == 0.0
     assert expand_contract(mask, 0) is not mask
+
+
+def test_geometry_uses_exact_square_source_pixels_and_retains_hole_semantics() -> None:
+    point = np.zeros((11, 11), dtype=np.float32)
+    point[5, 5] = 1.0
+    expanded = expand_contract(point, 2)
+    assert expanded.sum() == 25
+    assert np.all(expanded[3:8, 3:8] == 1.0)
+
+    solid_with_hole = np.ones((11, 11), dtype=np.float32)
+    solid_with_hole[5, 5] = 0.0
+    contracted = expand_contract(solid_with_hole, -2)
+    # Contracting foreground expands the hole by exactly two source pixels.
+    assert np.all(contracted[3:8, 3:8] == 0.0)
+
+    thin = np.zeros((11, 11), dtype=np.float32)
+    thin[:, 5] = 1.0
+    assert np.all(expand_contract(thin, 1)[:, 4:7] == 1.0)
 
 
 def test_zero_feather_is_hard_and_positive_feather_is_symmetric() -> None:
