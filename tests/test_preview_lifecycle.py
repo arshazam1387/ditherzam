@@ -125,15 +125,16 @@ def test_image_decoded_slot_loads_array_and_schedules_without_render_now(qapp_fi
     monkeypatch.setattr(editor, "schedule_render",
                         lambda: calls.__setitem__("schedule_render", calls["schedule_render"] + 1))
     monkeypatch.setattr(editor, "load_array",
-                        lambda g, r=None: calls["load_array"].append((g, r)))
+                        lambda g, r=None, a=None: calls["load_array"].append((g, r, a)))
 
     gray = np.zeros((8, 8), dtype=np.float32)
     rgb = np.zeros((8, 8, 3), dtype=np.uint8)
-    editor._on_image_decoded(gray, rgb)  # the GUI-thread slot, invoked directly
+    rgba = np.zeros((8, 8, 4), dtype=np.uint8)
+    editor._on_image_decoded(gray, rgb, rgba)  # the GUI-thread slot, invoked directly
 
     assert calls["render_now"] == 0
     assert calls["schedule_render"] == 1
-    assert calls["load_array"] == [(gray, rgb)]
+    assert calls["load_array"] == [(gray, rgb, rgba)]
 
 
 def test_image_dropped_runs_decode_off_thread_pool_not_sync_render(qapp_fixture, monkeypatch, tmp_path):
@@ -158,3 +159,4 @@ def test_image_dropped_runs_decode_off_thread_pool_not_sync_render(qapp_fixture,
     assert calls["render_now"] == 0
     assert calls["schedule_render"] == 1
     assert editor._base_gray is not None
+    assert editor._base_rgba is not None
