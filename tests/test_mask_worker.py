@@ -94,6 +94,69 @@ def test_cancel_after_runtime_safe_boundary_discards_result():
     assert [name for name, _ in events] == ["cancelled"]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [NoClearSubject("flat"), ModelAssetError("missing"), RuntimeError("runtime lost")],
+)
+def test_cancellation_wins_race_with_expected_adapter_terminal(error):
+    request = _request()
+
+    def infer(_check):
+        request.cancellation.cancel()
+        raise error
+
+    worker = InferenceWorker(request, _Adapter(infer))
+    events = _record(worker)
+    worker.run()
+    assert [name for name, _ in events] == ["cancelled"]
+
+
+@pytest.mark.parametrize("bad_result", [None, object(), "not an inference result"])
+def test_invalid_adapter_result_logs_and_fails_once(bad_result, caplog):
+    worker = InferenceWorker(_request(), _Adapter(bad_result))
+    events = _record(worker)
+    with caplog.at_level(logging.ERROR):
+        worker.run()
+    assert [name for name, _ in events] == ["failed"]
+    assert isinstance(events[0][1].error, TypeError)
+    assert "Smart Mask inference failed" in caplog.text
+
+
+@pytest.mark.parametrize("mismatch", ["source", "model", "preprocessing", "candidate"])
+def test_result_identity_must_match_the_frozen_request(mismatch, caplog):
+    from ditherzam.masking.contracts import InferenceIdentity, SourceIdentity
+
+    request = _request()
+    source = request.source
+    model = request.model
+    preprocessing = request.preprocessing_version
+    candidate = "primary"
+    if mismatch == "source":
+        source = SourceIdentity(
+            "f" * 64,
+            request.source.width,
+            request.source.height,
+            request.source.has_alpha,
+        )
+    elif mismatch == "model":
+        model = ModelIdentity("u2netp", "1", "b" * 64)
+    elif mismatch == "preprocessing":
+        preprocessing = "other-pre-v1"
+    else:
+        candidate = "secondary"
+    identity = InferenceIdentity(source, model, preprocessing, candidate)
+    probability = ProbabilityMap(identity, np.ones((3, 4), dtype=np.float32))
+    # InferenceResult itself enforces v1 primary, so a candidate mismatch enters
+    # through the probability identity while its public candidate remains primary.
+    result = InferenceResult("primary", probability)
+    worker = InferenceWorker(request, _Adapter(result))
+    events = _record(worker)
+    with caplog.at_level(logging.ERROR):
+        worker.run()
+    assert [name for name, _ in events] == ["failed"]
+    assert isinstance(events[0][1].error, ValueError)
+
+
 def test_unexpected_failure_is_logged_and_emitted_once(caplog):
     worker = InferenceWorker(_request(), _Adapter(RuntimeError("boom")))
     events = _record(worker)
