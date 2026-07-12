@@ -48,6 +48,7 @@ class SmartMaskPanel(QGroupBox):
         self._has_valid_mask = False
         self._build_ui()
         self._sync_controls_from_settings()
+        self._set_expanded(True)
         self._refresh_enabled_state()
 
     @property
@@ -202,7 +203,8 @@ class SmartMaskPanel(QGroupBox):
             self._status = MaskPanelStatus.DISABLED
             self.status_label.setText(self._status.value)
         elif self._status is MaskPanelStatus.DISABLED:
-            self._status = MaskPanelStatus.NEEDS_DETECTION
+            self._status = (MaskPanelStatus.READY if self._has_valid_mask
+                            else MaskPanelStatus.NEEDS_DETECTION)
             self.status_label.setText(self._status.value)
         self._refresh_enabled_state()
         self.settings_changed.emit(self._settings)
