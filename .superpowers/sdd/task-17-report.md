@@ -16,13 +16,24 @@ performance claim.
 - A collected 60-case real-model E2E/resilience matrix which skips only while no
   release lock exists and fails closed if a configured bundle is invalid.
 - Full dated acceptance report template with every automated/manual gate pending.
+- Minimal Windows/Python 3.12 PyInstaller spec, pre-build verifier, and offline
+  frozen smoke launcher. The build entry point verifies an approved release lock
+  before importing/invoking PyInstaller.
+- Exact two-DLL ORT inventory, schema/content relationship, byte-count, unique-path,
+  and fixed `onnxruntime/capi` gates, with successful and per-component-corruption
+  synthetic bundle coverage.
+- Offscreen editor missing-model smoke proving load/render stays unmasked and an
+  explicit detection request presents Model unavailable without creating sockets.
+- Concrete certification hooks and an expanded disabled/target/outside/surface/
+  lifecycle/cache/performance E2E matrix; approved bundles call hooks rather than
+  an unconditional placeholder failure.
 
 ## Verification
 
 `NUMBA_DISABLE_JIT=1 pytest -q tests -k "mask or offline_security"`
 
-Result: **302 passed, 61 skipped, 1303 deselected**. Sixty skips are the explicit
-real-model E2E matrix; the other skip pre-existed. No selected asset, weights,
+Result after review fixes: **310 passed, 309 skipped, 1303 deselected**. 308 skips
+are the expanded explicit real-model E2E matrix; the other skip pre-existed. No selected asset, weights,
 binaries, ORT installation, or network operation was introduced.
 
 The known 71 unrelated kernel-golden failures were outside this focused run and
