@@ -5,7 +5,7 @@ from PySide6.QtGui import QImage
 
 
 def numpy_to_qimage(rgb_u8: np.ndarray) -> QImage:
-    """Convert an HxWx3 (or HxW) uint8 array into a standalone RGB888 QImage.
+    """Convert uint8 gray/RGB/RGBA into a standalone QImage.
 
     The returned image owns its pixels (``.copy()``) so it is safe after the
     numpy source is garbage-collected.
@@ -15,9 +15,14 @@ def numpy_to_qimage(rgb_u8: np.ndarray) -> QImage:
         arr = np.clip(arr, 0, 255).astype(np.uint8)
     if arr.ndim == 2:
         arr = np.repeat(arr[:, :, None], 3, axis=2)
-    arr = np.ascontiguousarray(arr[:, :, :3])
+    if arr.ndim != 3 or arr.shape[2] not in (3, 4):
+        raise ValueError("image must be HxW, HxWx3, or HxWx4")
+    arr = np.ascontiguousarray(arr)
     h, w = arr.shape[:2]
-    qimg = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+    if arr.shape[2] == 4:
+        qimg = QImage(arr.data, w, h, 4 * w, QImage.Format.Format_RGBA8888)
+    else:
+        qimg = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888)
     return qimg.copy()
 
 
