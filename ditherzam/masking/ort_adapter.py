@@ -10,7 +10,7 @@ from PIL import Image
 
 from ditherzam.masking.adapter import InferenceCancelled, InferenceResult, NoClearSubject
 from ditherzam.masking.contracts import InferenceIdentity, ModelIdentity, ProbabilityMap, source_identity, validate_rgba_u8
-from ditherzam.masking.model_assets import EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR, ModelAssetError, ModelManifest, default_asset_root, verify_model_asset
+from ditherzam.masking.model_assets import EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR, ModelAssetError, ModelManifest, default_asset_root, load_manifest, verify_model_asset
 from ditherzam.masking.session import LazySession
 
 PREPROCESSING_VERSION = "u2net-rgb-imagenet-bilinear-v1"
@@ -128,6 +128,11 @@ class OrtSegmentationAdapter:
 
         self._session = LazySession(build)
 
+    @property
+    def model_identity(self) -> ModelIdentity:
+        """Public identity (model id/version/onnx hash) for editor wiring."""
+        return self._model_identity
+
     def infer(self, rgba_u8: np.ndarray, *, should_cancel: Callable[[], bool] | None = None) -> InferenceResult:
         validated = validate_rgba_u8(rgba_u8)
         source = np.array(validated, dtype=np.uint8, order="C", copy=True)
@@ -148,3 +153,22 @@ class OrtSegmentationAdapter:
         confidence = postprocess_probability(outputs[0], source.shape[:2])
         _cancelled(should_cancel)
         return InferenceResult("primary", ProbabilityMap(identity, confidence))
+
+
+def load_default_segmentation_adapter(asset_root: str | Path | None = None):
+    """Best-effort build of a segmentation adapter from a staged manifest.
+
+    Returns an :class:`OrtSegmentationAdapter` when a valid ``manifest.yaml`` and
+    a hash-verified asset are staged under the asset root, otherwise ``None``.
+    Never raises: a missing, unstaged, invalid, or contract-incompatible model
+    must leave Smart Mask cleanly fail-closed (disabled), not crash startup.
+    The returned adapter's ONNX session is lazy — no model is loaded until the
+    first inference — so this stays cheap at startup.
+    """
+    root = default_asset_root() if asset_root is None else Path(asset_root)
+    try:
+        manifest = load_manifest(root / "manifest.yaml")
+        verify_model_asset(root, manifest)
+        return OrtSegmentationAdapter(manifest, asset_root=root)
+    except Exception:
+        return None

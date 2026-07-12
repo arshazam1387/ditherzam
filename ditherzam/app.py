@@ -22,7 +22,14 @@ def main() -> int:
     if "default" in find_themes(themes_root):
         app.setStyleSheet(load_theme(themes_root, "default").stylesheet)
 
-    window = ImageEditor()
+    # Build the Smart Mask adapter from a locally staged model, if one is present.
+    # Fail-closed: with no staged model this returns None and Smart Mask stays
+    # cleanly disabled (no network fetch ever happens here).
+    from ditherzam.masking.ort_adapter import load_default_segmentation_adapter
+    mask_adapter = load_default_segmentation_adapter()
+    mask_model = mask_adapter.model_identity if mask_adapter is not None else None
+
+    window = ImageEditor(mask_adapter=mask_adapter, mask_model=mask_model)
     window.resize(1100, 720)
     window.show()
 

@@ -6,6 +6,7 @@ model weights may be committed under the asset root.
 """
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -103,11 +104,15 @@ def test_application_code_never_imports_or_invokes_the_staging_script():
 
 
 def test_no_model_weights_or_binaries_are_committed():
-    if not ASSET_ROOT.is_dir():
-        return
+    # "Committed" means tracked by git. The documented workflow stages weights
+    # LOCALLY into this gitignored dir (tools/stage_smart_mask_model.py), so a
+    # developer's locally-staged model must not trip this — check git, not disk.
+    result = subprocess.run(
+        ["git", "ls-files", "--", str(ASSET_ROOT)],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    )
     offenders = [
-        str(p.relative_to(REPO_ROOT))
-        for p in ASSET_ROOT.rglob("*")
-        if p.is_file() and p.suffix.lower() in FORBIDDEN_WEIGHT_SUFFIXES
+        line for line in result.stdout.splitlines()
+        if line.strip() and Path(line).suffix.lower() in FORBIDDEN_WEIGHT_SUFFIXES
     ]
     assert not offenders, f"committed model weight/binary files found: {offenders}"
