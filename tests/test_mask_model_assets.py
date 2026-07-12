@@ -184,6 +184,17 @@ def test_load_manifest_accepts_approved_manifest(tmp_path):
     assert manifest.onnx_byte_count == byte_count
     assert manifest.input_tensor == EXPECTED_INPUT_TENSOR
     assert manifest.output_tensor == EXPECTED_OUTPUT_TENSOR
+    assert manifest.output_names is None
+
+
+def test_manifest_rejects_incomplete_or_duplicate_final_output_names(tmp_path):
+    manifest_path, _, _ = _valid_manifest_yaml(tmp_path)
+    manifest_path.write_text(
+        manifest_path.read_text(encoding="utf-8") + "\noutput_names: [primary, aux, aux]\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ModelAssetError, match="exactly seven unique non-blank"):
+        load_manifest(manifest_path)
 
 
 def test_model_manifest_is_frozen(tmp_path):

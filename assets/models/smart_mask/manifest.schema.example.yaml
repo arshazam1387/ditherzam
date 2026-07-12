@@ -41,6 +41,10 @@ output_tensor:
   name: "1959"
   shape: [1, 1, 320, 320]
   dtype: "float32"
+# Filled only from inspection of the approved converted graph. Order is
+# authoritative and is validated exactly by the live adapter. Do not guess
+# exporter-generated names in this schema template.
+output_names: null
 
 # Behavior contract ---------------------------------------------------------------
 preprocessing: "resize to 320x320, RGB, scale to [0, 1], normalize by documented mean/std"

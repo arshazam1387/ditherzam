@@ -76,7 +76,9 @@ def _validate_session_contract(session: object, manifest: ModelManifest) -> None
         raise RuntimeError("incompatible model input tensor contract")
     output_metadata = [_metadata(item) for item in outputs]
     output_names = [item[0] for item in output_metadata]
-    if len(outputs) != 7 or len(set(output_names)) != 7:
+    if manifest.output_names is None:
+        raise RuntimeError("model manifest has no finalized seven-output name contract")
+    if output_names != list(manifest.output_names):
         raise RuntimeError("incompatible model output tensor contract")
     if output_names.count(manifest.output_tensor.name) != 1:
         raise RuntimeError("manifest primary output tensor is absent or duplicated")
@@ -109,6 +111,8 @@ class OrtSegmentationAdapter:
             raise TypeError("manifest must be a ModelManifest")
         if manifest.input_tensor != EXPECTED_INPUT_TENSOR or manifest.output_tensor != EXPECTED_OUTPUT_TENSOR:
             raise ModelAssetError("manifest tensor contract is incompatible with this adapter")
+        if manifest.output_names is None:
+            raise ModelAssetError("manifest output names are not finalized for release")
         if (manifest.preprocessing != MANIFEST_PREPROCESSING or
                 manifest.output_semantics != MANIFEST_OUTPUT_SEMANTICS or
                 manifest.algorithm_version != MANIFEST_ALGORITHM_VERSION):

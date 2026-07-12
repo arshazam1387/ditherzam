@@ -75,6 +75,10 @@ class ModelManifest:
     output_semantics: str
     algorithm_version: str
     relative_path: str
+    # Finalized by SM-16 from the approved converted graph. ``None`` means the
+    # release asset is intentionally not selected yet; live inference refuses
+    # that state instead of guessing exporter-generated names.
+    output_names: tuple[str, ...] | None = None
 
 
 _REQUIRED_TOP_LEVEL_FIELDS = (
@@ -162,6 +166,7 @@ def load_manifest(path: str | Path) -> ModelManifest:
             output_semantics=str(data["output_semantics"]),
             algorithm_version=str(data["algorithm_version"]),
             relative_path=str(data["relative_path"]),
+            output_names=_load_output_names(data.get("output_names")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise ModelAssetError(f"Model manifest field is invalid: {exc}") from exc
@@ -175,6 +180,17 @@ def load_manifest(path: str | Path) -> ModelManifest:
         )
 
     return manifest
+
+
+def _load_output_names(value: object) -> tuple[str, ...] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        raise TypeError("output_names must be a list")
+    names = tuple(str(item).strip() for item in value)
+    if len(names) != 7 or any(not name for name in names) or len(set(names)) != 7:
+        raise ValueError("output_names must contain exactly seven unique non-blank names")
+    return names
 
 
 def verify_model_asset(asset_root: str | Path, manifest: ModelManifest) -> Path:
