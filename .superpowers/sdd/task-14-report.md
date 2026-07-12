@@ -12,12 +12,22 @@
   media, while Subject/Background blocks SVG, batch, video, and animation exports.
 - UI handlers and the video controller guard before dialogs, pipelines, workers,
   or filesystem work; no deferred API received mask arguments.
+- Review fix: preset application now cancels queued debounce/settle/zoom work,
+  invalidates scheduler trailing work, suppresses intermediate control renders,
+  runs mask ownership/inference lifecycle once, reuses a matching published or
+  cached primary probability map, and performs at most one synchronous paint.
+- Review fix: SVG, batch, video-export, and animation-export controls visibly
+  disable with an explanatory tooltip while their handler/shortcut guards remain.
+- Review fix: non-finite and malformed mask numerics restore their approved
+  per-field defaults rather than an arbitrary range endpoint.
 
 ## Verification
 
 JIT-off, Qt offscreen focused gate:
 
 `70 passed in 8.27s`
+
+Review-fix focused gate: `75 passed in 53.17s`.
 
 Targets covered mask preset/scope tests plus existing preset, ramp, preview
 preference, export-menu, animation, video-controller, and video-worker tests.

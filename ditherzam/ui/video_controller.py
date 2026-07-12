@@ -126,6 +126,16 @@ class VideoController:
         QMessageBox.warning(self.win, "Smart Mask", unsupported_mask_message("video"))
         return False
 
+    def refresh_mask_scope(self) -> None:
+        """Keep export availability truthful without weakening its media prerequisite."""
+        action = getattr(self, "_export_action", None)
+        if action is None:
+            return
+        allowed = (self.mask_settings_provider is None
+                   or mask_allows_media("video", self.mask_settings_provider()))
+        action.setEnabled(self.temp_dir is not None and allowed)
+        action.setToolTip("" if allowed else unsupported_mask_message("video"))
+
     # --- import ---
     def import_video(self) -> None:
         if not self._mask_allows_video():
@@ -168,6 +178,7 @@ class VideoController:
         else:
             self._show_frame(np.asarray(Image.open(preview).convert("RGB"), np.uint8))
         self._export_action.setEnabled(True)
+        self.refresh_mask_scope()
 
     # --- export ---
     def export_video(self) -> None:

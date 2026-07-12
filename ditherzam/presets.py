@@ -27,11 +27,11 @@ _SCALE_RANGE: tuple[int, int] = (1, 20)
 _DEPTH_RANGE: tuple[int, int] = (1, 64)
 
 
-def _clamp_int(value, lo: int, hi: int) -> int:
+def _clamp_int(value, lo: int, hi: int, default: int | None = None) -> int:
     try:
         v = int(round(float(value)))
-    except (TypeError, ValueError):
-        v = lo
+    except (TypeError, ValueError, OverflowError):
+        v = lo if default is None else default
     return max(lo, min(hi, v))
 
 
@@ -165,10 +165,13 @@ def preset_to_settings(preset: dict) -> PresetContents:
     smart_mask = SmartMaskSettings(
         enabled=_safe_bool(mask.get("enabled"), mask_defaults.enabled),
         target=_enum_value(MaskTarget, mask.get("target"), mask_defaults.target),
-        sensitivity=_clamp_int(mask.get("sensitivity", mask_defaults.sensitivity), 0, 100),
-        feather_px=_clamp_int(mask.get("feather_px", mask_defaults.feather_px), 0, 256),
+        sensitivity=_clamp_int(mask.get("sensitivity", mask_defaults.sensitivity), 0, 100,
+                               mask_defaults.sensitivity),
+        feather_px=_clamp_int(mask.get("feather_px", mask_defaults.feather_px), 0, 256,
+                              mask_defaults.feather_px),
         expansion_px=_clamp_int(mask.get("expansion_px", mask_defaults.expansion_px),
-                                EXPANSION_MIN_PX, EXPANSION_MAX_PX),
+                                EXPANSION_MIN_PX, EXPANSION_MAX_PX,
+                                mask_defaults.expansion_px),
         invert=_safe_bool(mask.get("invert"), mask_defaults.invert),
         outside=_enum_value(OutsideMode, mask.get("outside"), mask_defaults.outside),
     )
