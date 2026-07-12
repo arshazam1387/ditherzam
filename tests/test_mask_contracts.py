@@ -337,6 +337,45 @@ def test_probability_map_values_are_read_only():
         pmap.values[0, 0] = 0.9
 
 
+def test_probability_map_takes_defensive_copy_from_view():
+    # A view/slice of a larger writable base buffer must not be able to mutate
+    # the stored payload after construction.
+    src = source_identity(_rgba(height=4, width=6))
+    ident = _inference_identity(src)
+    base = np.zeros((5, 6), dtype=np.float32)  # larger base, writable
+    view = base[:4, :]  # a view sharing base's memory, correct (4, 6) shape
+    assert view.base is base
+    pmap = ProbabilityMap(identity=ident, values=view)
+    assert pmap.values.flags.owndata is True
+    before = pmap.values.copy()
+    base[:] = 0.9  # mutate the original base buffer
+    np.testing.assert_array_equal(pmap.values, before)
+    assert float(pmap.values.max()) == 0.0
+
+
+def test_probability_map_hash_is_stable_and_identity_keyed():
+    src = source_identity(_rgba(height=4, width=6))
+    ident = _inference_identity(src)
+    a = ProbabilityMap(identity=ident, values=_confidence(height=4, width=6, fill=0.2))
+    b = ProbabilityMap(identity=ident, values=_confidence(height=4, width=6, fill=0.8))
+    # hash must not raise and must be stable/equal for equal identity, even
+    # though the value arrays differ (values are opaque payload).
+    assert hash(a) == hash(a)
+    assert hash(a) == hash(b)
+    assert a == b
+    assert not (a != b)
+
+
+def test_probability_map_differing_identity_compare_unequal():
+    src_a = source_identity(_rgba(height=4, width=6))
+    src_b = source_identity(_rgba(height=4, width=6, alpha=254))
+    values = _confidence(height=4, width=6)
+    a = ProbabilityMap(identity=_inference_identity(src_a), values=values)
+    b = ProbabilityMap(identity=_inference_identity(src_b), values=values)
+    assert a != b
+    assert hash(a) != hash(b)
+
+
 def test_probability_map_rejects_shape_mismatch_with_source():
     src = source_identity(_rgba(height=4, width=6))
     ident = _inference_identity(src)
