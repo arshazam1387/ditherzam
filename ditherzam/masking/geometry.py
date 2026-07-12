@@ -15,7 +15,7 @@ from ditherzam.masking.settings import (
     SENSITIVITY_MIN,
 )
 
-GEOMETRY_ALGORITHM_VERSION: Final = "integral-square-morphology-v1"
+GEOMETRY_ALGORITHM_VERSION: Final = "separable-square-morphology-v1"
 FEATHER_ALGORITHM_VERSION: Final = "pillow-gaussian-v1"
 RESIZE_ALGORITHM_VERSION: Final = "pillow-box-v1"
 
@@ -59,22 +59,33 @@ def expand_contract(mask: np.ndarray, pixels: int) -> np.ndarray:
     binary = (source >= 0.5).astype(np.uint8)
     radius = abs(amount)
     if radius:
-        # A summed-area table computes every square window in O(HW), independent
-        # of radius. Explicit zero padding freezes outside-image semantics.
-        padded = np.pad(binary, radius, mode="constant", constant_values=0)
-        integral = np.pad(
-            padded.cumsum(axis=0, dtype=np.uint64).cumsum(axis=1, dtype=np.uint64),
-            ((1, 0), (1, 0)),
-        )
+        # A square max/min filter is exactly two 1-D filters. Rolling uint32
+        # counts keep work O(HW), avoid a uint64 2-D summed-area table, and retain
+        # exact binary behavior even for isolated pixels and low-density masks.
         width = 2 * radius + 1
-        totals = (
-            integral[width:, width:]
-            - integral[:-width, width:]
-            - integral[width:, :-width]
-            + integral[:-width, :-width]
-        )
-        binary = totals > 0 if amount > 0 else totals == width * width
+        horizontal = _rolling_counts(binary, radius, axis=1)
+        horizontal = horizontal > 0 if amount > 0 else horizontal == width
+        vertical = _rolling_counts(horizontal.astype(np.uint8), radius, axis=0)
+        binary = vertical > 0 if amount > 0 else vertical == width
     return _immutable(binary.astype(np.float32))
+
+
+def _rolling_counts(binary: np.ndarray, radius: int, *, axis: int) -> np.ndarray:
+    padding = [(0, 0), (0, 0)]
+    padding[axis] = (radius, radius)
+    padded = np.pad(binary, padding, mode="constant", constant_values=0)
+    cumulative_shape = list(padded.shape)
+    cumulative_shape[axis] += 1
+    cumulative = np.zeros(cumulative_shape, dtype=np.uint32)
+    destination = [slice(None), slice(None)]
+    destination[axis] = slice(1, None)
+    np.cumsum(padded, axis=axis, dtype=np.uint32, out=cumulative[tuple(destination)])
+    width = 2 * radius + 1
+    upper = [slice(None), slice(None)]
+    lower = [slice(None), slice(None)]
+    upper[axis] = slice(width, None)
+    lower[axis] = slice(None, -width)
+    return cumulative[tuple(upper)] - cumulative[tuple(lower)]
 
 
 def feather(mask: np.ndarray, pixels: int) -> np.ndarray:
