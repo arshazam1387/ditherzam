@@ -10,7 +10,7 @@ from enum import Enum
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QGroupBox, QHBoxLayout, QLabel, QPushButton,
-    QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QSlider, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 from PySide6.QtCore import Qt
 
@@ -45,6 +45,7 @@ class SmartMaskPanel(QGroupBox):
         self._status = MaskPanelStatus.DISABLED
         self._source_available = False
         self._model_available = False
+        self._has_valid_mask = False
         self._build_ui()
         self._sync_controls_from_settings()
         self._refresh_enabled_state()
@@ -58,8 +59,21 @@ class SmartMaskPanel(QGroupBox):
         return self._status
 
     def _build_ui(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 6, 8, 6)
+        outer.setSpacing(4)
+        self.disclosure_button = QToolButton()
+        self.disclosure_button.setText("Controls")
+        self.disclosure_button.setCheckable(True)
+        self.disclosure_button.setChecked(True)
+        self.disclosure_button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.disclosure_button.setArrowType(Qt.ArrowType.DownArrow)
+        self.disclosure_button.setAccessibleName("Show Smart Mask controls")
+        outer.addWidget(self.disclosure_button)
+        self.controls_widget = QWidget()
+        outer.addWidget(self.controls_widget)
+        layout = QVBoxLayout(self.controls_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
         self.enabled_check = QCheckBox("Enabled")
@@ -70,6 +84,7 @@ class SmartMaskPanel(QGroupBox):
         self.candidate_combo = QComboBox()
         self.candidate_combo.addItem("Primary (1 of 1)")
         self.candidate_combo.setEnabled(False)
+        self.candidate_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
 
         layout.addWidget(self.enabled_check)
         layout.addWidget(self._labeled("Target", self.target_combo))
@@ -102,7 +117,10 @@ class SmartMaskPanel(QGroupBox):
         buttons.addWidget(self.progress_label, 1)
         layout.addLayout(buttons)
         self.status_label = QLabel("Disabled")
+        self.status_label.setAccessibleName("Smart Mask status")
         layout.addWidget(self.status_label)
+
+        self.disclosure_button.toggled.connect(self._set_expanded)
 
         self.enabled_check.toggled.connect(self._settings_edited)
         self.target_combo.currentIndexChanged.connect(self._settings_edited)
@@ -116,13 +134,19 @@ class SmartMaskPanel(QGroupBox):
         self.overlay_check.toggled.connect(self.overlay_changed)
         self.redetect_button.clicked.connect(self.redetect_requested)
         self.cancel_button.clicked.connect(self.cancel_requested)
+        for spin in (self.sensitivity_spin, self.feather_spin, self.expansion_spin):
+            spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._set_tab_order()
 
     @staticmethod
     def _labeled(text: str, widget: QWidget) -> QWidget:
         box = QWidget()
         row = QHBoxLayout(box)
         row.setContentsMargins(0, 0, 0, 0)
-        row.addWidget(QLabel(text))
+        label = QLabel(text)
+        label.setBuddy(widget)
+        widget.setAccessibleName(text)
+        row.addWidget(label)
         row.addWidget(widget, 1)
         return box
 
@@ -139,11 +163,30 @@ class SmartMaskPanel(QGroupBox):
         row = QWidget()
         row_layout = QHBoxLayout(row)
         row_layout.setContentsMargins(0, 0, 0, 0)
-        row_layout.addWidget(QLabel(label))
+        text_label = QLabel(label)
+        text_label.setBuddy(slider)
+        slider.setAccessibleName(label)
+        spin.setAccessibleName(f"{label} value")
+        row_layout.addWidget(text_label)
         row_layout.addWidget(slider, 1)
         row_layout.addWidget(spin)
         layout.addWidget(row)
         return slider, spin
+
+    def _set_expanded(self, expanded: bool) -> None:
+        self.controls_widget.setVisible(bool(expanded))
+        self.disclosure_button.setArrowType(
+            Qt.ArrowType.DownArrow if expanded else Qt.ArrowType.RightArrow)
+        self.disclosure_button.setAccessibleName(
+            "Hide Smart Mask controls" if expanded else "Show Smart Mask controls")
+
+    def _set_tab_order(self) -> None:
+        chain = (self.disclosure_button, self.enabled_check, self.target_combo,
+                 self.sensitivity_slider, self.feather_slider,
+                 self.expansion_slider, self.invert_check, self.outside_combo,
+                 self.overlay_check, self.redetect_button, self.cancel_button)
+        for first, second in zip(chain, chain[1:]):
+            QWidget.setTabOrder(first, second)
 
     def _settings_edited(self, *_args: object) -> None:
         self._settings = SmartMaskSettings(
@@ -169,6 +212,13 @@ class SmartMaskPanel(QGroupBox):
             raise TypeError("settings must be SmartMaskSettings")
         self._settings = settings
         self._sync_controls_from_settings()
+        self._status = (
+            MaskPanelStatus.DISABLED if not settings.enabled
+            else MaskPanelStatus.READY if self._has_valid_mask
+            else MaskPanelStatus.NEEDS_DETECTION
+        )
+        self.status_label.setText(self._status.value)
+        self.progress_label.clear()
         self._refresh_enabled_state()
 
     def _sync_controls_from_settings(self) -> None:
@@ -195,8 +245,19 @@ class SmartMaskPanel(QGroupBox):
         self._model_available = bool(model)
         self._refresh_enabled_state()
 
+    def set_valid_mask_available(self, available: bool) -> None:
+        """Record whether the current source/model has a publishable mask."""
+        self._has_valid_mask = bool(available)
+        if self._settings.enabled and self._status is not MaskPanelStatus.DETECTING:
+            self._status = (MaskPanelStatus.READY if self._has_valid_mask
+                            else MaskPanelStatus.NEEDS_DETECTION)
+            self.status_label.setText(self._status.value)
+        self._refresh_enabled_state()
+
     def set_status(self, status: MaskPanelStatus | str, progress: int | None = None) -> None:
         self._status = status if isinstance(status, MaskPanelStatus) else MaskPanelStatus(status)
+        if self._status is MaskPanelStatus.READY:
+            self._has_valid_mask = True
         self.status_label.setText(self._status.value)
         self.progress_label.setText(
             f"Detecting {max(0, min(100, int(progress)))}%"
@@ -205,6 +266,7 @@ class SmartMaskPanel(QGroupBox):
 
     def reset_for_source(self) -> None:
         """Clear session-only display state when a new source is loaded."""
+        self._has_valid_mask = False
         self.overlay_check.setChecked(False)
         self.set_status(MaskPanelStatus.NEEDS_DETECTION if self._settings.enabled
                         else MaskPanelStatus.DISABLED)
