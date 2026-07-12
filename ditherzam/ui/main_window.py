@@ -102,7 +102,7 @@ class _RenderWorker(QRunnable):
 
 
 class _DecodeSignals(QObject):
-    finished = Signal(object, object)   # (gray_f32, rgb_u8)
+    finished = Signal(object, object, object)   # (gray_f32, rgb_u8, rgba_u8)
 
 
 class _DecodeWorker(QRunnable):
@@ -115,14 +115,20 @@ class _DecodeWorker(QRunnable):
 
     def run(self) -> None:
         from PIL import Image
-        from ditherzam.imaging import to_gray_f32
         try:
-            img = Image.open(self._path)
-            rgb = np.asarray(img.convert("RGB"), dtype=np.uint8)
-            gray = to_gray_f32(img)
+            with Image.open(self._path) as img:
+                # RGBA is the canonical decoded source.  PIL's RGBA conversion
+                # produces straight (not premultiplied) channels, so transparent
+                # pixels retain their original RGB values for later compositing.
+                rgba = np.array(img.convert("RGBA"), dtype=np.uint8)
+            rgb = rgba[..., :3].copy()
+            # Preserve the existing PIL RGB->L render input exactly; deriving it
+            # from the canonical RGB also keeps alpha out of source luminance.
+            gray = np.array(Image.fromarray(rgb, "RGB").convert("L"), dtype=np.float32)
+            rgba.setflags(write=False)
         except Exception:
             return  # swallow decode failures, same as the old synchronous path
-        self.signals.finished.emit(gray, rgb)
+        self.signals.finished.emit(gray, rgb, rgba)
 
 
 class ImageEditor(QMainWindow):
@@ -139,6 +145,7 @@ class ImageEditor(QMainWindow):
         self.pipeline = RenderPipeline(self._registry, color_engine, effect_stack)
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
+        self._base_rgba: np.ndarray | None = None
         self._preview_palette = None
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
@@ -595,9 +602,43 @@ class ImageEditor(QMainWindow):
         )
 
     # ---- public API ---------------------------------------------------------
-    def load_array(self, gray_f32, rgb_u8=None) -> None:
-        self._base_gray = np.asarray(gray_f32, dtype=np.float32)
-        self._base_rgb = None if rgb_u8 is None else np.asarray(rgb_u8, dtype=np.uint8)
+    def load_array(self, gray_f32, rgb_u8=None, rgba_u8=None) -> None:
+        """Atomically replace the source and retain an owned straight-RGBA copy.
+
+        ``gray_f32`` and ``rgb_u8`` remain the render and Source Colors inputs
+        respectively.  RGBA retention is additional source authority only.
+        """
+        gray = np.asarray(gray_f32, dtype=np.float32)
+        if gray.ndim != 2:
+            raise ValueError("gray_f32 must have shape (H, W)")
+        h, w = gray.shape
+
+        rgb = None if rgb_u8 is None else np.asarray(rgb_u8, dtype=np.uint8)
+        if rgb is not None and rgb.shape != (h, w, 3):
+            raise ValueError("rgb_u8 must have shape (H, W, 3) matching gray_f32")
+
+        if rgba_u8 is not None:
+            rgba_input = np.asarray(rgba_u8, dtype=np.uint8)
+            if rgba_input.shape != (h, w, 4):
+                raise ValueError("rgba_u8 must have shape (H, W, 4) matching gray_f32")
+            if rgb is not None and not np.array_equal(rgba_input[..., :3], rgb):
+                raise ValueError("rgba_u8 RGB channels must match rgb_u8")
+            rgba = np.array(rgba_input, dtype=np.uint8, order="C", copy=True)
+        else:
+            source_rgb = rgb
+            if source_rgb is None:
+                gray_u8 = np.clip(gray, 0, 255).astype(np.uint8)
+                source_rgb = np.repeat(gray_u8[..., None], 3, axis=2)
+            rgba = np.empty((h, w, 4), dtype=np.uint8)
+            rgba[..., :3] = source_rgb
+            rgba[..., 3] = 255
+        rgba.setflags(write=False)
+
+        # All conversion and validation above must succeed before any source
+        # field changes; callers never observe a partially replaced document.
+        self._base_gray = gray
+        self._base_rgb = rgb
+        self._base_rgba = rgba
         self.pipeline.clear_cache()  # drop the previous image's cached intermediates
         self._pending_refit = True  # a new source: the next paint should fit
 
@@ -771,10 +812,10 @@ class ImageEditor(QMainWindow):
         self._decode_worker = worker  # keep the signals QObject alive until it fires
         self._pool.start(worker)
 
-    def _on_image_decoded(self, gray_f32, rgb_u8) -> None:
+    def _on_image_decoded(self, gray_f32, rgb_u8, rgba_u8) -> None:
         """GUI-thread slot: decode finished off-thread; paint a capped preview
         immediately instead of blocking on a synchronous exact render."""
-        self.load_array(gray_f32, rgb_u8)
+        self.load_array(gray_f32, rgb_u8, rgba_u8)
         self.schedule_render()
 
     def _install_shortcuts(self) -> None:
