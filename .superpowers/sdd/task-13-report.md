@@ -26,3 +26,25 @@ outside state and cannot increase the retained editor cache budget.
 
 No model weights, binaries, `.codex/`, `purple harrow.png`, or pytest temporary
 directories are included.
+
+## Important-finding correction
+
+The post-implementation review's four Important findings were corrected in a
+follow-up commit. Request-local pipeline facades now freeze color/effect/source
+context while sharing the editor's one locked, bounded staged-cache owner.
+Derived masks and composites use SM-06's bounded caches and complete identities;
+overlay is applied only after cache lookup. Exact and synchronous paths capture
+all mutable inputs once. Cancellation gates surround every mask boundary and
+cache publication is deferred until a complete result exists.
+
+Additional integration coverage proves cache reuse, bounded shared ownership,
+concurrent reassignment isolation, cancellation without partial publication,
+and existing stage-order/cache-key invariance. Final gates:
+
+- Focused JIT-off integration/render suite: 46 passed.
+- Final cache/order correction subset: 18 passed.
+- Named real-JIT mask/color/style suite: 16 passed.
+
+The broken temporary Python base was safely replaced with a local uv-managed
+Python 3.12.13 path in ignored `.venv/pyvenv.cfg`; no environment file is
+committed.
