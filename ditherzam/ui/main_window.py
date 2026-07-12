@@ -818,6 +818,7 @@ class ImageEditor(QMainWindow):
             yaml.safe_dump(preset, f, sort_keys=False, allow_unicode=True)
 
     def _on_export_raster(self, file_filter, ext):
+        from pathlib import Path
         from PySide6.QtWidgets import QFileDialog
         if self._base_gray is None:
             return
@@ -825,7 +826,8 @@ class ImageEditor(QMainWindow):
         if not path:
             return
         rendered = self._rendered_rgb()
-        if ext.lower() in (".jpg", ".jpeg") and rendered.ndim == 3 and rendered.shape[2] == 4:
+        selected_ext = Path(path).suffix.lower()
+        if selected_ext in (".jpg", ".jpeg") and rendered.ndim == 3 and rendered.shape[2] == 4:
             if not getattr(self, "_jpeg_flatten_notice_shown", False):
                 self.statusBar().showMessage(
                     "JPEG does not support transparency; transparent pixels are flattened onto white.",

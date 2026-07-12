@@ -244,3 +244,36 @@ def test_jpeg_transparency_notice_is_nonblocking_and_shown_once(qapp_fixture, mo
     assert messages == [
         ("JPEG does not support transparency; transparent pixels are flattened onto white.", 8000)
     ]
+
+
+def test_raster_notice_follows_selected_filename_not_action_filter(
+        qapp_fixture, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+    from ditherzam.dithering import registry
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor(registry=registry)
+    editor.load_array(np.zeros((2, 2), np.float32))
+    rgba = np.zeros((2, 2, 4), np.uint8)
+    selections = iter((
+        (str(tmp_path / "png-action.JPG"), ""),
+        (str(tmp_path / "jpeg-action.png"), ""),
+        ("", ""),
+    ))
+    messages = []
+    monkeypatch.setattr(editor, "_rendered_rgb", lambda: rgba)
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *args: next(selections))
+    )
+    monkeypatch.setattr(
+        editor.statusBar(), "showMessage", lambda message, timeout=0: messages.append(message)
+    )
+
+    editor._on_export_raster("PNG Files (*.png)", ".png")
+    editor._jpeg_flatten_notice_shown = False
+    editor._on_export_raster("JPEG Files (*.jpg)", ".jpg")
+    editor._on_export_raster("JPEG Files (*.jpg)", ".jpg")
+
+    assert messages == [
+        "JPEG does not support transparency; transparent pixels are flattened onto white."
+    ]
