@@ -18,7 +18,8 @@ def _manifest(data: bytes) -> ModelManifest:
                          "Apache-2.0", "attr", "rev", 17, (("onnx", "1"),),
                          digest, len(data), EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR,
                          MANIFEST_PREPROCESSING, MANIFEST_OUTPUT_SEMANTICS,
-                         MANIFEST_ALGORITHM_VERSION, "model.onnx")
+                         MANIFEST_ALGORITHM_VERSION, "model.onnx",
+                         ("1959", "0", "1", "2", "3", "4", "5"))
 
 
 def _meta(name, *, shape=(1, 1, 320, 320)):
@@ -100,18 +101,26 @@ def test_incompatible_session_contract_fails_before_run(tmp_path):
         adapter.infer(np.zeros((2, 2, 4), np.uint8))
 
 
-def test_session_outputs_use_unique_manifest_named_mapping_not_position(tmp_path):
+def test_session_outputs_must_match_exact_manifest_order(tmp_path):
     adapter, fake, _ = _adapter(tmp_path)
     fake.get_outputs = lambda: [_meta("aux-a"), _meta(OUTPUT_NAME), _meta("aux-b"),
                                 _meta("aux-c"), _meta("aux-d"), _meta("aux-e"), _meta("aux-f")]
-    adapter.infer(np.zeros((2, 2, 4), np.uint8))
-    assert fake.calls[0][0] == [OUTPUT_NAME]
+    with pytest.raises(RuntimeError, match="output tensor contract"):
+        adapter.infer(np.zeros((2, 2, 4), np.uint8))
 
     adapter, fake, _ = _adapter(tmp_path)
     fake.get_outputs = lambda: [_meta(OUTPUT_NAME), _meta("dup"), _meta("dup"),
                                 _meta("a"), _meta("b"), _meta("c"), _meta("d")]
     with pytest.raises(RuntimeError, match="output tensor contract"):
         adapter.infer(np.zeros((2, 2, 4), np.uint8))
+
+
+def test_unfinalized_output_names_fail_before_session_creation(tmp_path):
+    data = b"safe local fake model"
+    (tmp_path / "model.onnx").write_bytes(data)
+    with pytest.raises(Exception, match="output names are not finalized"):
+        OrtSegmentationAdapter(replace(_manifest(data), output_names=None), asset_root=tmp_path,
+                               session_factory=lambda _: FakeSession())
 
 
 def test_inference_owns_one_snapshot_before_session_can_mutate_caller(tmp_path):
