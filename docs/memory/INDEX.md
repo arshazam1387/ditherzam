@@ -9,6 +9,7 @@
 - [progress|phase 8|done] Full 73-style quality audit — broken defaults/endpoints/duplicates fixed; 341 green; zero collapse or duplicate flags (045-full-style-quality-audit.md)
 - [progress|phase 8|done] Source-faithful From Image colors — RGB palette quantization preserves hue positions; palette count controls simplification (046-source-faithful-color-mode.md)
 - [progress|phase 8|in-progress] Smart Mask plan awaiting approval — approved still-image spec plus 17-task TDD plan before execution ledger (047-smart-mask-planning-handoff.md)
+- [progress|phase 8|in-progress] Smart Mask SDD executing on feat/smart-subject-masking — SM-01/02/03 done+reviewed (HEAD c9f8922); SM-16/17 skeleton-only per user; 71 pre-existing kernel golden failures flagged (048-smart-mask-sdd-execution.md)
 
 - [constraint|phase -|n/a] Clean-room — no Studio AAA code/strings/binaries (001-clean-room.md)
 - [constraint|phase -|n/a] Core is Qt-free; only ui/app/video-workers import PySide6 (002-qt-free-core.md)
