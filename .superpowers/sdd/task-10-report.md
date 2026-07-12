@@ -15,12 +15,19 @@ boundary over a frozen `InferenceRequest` and injected segmentation adapter.
   forcibly terminated.
 - Expected local asset failures remain distinct from logged runtime failures.
 - The worker reads no editor, widget, pipeline, or live settings state.
+- Review fix binds every successful `ProbabilityMap` identity to the frozen
+  request and moves result validation/outcome construction into the protected
+  decision path. Invalid results fail once, while cancellation wins races with
+  no-subject, unavailable-model, and unexpected-error outcomes.
 
 ## Verification
 
 `QT_QPA_PLATFORM=offscreen NUMBA_DISABLE_JIT=1 .venv/Scripts/python.exe -m pytest -q tests/test_mask_worker.py tests/test_mask_session.py tests/test_render_resilience.py --basetemp=.pytest-tmp-sm10b`
 
 Result: **14 passed** in 4.55s.
+
+Review-fix final rerun of the same targets: **24 passed** in 4.36s, including malformed
+adapter returns, every identity mismatch, and cancellation/terminal races.
 
 The full JIT-off suite was started with an isolated basetemp and produced no
 early output before the bounded orchestration timeout; it was stopped on parent

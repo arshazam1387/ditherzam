@@ -5,7 +5,12 @@ import logging
 
 from PySide6.QtCore import QObject, QRunnable, Signal
 
-from ditherzam.masking.adapter import InferenceCancelled, NoClearSubject, SegmentationAdapter
+from ditherzam.masking.adapter import (
+    InferenceCancelled,
+    InferenceResult,
+    NoClearSubject,
+    SegmentationAdapter,
+)
 from ditherzam.masking.inference_request import (
     InferenceOutcome,
     InferenceRequest,
@@ -66,23 +71,50 @@ class InferenceWorker(QRunnable):
             )
             if self._request.cancellation.should_cancel():
                 raise InferenceCancelled("segmentation inference cancelled")
-        except InferenceCancelled:
-            self.signals.cancelled.emit(self._outcome(InferenceTerminal.CANCELLED))
-            return
-        except NoClearSubject:
-            self.signals.no_subject.emit(self._outcome(InferenceTerminal.NO_SUBJECT))
-            return
-        except ModelAssetError as exc:
-            # This is an expected fail-closed local installation state, not an
-            # inference crash.  Keep it distinct so rendering remains unmasked.
-            self.signals.model_unavailable.emit(
-                self._outcome(InferenceTerminal.FAILED, error=exc)
+            if not isinstance(result, InferenceResult):
+                raise TypeError("adapter must return an InferenceResult")
+            identity = result.probability.identity
+            expected = (
+                self._request.source,
+                self._request.model,
+                self._request.preprocessing_version,
+                result.candidate_id,
             )
-            return
+            actual = (
+                identity.source,
+                identity.model,
+                identity.preprocessing_version,
+                identity.candidate_id,
+            )
+            if result.candidate_id != "primary" or actual != expected:
+                raise ValueError("adapter result identity does not match inference request")
+            outcome = self._outcome(InferenceTerminal.SUCCESS, result=result)
+            signal = self.signals.succeeded
+        except InferenceCancelled:
+            outcome = self._outcome(InferenceTerminal.CANCELLED)
+            signal = self.signals.cancelled
+        except NoClearSubject:
+            if self._request.cancellation.should_cancel():
+                outcome = self._outcome(InferenceTerminal.CANCELLED)
+                signal = self.signals.cancelled
+            else:
+                outcome = self._outcome(InferenceTerminal.NO_SUBJECT)
+                signal = self.signals.no_subject
+        except ModelAssetError as exc:
+            if self._request.cancellation.should_cancel():
+                outcome = self._outcome(InferenceTerminal.CANCELLED)
+                signal = self.signals.cancelled
+            else:
+                # This is an expected fail-closed local installation state, not
+                # an inference crash. Keep it distinct so rendering stays unmasked.
+                outcome = self._outcome(InferenceTerminal.FAILED, error=exc)
+                signal = self.signals.model_unavailable
         except Exception as exc:
-            _LOG.exception("Smart Mask inference failed")
-            self.signals.failed.emit(self._outcome(InferenceTerminal.FAILED, error=exc))
-            return
-        self.signals.succeeded.emit(
-            self._outcome(InferenceTerminal.SUCCESS, result=result)
-        )
+            if self._request.cancellation.should_cancel():
+                outcome = self._outcome(InferenceTerminal.CANCELLED)
+                signal = self.signals.cancelled
+            else:
+                _LOG.exception("Smart Mask inference failed")
+                outcome = self._outcome(InferenceTerminal.FAILED, error=exc)
+                signal = self.signals.failed
+        signal.emit(outcome)
