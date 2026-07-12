@@ -112,6 +112,7 @@ def test_source_reset_turns_off_overlay_and_resets_lifecycle(qapp_fixture):
 def test_disclosure_is_independent_and_preserves_state(qapp_fixture):
     panel = SmartMaskPanel()
     panel.show()
+    assert panel.disclosure_button.accessibleName() == "Hide Smart Mask controls"
     settings_seen = []
     overlay_seen = []
     panel.settings_changed.connect(settings_seen.append)
@@ -122,10 +123,12 @@ def test_disclosure_is_independent_and_preserves_state(qapp_fixture):
     settings_seen.clear()
     panel.disclosure_button.click()
     assert not panel.controls_widget.isVisible()
+    assert panel.disclosure_button.accessibleName() == "Show Smart Mask controls"
     assert panel.settings == before
     assert settings_seen == [] and overlay_seen == []
     panel.disclosure_button.click()
     assert panel.controls_widget.isVisibleTo(panel)
+    assert panel.disclosure_button.accessibleName() == "Hide Smart Mask controls"
     assert panel.settings == before
 
 
@@ -145,6 +148,17 @@ def test_set_settings_reconciles_stale_lifecycle_without_signals(qapp_fixture):
     panel.set_settings(SmartMaskSettings(enabled=True))
     assert panel.status is MaskPanelStatus.READY
     assert settings_seen == []
+
+
+def test_direct_enable_toggle_preserves_current_valid_mask(qapp_fixture):
+    panel = SmartMaskPanel()
+    panel.enabled_check.click()
+    assert panel.status is MaskPanelStatus.NEEDS_DETECTION
+    panel.set_status(MaskPanelStatus.READY)
+    panel.enabled_check.click()
+    assert panel.status is MaskPanelStatus.DISABLED
+    panel.enabled_check.click()
+    assert panel.status is MaskPanelStatus.READY
 
 
 def test_labels_accessibility_and_focus_policy(qapp_fixture):
