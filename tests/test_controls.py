@@ -10,6 +10,19 @@ def test_control_panel_state_defaults(qapp_fixture):
     assert st["contrast"] == 50 and st["scale"] == 5 and st["style"] == "None"
     assert st["invert"] is False and st["preview_disabled"] is False
     assert st["saturation"] == 50 and st["params"] == {}
+    assert "smart_mask" not in st
+    assert "mask" not in st["params"]
+    assert p.smart_mask_panel.settings.enabled is False
+
+
+def test_smart_mask_overlay_does_not_emit_creative_changed(qapp_fixture):
+    from ditherzam.ui.controls import ControlPanel
+    p = ControlPanel()
+    changed = []
+    p.changed.connect(lambda: changed.append(True))
+    p.smart_mask_panel.enabled_check.click()
+    p.smart_mask_panel.overlay_check.click()
+    assert changed == []
 
 
 def test_slider_edit_updates_state_and_emits(qapp_fixture):
