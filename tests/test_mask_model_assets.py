@@ -204,6 +204,25 @@ def test_model_manifest_is_frozen(tmp_path):
         manifest.model_id = "u2net"
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("model_id", "unapproved-model"),
+        ("upstream_commit", "0" * 40),
+        ("onnx_sha256", "A" * 64),
+        ("upstream_source_sha256", "not-a-hash"),
+        ("input_tensor", TensorSpec("input.1", (1, 3, 512, 512), "float32")),
+    ],
+)
+def test_direct_model_manifest_construction_enforces_release_invariants(
+    tmp_path, field, value
+):
+    manifest_path, _, _ = _valid_manifest_yaml(tmp_path)
+    valid = load_manifest(manifest_path)
+    with pytest.raises(ModelAssetError):
+        dataclasses.replace(valid, **{field: value})
+
+
 # -- verify_model_asset ---------------------------------------------------------
 
 
@@ -247,10 +266,8 @@ def test_verify_model_asset_rejects_wrong_hash(tmp_path):
 def test_verify_model_asset_rejects_absolute_and_traversing_paths(tmp_path, traversal_path):
     manifest_path, digest, byte_count = _valid_manifest_yaml(tmp_path)
     manifest = load_manifest(manifest_path)
-    tampered = dataclasses.replace(manifest, relative_path=traversal_path)
-
     with pytest.raises(ModelAssetError):
-        verify_model_asset(tmp_path, tampered)
+        dataclasses.replace(manifest, relative_path=traversal_path)
 
 
 def test_verify_model_asset_rejects_arbitrary_preset_supplied_path(tmp_path):
