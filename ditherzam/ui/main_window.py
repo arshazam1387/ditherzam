@@ -603,11 +603,16 @@ class ImageEditor(QMainWindow):
 
     # ---- public API ---------------------------------------------------------
     def load_array(self, gray_f32, rgb_u8=None, rgba_u8=None) -> None:
-        """Atomically replace the source and retain an owned straight-RGBA copy.
+        """Atomically replace the source, defensively copying external RGBA.
 
         ``gray_f32`` and ``rgb_u8`` remain the render and Source Colors inputs
         respectively.  RGBA retention is additional source authority only.
         """
+        self._replace_source_arrays(gray_f32, rgb_u8, rgba_u8, adopt_decoded_rgba=False)
+
+    def _replace_source_arrays(self, gray_f32, rgb_u8, rgba_u8,
+                               *, adopt_decoded_rgba: bool) -> None:
+        """Validate a replacement and optionally accept private decoder ownership."""
         if not isinstance(gray_f32, np.ndarray) or gray_f32.dtype != np.float32:
             raise TypeError("gray_f32 must be a float32 ndarray")
         gray = gray_f32
@@ -632,16 +637,17 @@ class ImageEditor(QMainWindow):
                 raise ValueError("rgba_u8 must have non-empty shape (H, W, 4) matching gray_f32")
             if rgb is not None and not np.array_equal(rgba_input[..., :3], rgb):
                 raise ValueError("rgba_u8 RGB channels must match rgb_u8")
-            # The decode worker transfers a uniquely owned, read-only C array;
-            # adopting it avoids decoding RGBA only to duplicate it on the GUI
-            # thread. Mutable, borrowed, or strided programmatic inputs are copied.
-            safely_owned = (
-                rgba_input.flags.owndata
+            # Only the private decode receiver may transfer ownership. Public
+            # callers retain access to their arrays and can reverse NumPy's
+            # writeable flag, so load_array always makes a defensive copy.
+            decoded_transfer = (
+                adopt_decoded_rgba
+                and rgba_input.flags.owndata
                 and not rgba_input.flags.writeable
                 and rgba_input.flags.c_contiguous
                 and rgba_input.base is None
             )
-            rgba = rgba_input if safely_owned else np.array(
+            rgba = rgba_input if decoded_transfer else np.array(
                 rgba_input, dtype=np.uint8, order="C", copy=True)
         else:
             source_rgb = rgb
@@ -834,7 +840,8 @@ class ImageEditor(QMainWindow):
     def _on_image_decoded(self, gray_f32, rgb_u8, rgba_u8) -> None:
         """GUI-thread slot: decode finished off-thread; paint a capped preview
         immediately instead of blocking on a synchronous exact render."""
-        self.load_array(gray_f32, rgb_u8, rgba_u8)
+        self._replace_source_arrays(
+            gray_f32, rgb_u8, rgba_u8, adopt_decoded_rgba=True)
         self.schedule_render()
 
     def _install_shortcuts(self) -> None:

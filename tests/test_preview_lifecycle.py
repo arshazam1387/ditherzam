@@ -119,13 +119,15 @@ def test_image_decoded_slot_loads_array_and_schedules_without_render_now(qapp_fi
     from ditherzam.ui.main_window import ImageEditor
 
     editor = ImageEditor(preference_store=FakeSettings())
-    calls = {"render_now": 0, "schedule_render": 0, "load_array": []}
+    calls = {"render_now": 0, "schedule_render": 0, "replace": []}
     monkeypatch.setattr(editor, "render_now",
                         lambda: calls.__setitem__("render_now", calls["render_now"] + 1))
     monkeypatch.setattr(editor, "schedule_render",
                         lambda: calls.__setitem__("schedule_render", calls["schedule_render"] + 1))
-    monkeypatch.setattr(editor, "load_array",
-                        lambda g, r=None, a=None: calls["load_array"].append((g, r, a)))
+    monkeypatch.setattr(
+        editor, "_replace_source_arrays",
+        lambda g, r, a, *, adopt_decoded_rgba: calls["replace"].append(
+            (g, r, a, adopt_decoded_rgba)))
 
     gray = np.zeros((8, 8), dtype=np.float32)
     rgb = np.zeros((8, 8, 3), dtype=np.uint8)
@@ -134,7 +136,7 @@ def test_image_decoded_slot_loads_array_and_schedules_without_render_now(qapp_fi
 
     assert calls["render_now"] == 0
     assert calls["schedule_render"] == 1
-    assert calls["load_array"] == [(gray, rgb, rgba)]
+    assert calls["replace"] == [(gray, rgb, rgba, True)]
 
 
 def test_image_dropped_runs_decode_off_thread_pool_not_sync_render(qapp_fixture, monkeypatch, tmp_path):
