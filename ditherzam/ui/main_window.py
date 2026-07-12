@@ -824,7 +824,15 @@ class ImageEditor(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Save Image", "", file_filter)
         if not path:
             return
-        save_raster(self._rendered_rgb(), path)
+        rendered = self._rendered_rgb()
+        if ext.lower() in (".jpg", ".jpeg") and rendered.ndim == 3 and rendered.shape[2] == 4:
+            if not getattr(self, "_jpeg_flatten_notice_shown", False):
+                self.statusBar().showMessage(
+                    "JPEG does not support transparency; transparent pixels are flattened onto white.",
+                    8000,
+                )
+                self._jpeg_flatten_notice_shown = True
+        save_raster(rendered, path)
 
     def _on_export_svg(self):
         from PySide6.QtWidgets import QFileDialog, QMessageBox
