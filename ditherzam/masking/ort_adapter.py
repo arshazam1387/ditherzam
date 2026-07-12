@@ -14,6 +14,9 @@ from ditherzam.masking.model_assets import EXPECTED_INPUT_TENSOR, EXPECTED_OUTPU
 from ditherzam.masking.session import LazySession
 
 PREPROCESSING_VERSION = "u2net-rgb-imagenet-bilinear-v1"
+MANIFEST_PREPROCESSING = "resize to 320x320, RGB, scale to [0, 1], normalize by documented mean/std"
+MANIFEST_OUTPUT_SEMANTICS = "single-channel foreground probability in [0, 1] at model resolution"
+MANIFEST_ALGORITHM_VERSION = "1"
 INPUT_NAME = EXPECTED_INPUT_TENSOR.name
 OUTPUT_NAME = EXPECTED_OUTPUT_TENSOR.name
 INPUT_SIZE = 320
@@ -62,18 +65,25 @@ def _metadata(item: object) -> tuple[str, tuple[int, ...], str]:
     return str(getattr(item, "name", None)), shape, dtype
 
 
-def _validate_session_contract(session: object) -> None:
+def _validate_session_contract(session: object, manifest: ModelManifest) -> None:
     try:
         inputs, outputs = session.get_inputs(), session.get_outputs()
     except Exception as exc:
         raise RuntimeError(f"unable to inspect model tensor contract: {exc}") from exc
-    expected_in = (INPUT_NAME, EXPECTED_INPUT_TENSOR.shape, EXPECTED_INPUT_TENSOR.dtype)
-    expected_out = (OUTPUT_NAME, EXPECTED_OUTPUT_TENSOR.shape, EXPECTED_OUTPUT_TENSOR.dtype)
+    expected_in = (manifest.input_tensor.name, manifest.input_tensor.shape, manifest.input_tensor.dtype)
+    expected_out = (manifest.output_tensor.name, manifest.output_tensor.shape, manifest.output_tensor.dtype)
     if len(inputs) != 1 or _metadata(inputs[0]) != expected_in:
         raise RuntimeError("incompatible model input tensor contract")
-    if len(outputs) != 7 or _metadata(outputs[0]) != expected_out:
+    output_metadata = [_metadata(item) for item in outputs]
+    output_names = [item[0] for item in output_metadata]
+    if len(outputs) != 7 or len(set(output_names)) != 7:
         raise RuntimeError("incompatible model output tensor contract")
-    if any(_metadata(item)[1:] != expected_out[1:] for item in outputs):
+    if output_names.count(manifest.output_tensor.name) != 1:
+        raise RuntimeError("manifest primary output tensor is absent or duplicated")
+    primary = output_metadata[output_names.index(manifest.output_tensor.name)]
+    if primary != expected_out:
+        raise RuntimeError("incompatible model output tensor contract")
+    if any(item[1:] != expected_out[1:] for item in output_metadata):
         raise RuntimeError("incompatible U-2-Net auxiliary output tensor contract")
 
 
@@ -99,32 +109,38 @@ class OrtSegmentationAdapter:
             raise TypeError("manifest must be a ModelManifest")
         if manifest.input_tensor != EXPECTED_INPUT_TENSOR or manifest.output_tensor != EXPECTED_OUTPUT_TENSOR:
             raise ModelAssetError("manifest tensor contract is incompatible with this adapter")
+        if (manifest.preprocessing != MANIFEST_PREPROCESSING or
+                manifest.output_semantics != MANIFEST_OUTPUT_SEMANTICS or
+                manifest.algorithm_version != MANIFEST_ALGORITHM_VERSION):
+            raise ModelAssetError("manifest preprocessing/output algorithm contract is incompatible with this adapter")
         self._model_identity = ModelIdentity(manifest.model_id, manifest.model_version, manifest.onnx_sha256)
         root = default_asset_root() if asset_root is None else Path(asset_root)
 
         def build() -> object:
             path = verify_model_asset(root, manifest)
             session = session_factory(path) if session_factory is not None else create_cpu_session(path, intra_op_threads=intra_op_threads)
-            _validate_session_contract(session)
+            _validate_session_contract(session, manifest)
             return session
 
         self._session = LazySession(build)
 
     def infer(self, rgba_u8: np.ndarray, *, should_cancel: Callable[[], bool] | None = None) -> InferenceResult:
-        source = validate_rgba_u8(rgba_u8)
+        validated = validate_rgba_u8(rgba_u8)
+        source = np.array(validated, dtype=np.uint8, order="C", copy=True)
+        source.flags.writeable = False
+        identity = InferenceIdentity(source_identity(source), self._model_identity, PREPROCESSING_VERSION, "primary")
         _cancelled(should_cancel)
         tensor = preprocess_u2net(source)
         _cancelled(should_cancel)
         session = self._session.get()
         _cancelled(should_cancel)
         try:
-            outputs: Sequence[Any] = session.run(None, {INPUT_NAME: tensor})
+            outputs: Sequence[Any] = session.run([OUTPUT_NAME], {INPUT_NAME: tensor})
         except Exception as exc:
             raise RuntimeError(f"segmentation runtime failed: {exc}") from exc
         _cancelled(should_cancel)
-        if len(outputs) != 7:
-            raise RuntimeError(f"incompatible model result: expected 7 outputs, got {len(outputs)}")
+        if len(outputs) != 1:
+            raise RuntimeError(f"incompatible model result: expected selected primary output, got {len(outputs)} outputs")
         confidence = postprocess_probability(outputs[0], source.shape[:2])
         _cancelled(should_cancel)
-        identity = InferenceIdentity(source_identity(source), self._model_identity, PREPROCESSING_VERSION, "primary")
         return InferenceResult("primary", ProbabilityMap(identity, confidence))

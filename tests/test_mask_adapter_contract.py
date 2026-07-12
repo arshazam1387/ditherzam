@@ -8,7 +8,8 @@ import pytest
 
 from ditherzam.masking.adapter import InferenceCancelled, NoClearSubject
 from ditherzam.masking.model_assets import EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR, ModelManifest
-from ditherzam.masking.ort_adapter import INPUT_NAME, OrtSegmentationAdapter, postprocess_probability, preprocess_u2net
+from ditherzam.masking.contracts import source_identity
+from ditherzam.masking.ort_adapter import INPUT_NAME, MANIFEST_ALGORITHM_VERSION, MANIFEST_OUTPUT_SEMANTICS, MANIFEST_PREPROCESSING, OUTPUT_NAME, OrtSegmentationAdapter, postprocess_probability, preprocess_u2net
 
 
 def _manifest(data: bytes) -> ModelManifest:
@@ -16,7 +17,8 @@ def _manifest(data: bytes) -> ModelManifest:
     return ModelManifest("u2netp", "1", "repo", "a" * 40, "source", "b" * 64,
                          "Apache-2.0", "attr", "rev", 17, (("onnx", "1"),),
                          digest, len(data), EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR,
-                         "rgb", "d1 foreground", "v1", "model.onnx")
+                         MANIFEST_PREPROCESSING, MANIFEST_OUTPUT_SEMANTICS,
+                         MANIFEST_ALGORITHM_VERSION, "model.onnx")
 
 
 def _meta(name, *, shape=(1, 1, 320, 320)):
@@ -32,7 +34,7 @@ class FakeSession:
     def run(self, names, feeds):
         self.calls.append((names, feeds))
         primary = np.linspace(0, 1, 320 * 320, dtype=np.float32).reshape(1, 1, 320, 320)
-        return [primary] + [np.ones_like(primary)] * 6
+        return [primary]
 
 
 def _adapter(tmp_path: Path):
@@ -65,7 +67,7 @@ def test_primary_output_source_resize_immutable_and_session_reused(tmp_path):
     assert first.confidence.dtype == np.float32 and not first.confidence.flags.writeable
     assert 0 <= first.confidence.min() < first.confidence.max() <= 1
     assert len(creates) == 1 and len(fake.calls) == 2
-    assert fake.calls[0][0] is None and set(fake.calls[0][1]) == {INPUT_NAME}
+    assert fake.calls[0][0] == [OUTPUT_NAME] and set(fake.calls[0][1]) == {INPUT_NAME}
     assert second.probability.identity == first.probability.identity
 
 
@@ -96,3 +98,45 @@ def test_incompatible_session_contract_fails_before_run(tmp_path):
     fake.get_inputs = lambda: [_meta("wrong", shape=(1, 3, 320, 320))]
     with pytest.raises(RuntimeError, match="input tensor contract"):
         adapter.infer(np.zeros((2, 2, 4), np.uint8))
+
+
+def test_session_outputs_use_unique_manifest_named_mapping_not_position(tmp_path):
+    adapter, fake, _ = _adapter(tmp_path)
+    fake.get_outputs = lambda: [_meta("aux-a"), _meta(OUTPUT_NAME), _meta("aux-b"),
+                                _meta("aux-c"), _meta("aux-d"), _meta("aux-e"), _meta("aux-f")]
+    adapter.infer(np.zeros((2, 2, 4), np.uint8))
+    assert fake.calls[0][0] == [OUTPUT_NAME]
+
+    adapter, fake, _ = _adapter(tmp_path)
+    fake.get_outputs = lambda: [_meta(OUTPUT_NAME), _meta("dup"), _meta("dup"),
+                                _meta("a"), _meta("b"), _meta("c"), _meta("d")]
+    with pytest.raises(RuntimeError, match="output tensor contract"):
+        adapter.infer(np.zeros((2, 2, 4), np.uint8))
+
+
+def test_inference_owns_one_snapshot_before_session_can_mutate_caller(tmp_path):
+    adapter, fake, _ = _adapter(tmp_path)
+    source = np.zeros((5, 7, 4), np.uint8)
+    source[..., :3] = (20, 80, 160)
+    source[..., 3] = 255
+    before = source.copy()
+    expected_tensor = preprocess_u2net(before)
+    expected_identity = source_identity(before)
+    original_run = fake.run
+
+    def mutating_run(names, feeds):
+        source[:] = 255
+        return original_run(names, feeds)
+
+    fake.run = mutating_run
+    result = adapter.infer(source)
+    np.testing.assert_array_equal(fake.calls[0][1][INPUT_NAME], expected_tensor)
+    assert result.probability.identity.source == expected_identity
+    assert not result.confidence.flags.writeable
+
+
+@pytest.mark.parametrize("field", ["preprocessing", "output_semantics", "algorithm_version"])
+def test_adapter_rejects_noncanonical_manifest_algorithm_fields(tmp_path, field):
+    manifest = replace(_manifest(b"x"), **{field: "different"})
+    with pytest.raises(Exception, match="algorithm contract"):
+        OrtSegmentationAdapter(manifest, asset_root=tmp_path, session_factory=lambda _: FakeSession())
