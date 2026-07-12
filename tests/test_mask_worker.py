@@ -55,6 +55,18 @@ def test_success_emits_one_terminal_outcome():
     assert events[0][1].request is request
 
 
+def test_success_progress_is_coarse_monotonic_and_precedes_terminal():
+    request = _request()
+    worker = InferenceWorker(request, _Adapter(_result(request)))
+    progress = []
+    worker.signals.progress.connect(lambda req, value: progress.append((req, value)))
+    events = _record(worker)
+    worker.run()
+    assert [value for _, value in progress] == [0, 10, 90, 100]
+    assert all(req is request for req, _ in progress)
+    assert [name for name, _ in events] == ["succeeded"]
+
+
 @pytest.mark.parametrize(
     ("error", "signal", "terminal"),
     [
