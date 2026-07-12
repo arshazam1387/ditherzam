@@ -16,6 +16,13 @@ from PySide6.QtWidgets import (
 from ditherzam.dithering import registry as _dither_registry
 from ditherzam.color.context import ColorContextCache
 from ditherzam.render import RenderCancelled, RenderPipeline
+from ditherzam.masking.cache import MaskCaches, editor_cache_allocation
+from ditherzam.masking.contracts import ModelIdentity, ProbabilityMap, source_identity
+from ditherzam.masking.inference_request import InferenceOutcome, InferenceRequest, InferenceTerminal
+from ditherzam.masking.inference_scheduler import InferenceScheduler
+from ditherzam.masking.ort_adapter import PREPROCESSING_VERSION
+from ditherzam.masking.model_assets import ModelAssetError
+from ditherzam.masking.settings import MaskTarget, SmartMaskSettings
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
@@ -26,7 +33,9 @@ from .preview_preferences import (
     load_preview_preferences,
     save_preview_preferences,
 )
-from .render_request import RenderKind, RenderRequest
+from .render_request import MaskContext, RenderKind, RenderRequest
+from .mask_workers import InferenceWorker
+from .smart_mask_panel import MaskPanelStatus
 from .render_scheduler import RenderScheduler
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
@@ -134,7 +143,9 @@ class _DecodeWorker(QRunnable):
 class ImageEditor(QMainWindow):
     def __init__(self, registry=None, color_engine=None, effect_stack=None,
                  debounce_ms: int = 20, settle_ms: int = 160, zoom_debounce_ms: int = 150,
-                 proxy_max_side: int = 640, parent=None, preference_store=None):
+                 proxy_max_side: int = 640, parent=None, preference_store=None,
+                 mask_adapter=None, mask_model: ModelIdentity | None = None,
+                 mask_preprocessing_version: str = PREPROCESSING_VERSION):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
         self._registry = registry or _dither_registry
@@ -143,6 +154,16 @@ class ImageEditor(QMainWindow):
         # cache editor-owned avoids global cross-document retention.
         self._color_context_cache = ColorContextCache()
         self.pipeline = RenderPipeline(self._registry, color_engine, effect_stack)
+        allocation = editor_cache_allocation(False)
+        self.pipeline.configure_cache_budget(allocation.render_bytes)
+        self._mask_caches = MaskCaches(allocation.mask_bytes)
+        self._mask_cache_enabled = False
+        self._mask_adapter = mask_adapter
+        self._mask_model = mask_model
+        self._mask_preprocessing_version = mask_preprocessing_version
+        self._mask_scheduler = InferenceScheduler()
+        self._mask_source = None
+        self._mask_probability: ProbabilityMap | None = None
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
         self._base_rgba: np.ndarray | None = None
@@ -176,6 +197,11 @@ class ImageEditor(QMainWindow):
         self.panel.changed.connect(self.schedule_render)
         self.panel.from_image_requested.connect(self._on_from_image_requested)
         self.panel.palette_preview.connect(self._on_palette_preview)
+        mask_panel = self.panel.smart_mask_panel
+        mask_panel.settings_changed.connect(self._on_mask_settings_changed)
+        mask_panel.redetect_requested.connect(self._request_mask_detection)
+        mask_panel.cancel_requested.connect(self._cancel_mask_detection)
+        mask_panel.set_availability(source=False, model=self._mask_dependencies_available())
         self.viewport.image_dropped.connect(self._on_image_dropped)
         self.viewport.zoom_changed.connect(self._on_zoom_changed)
 
@@ -229,6 +255,89 @@ class ImageEditor(QMainWindow):
         self._wire_export()
         self._wire_video()
         self._wire_animation()
+
+    def _mask_dependencies_available(self) -> bool:
+        return (callable(getattr(self._mask_adapter, "infer", None))
+                and isinstance(self._mask_model, ModelIdentity)
+                and isinstance(self._mask_preprocessing_version, str)
+                and bool(self._mask_preprocessing_version.strip()))
+
+    def _configure_editor_caches(self, enabled: bool) -> None:
+        if enabled == self._mask_cache_enabled:
+            return
+        allocation = editor_cache_allocation(enabled)
+        self.pipeline.configure_cache_budget(allocation.render_bytes)
+        self._mask_caches = MaskCaches(allocation.mask_bytes)
+        self._mask_cache_enabled = enabled
+
+    def _on_mask_settings_changed(self, settings: SmartMaskSettings) -> None:
+        self._configure_editor_caches(settings.enabled)
+        if not settings.enabled or settings.target is MaskTarget.WHOLE_IMAGE:
+            self._cancel_mask_detection()
+        elif self._mask_probability is None:
+            self._request_mask_detection()
+        self.schedule_render()
+
+    def _request_mask_detection(self) -> None:
+        settings = self.panel.smart_mask_panel.settings
+        if (not settings.enabled or settings.target is MaskTarget.WHOLE_IMAGE
+                or self._base_rgba is None or self._mask_source is None
+                or not self._mask_dependencies_available()):
+            return
+        request = InferenceRequest(
+            self._mask_source, self._mask_model, self._mask_preprocessing_version,
+            self._base_rgba,
+        )
+        launch = self._mask_scheduler.request(request)
+        self.panel.smart_mask_panel.set_status(MaskPanelStatus.DETECTING)
+        if launch is not None:
+            self._launch_mask_worker(launch)
+
+    def _cancel_mask_detection(self) -> None:
+        self._mask_scheduler.invalidate_source(self._mask_source)
+        panel = self.panel.smart_mask_panel
+        if panel.status is MaskPanelStatus.DETECTING:
+            panel.set_status(MaskPanelStatus.CANCELLED)
+
+    def _launch_mask_worker(self, request: InferenceRequest) -> None:
+        worker = InferenceWorker(request, self._mask_adapter)
+        for signal in (worker.signals.succeeded, worker.signals.no_subject,
+                       worker.signals.cancelled, worker.signals.model_unavailable,
+                       worker.signals.failed):
+            signal.connect(self._on_mask_terminal)
+        self._pool.start(worker)
+
+    def _on_mask_terminal(self, outcome: InferenceOutcome) -> None:
+        current = self._mask_scheduler.is_current(outcome.request)
+        if current and outcome.request.source == self._mask_source:
+            panel = self.panel.smart_mask_panel
+            if outcome.terminal is InferenceTerminal.SUCCESS:
+                self._mask_probability = outcome.result.probability
+                self._mask_caches.put_inference(self._mask_probability)
+                panel.set_valid_mask_available(True)
+                panel.set_status(MaskPanelStatus.READY)
+                self.schedule_render()
+            elif outcome.terminal is InferenceTerminal.NO_SUBJECT:
+                panel.set_status(MaskPanelStatus.NO_CLEAR_SUBJECT)
+            elif outcome.terminal is InferenceTerminal.CANCELLED:
+                panel.set_status(MaskPanelStatus.CANCELLED)
+            else:
+                panel.set_status(MaskPanelStatus.MODEL_UNAVAILABLE
+                                 if isinstance(outcome.error, ModelAssetError)
+                                 else MaskPanelStatus.ERROR)
+        trailing = self._mask_scheduler.on_terminal(outcome)
+        if trailing is not None:
+            self.panel.smart_mask_panel.set_status(MaskPanelStatus.DETECTING)
+            self._launch_mask_worker(trailing)
+
+    def _current_mask_context(self) -> MaskContext | None:
+        settings = self.panel.smart_mask_panel.settings
+        probability = self._mask_probability
+        if (not settings.enabled or settings.target is MaskTarget.WHOLE_IMAGE
+                or probability is None or self._base_rgba is None
+                or probability.identity.source != self._mask_source):
+            return None
+        return MaskContext(self._mask_source, self._base_rgba, probability, settings)
 
     def _wire_preview_preferences(self) -> None:
         """Build the View menu controls for application-level preview policy."""
@@ -659,13 +768,29 @@ class ImageEditor(QMainWindow):
             rgba[..., 3] = 255
         rgba.setflags(write=False)
 
+        # Invalidate the old identity before publishing any field of the new
+        # source so an in-flight terminal can never attach to replacement data.
+        old_source = self._mask_source
+        self._mask_scheduler.invalidate_source(None)
+        if old_source is not None:
+            self._mask_caches.clear_source(old_source)
+        self._mask_probability = None
+
         # All conversion and validation above must succeed before any source
         # field changes; callers never observe a partially replaced document.
         self._base_gray = gray
         self._base_rgb = rgb
         self._base_rgba = rgba
+        self._mask_source = source_identity(rgba)
         self.pipeline.clear_cache()  # drop the previous image's cached intermediates
         self._pending_refit = True  # a new source: the next paint should fit
+        mask_panel = self.panel.smart_mask_panel
+        mask_panel.reset_for_source()
+        mask_panel.set_availability(source=True, model=self._mask_dependencies_available())
+        settings = mask_panel.settings
+        self._configure_editor_caches(settings.enabled)
+        if settings.enabled and settings.target is not MaskTarget.WHOLE_IMAGE:
+            self._request_mask_detection()
 
     def set_style(self, name: str) -> None:
         self.panel.set_style(name)
@@ -736,6 +861,7 @@ class ImageEditor(QMainWindow):
             logical_size=logical_size,
             color_engine=self.pipeline.color_engine,
             effect_stack=self.pipeline.effect_stack,
+            mask_context=self._current_mask_context(),
         )
 
     def _do_render(self) -> None:

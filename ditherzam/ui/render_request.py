@@ -13,6 +13,31 @@ from dataclasses import dataclass
 from enum import Enum, auto
 
 from ..render import RenderSettings
+from ..masking.contracts import ProbabilityMap, SourceIdentity, validate_rgba_u8
+from ..masking.settings import SmartMaskSettings
+
+
+@dataclass(frozen=True, eq=False)
+class MaskContext:
+    """Immutable Smart Mask authority captured when a render is scheduled."""
+
+    source: SourceIdentity
+    source_rgba: object
+    probability: ProbabilityMap
+    settings: SmartMaskSettings
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.source, SourceIdentity):
+            raise TypeError("source must be a SourceIdentity")
+        rgba = validate_rgba_u8(self.source_rgba)
+        if rgba.flags.writeable or not rgba.flags.c_contiguous:
+            raise ValueError("source_rgba must be a read-only C-contiguous snapshot")
+        if not isinstance(self.probability, ProbabilityMap):
+            raise TypeError("probability must be a ProbabilityMap")
+        if self.probability.identity.source != self.source:
+            raise ValueError("probability and source identities must match")
+        if not isinstance(self.settings, SmartMaskSettings) or not self.settings.enabled:
+            raise ValueError("settings must be enabled SmartMaskSettings")
 
 
 class RenderKind(Enum):
@@ -52,6 +77,7 @@ class RenderRequest:
     logical_size: tuple[int, int]  # (w, h) of the full source, for display geometry
     color_engine: object = None    # pipeline.color_engine snapshot at request time
     effect_stack: object = None    # pipeline.effect_stack snapshot at request time
+    mask_context: MaskContext | None = None
 
     @property
     def mode(self) -> str:
