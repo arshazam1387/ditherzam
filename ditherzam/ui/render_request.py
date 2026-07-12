@@ -78,6 +78,8 @@ class RenderRequest:
     color_engine: object = None    # pipeline.color_engine snapshot at request time
     effect_stack: object = None    # pipeline.effect_stack snapshot at request time
     mask_context: MaskContext | None = None
+    source_gray: object = None     # one-read source reference captured at schedule time
+    show_mask_overlay: bool = False
 
     @property
     def mode(self) -> str:

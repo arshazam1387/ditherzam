@@ -23,6 +23,8 @@ from ditherzam.masking.inference_scheduler import InferenceScheduler
 from ditherzam.masking.ort_adapter import PREPROCESSING_VERSION
 from ditherzam.masking.model_assets import ModelAssetError
 from ditherzam.masking.settings import MaskTarget, SmartMaskSettings
+from ditherzam.masking.render import render_with_mask
+from ditherzam.masking.geometry import derive_master_mask, resize_mask_area
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
@@ -36,6 +38,7 @@ from .preview_preferences import (
 from .render_request import MaskContext, RenderKind, RenderRequest
 from .mask_workers import InferenceWorker
 from .smart_mask_panel import MaskPanelStatus
+from .mask_overlay import apply_mask_overlay
 from .render_scheduler import RenderScheduler
 from .export_actions import create_export_menu
 from .hotkeys import get_hotkeys
@@ -85,20 +88,37 @@ class _RenderWorker(QRunnable):
         # Always report an outcome (finished, failed, OR cancelled) so the
         # scheduler recovers -- exactly one terminal signal per run.
         try:
-            # Apply the request's snapshotted color/effect context -- never the
-            # pipeline's *current* attributes, which the GUI thread may have
-            # since reassigned for a newer request.
-            self._pipeline.color_engine = self._request.color_engine
-            self._pipeline.effect_stack = self._request.effect_stack
+            # Isolate the request's context from later GUI reassignment and
+            # synchronous renders on the live editor pipeline.
+            pipeline = RenderPipeline(
+                self._pipeline.registry,
+                self._request.color_engine,
+                self._request.effect_stack,
+                cache_budget_bytes=0,
+            )
+            source = (self._request.source_gray if self._request.source_gray is not None
+                      else self._base_gray)
             if self._request.mode == "proxy":
-                rgb = render_preview(self._pipeline, self._base_gray,
-                                     self._request.settings,
-                                     self._request.target_max_side,
-                                     is_cancelled=self._is_cancelled)
+                render = lambda: render_preview(
+                    pipeline, source, self._request.settings,
+                    self._request.target_max_side, is_cancelled=self._is_cancelled,
+                    mask_context=self._request.mask_context)
             else:
-                rgb = self._pipeline.render_cached(self._base_gray, self._request.settings,
-                                                    is_cancelled=self._is_cancelled)
-            qimg = numpy_to_qimage(rgb)
+                render = lambda: pipeline.render_cached(
+                    source, self._request.settings, is_cancelled=self._is_cancelled)
+            result = (render() if self._request.mode == "proxy" else
+                      render_with_mask(render, self._request.mask_context))
+            if self._request.show_mask_overlay and self._request.mask_context is not None:
+                context = self._request.mask_context
+                s = context.settings
+                mask = derive_master_mask(
+                    context.probability, sensitivity=s.sensitivity, target=s.target,
+                    invert=s.invert, expansion_px=s.expansion_px,
+                    feather_px=s.feather_px, source_shape=context.source_rgba.shape[:2])
+                if mask.shape != result.shape[:2]:
+                    mask = resize_mask_area(mask, result.shape[:2])
+                result = apply_mask_overlay(result, mask)
+            qimg = numpy_to_qimage(result)
         except RenderCancelled:
             self.signals.cancelled.emit(self._request)
             return
@@ -204,6 +224,7 @@ class ImageEditor(QMainWindow):
         self.panel.palette_preview.connect(self._on_palette_preview)
         mask_panel = self.panel.smart_mask_panel
         mask_panel.settings_changed.connect(self._on_mask_settings_changed)
+        mask_panel.overlay_changed.connect(lambda _enabled: self.schedule_render())
         mask_panel.redetect_requested.connect(self._request_mask_detection)
         mask_panel.cancel_requested.connect(self._cancel_mask_detection)
         mask_panel.set_availability(source=False, model=self._mask_dependencies_available())
@@ -629,8 +650,10 @@ class ImageEditor(QMainWindow):
     def _rendered_rgb(self) -> np.ndarray:
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
-        return self._export_pipeline().render(
-            self._base_gray, self._collect_settings())
+        pipeline = self._export_pipeline()
+        settings = self._collect_settings()
+        context = self._current_mask_context()
+        return render_with_mask(lambda: pipeline.render(self._base_gray, settings), context)
 
     def _apply_preset(self, settings, palette, effects) -> None:
         panel = self.panel
@@ -860,8 +883,17 @@ class ImageEditor(QMainWindow):
         self._scheduler.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
         settings = settings_from_controls(self.panel.state)
-        rgb = self.pipeline.render_cached(self._base_gray, settings)
-        qimg = numpy_to_qimage(rgb)
+        context = self._current_mask_context()
+        result = render_with_mask(
+            lambda: self.pipeline.render_cached(self._base_gray, settings), context)
+        if self.panel.smart_mask_panel.overlay_check.isChecked() and context is not None:
+            s = context.settings
+            mask = derive_master_mask(
+                context.probability, sensitivity=s.sensitivity, target=s.target,
+                invert=s.invert, expansion_px=s.expansion_px,
+                feather_px=s.feather_px, source_shape=context.source_rgba.shape[:2])
+            result = apply_mask_overlay(result, mask)
+        qimg = numpy_to_qimage(result)
         self.last_qimage = qimg
         refit = self._pending_refit
         self._pending_refit = False
@@ -908,6 +940,7 @@ class ImageEditor(QMainWindow):
                 target_max_side = min(self._proxy_max_side, self._policy_cap())
             else:  # SETTLE, ZOOM
                 target_max_side = self._policy_cap()
+        mask_context = self._current_mask_context()
         return RenderRequest(
             generation=0,
             kind=kind,
@@ -917,7 +950,10 @@ class ImageEditor(QMainWindow):
             logical_size=logical_size,
             color_engine=self.pipeline.color_engine,
             effect_stack=self.pipeline.effect_stack,
-            mask_context=self._current_mask_context(),
+            mask_context=mask_context,
+            source_gray=self._base_gray,
+            show_mask_overlay=(self.panel.smart_mask_panel.overlay_check.isChecked()
+                               and mask_context is not None),
         )
 
     def _do_render(self) -> None:
