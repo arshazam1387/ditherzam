@@ -134,6 +134,18 @@ class RenderPipeline:
         """Read-only snapshot of staged-cache memory and eviction metrics."""
         return self._cache.metrics
 
+    def snapshot_context(self, color_engine=None, effect_stack=None) -> "RenderPipeline":
+        """Return an immutable-context facade over this pipeline's cache owner.
+
+        Request workers need fixed engine/effect references, while all facades
+        must retain exactly one bounded staged cache and its synchronization.
+        """
+        snapshot = RenderPipeline(
+            self.registry, color_engine, effect_stack, cache_budget_bytes=0)
+        snapshot._cache = self._cache
+        snapshot._cache_lock = self._cache_lock
+        return snapshot
+
     def render(self, base_gray_f32, settings: RenderSettings,
                temporal_field=None, is_cancelled=None) -> np.ndarray:
         g = np.asarray(base_gray_f32, dtype=np.float32)

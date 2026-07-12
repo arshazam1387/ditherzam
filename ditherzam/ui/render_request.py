@@ -82,6 +82,14 @@ class RenderRequest:
     show_mask_overlay: bool = False
 
     @property
+    def rendered_identity(self) -> tuple:
+        """Hashable identity for a completed pre-mask branch."""
+        return (
+            self.source_id, repr(self.settings), id(self.color_engine),
+            id(self.effect_stack), self.target_max_side, self.mode,
+        )
+
+    @property
     def mode(self) -> str:
         """Worker render mode: exact+cached only for an explicit Full request;
         drag/settle/zoom all render through the capped, exact-if-fit preview path."""

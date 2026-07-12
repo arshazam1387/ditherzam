@@ -92,7 +92,8 @@ def proxy_scale(scale: int, factor: int) -> int:
 
 def render_preview(pipeline, base_gray, settings, max_side: int,
                     is_cancelled=None, temporal_field=None,
-                    mask_context=None) -> np.ndarray:
+                    mask_context=None, mask_caches=None,
+                    rendered_identity=None) -> np.ndarray:
     """Render and return a capped proxy raster (uint8 HxWx3).
 
     Falls back to a normal full render when the image already fits within
@@ -122,4 +123,6 @@ def render_preview(pipeline, base_gray, settings, max_side: int,
                                     is_cancelled=is_cancelled)
         return np.asarray(rgb_small, dtype=np.uint8)
 
-    return render_with_mask(render_complete_branch, mask_context)
+    return render_with_mask(
+        render_complete_branch, mask_context, caches=mask_caches,
+        rendered_identity=rendered_identity, is_cancelled=is_cancelled)

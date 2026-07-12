@@ -74,12 +74,13 @@ class _RenderWorker(QRunnable):
     """Runs one render off the GUI thread for an immutable RenderRequest."""
 
     def __init__(self, pipeline: RenderPipeline, base_gray: np.ndarray,
-                 request: RenderRequest, is_cancelled=None):
+                 request: RenderRequest, is_cancelled=None, mask_caches=None):
         super().__init__()
         self._pipeline = pipeline
         self._base_gray = base_gray
         self._request = request
         self._is_cancelled = is_cancelled
+        self._mask_caches = mask_caches
         self.signals = _RenderSignals()
 
     def run(self) -> None:
@@ -90,33 +91,45 @@ class _RenderWorker(QRunnable):
         try:
             # Isolate the request's context from later GUI reassignment and
             # synchronous renders on the live editor pipeline.
-            pipeline = RenderPipeline(
-                self._pipeline.registry,
-                self._request.color_engine,
-                self._request.effect_stack,
-                cache_budget_bytes=0,
-            )
+            pipeline = self._pipeline.snapshot_context(
+                self._request.color_engine, self._request.effect_stack)
+            # RenderPipeline's cache is internally locked and all cache keys
+            # include the request-local engine/effect signatures. Sharing this
+            # one bounded owner preserves completed branches across mask-only
+            # edits without exposing mutable live pipeline context.
             source = (self._request.source_gray if self._request.source_gray is not None
                       else self._base_gray)
             if self._request.mode == "proxy":
                 render = lambda: render_preview(
                     pipeline, source, self._request.settings,
                     self._request.target_max_side, is_cancelled=self._is_cancelled,
-                    mask_context=self._request.mask_context)
+                    mask_context=self._request.mask_context,
+                    mask_caches=self._mask_caches,
+                    rendered_identity=self._request.rendered_identity)
             else:
                 render = lambda: pipeline.render_cached(
                     source, self._request.settings, is_cancelled=self._is_cancelled)
             result = (render() if self._request.mode == "proxy" else
-                      render_with_mask(render, self._request.mask_context))
+                      render_with_mask(
+                          render, self._request.mask_context,
+                          caches=self._mask_caches,
+                          rendered_identity=self._request.rendered_identity,
+                          is_cancelled=self._is_cancelled))
             if self._request.show_mask_overlay and self._request.mask_context is not None:
+                if self._is_cancelled is not None and self._is_cancelled():
+                    raise RenderCancelled
                 context = self._request.mask_context
                 s = context.settings
                 mask = derive_master_mask(
                     context.probability, sensitivity=s.sensitivity, target=s.target,
                     invert=s.invert, expansion_px=s.expansion_px,
                     feather_px=s.feather_px, source_shape=context.source_rgba.shape[:2])
+                if self._is_cancelled is not None and self._is_cancelled():
+                    raise RenderCancelled
                 if mask.shape != result.shape[:2]:
                     mask = resize_mask_area(mask, result.shape[:2])
+                if self._is_cancelled is not None and self._is_cancelled():
+                    raise RenderCancelled
                 result = apply_mask_overlay(result, mask)
             qimg = numpy_to_qimage(result)
         except RenderCancelled:
@@ -650,10 +663,20 @@ class ImageEditor(QMainWindow):
     def _rendered_rgb(self) -> np.ndarray:
         if self._base_gray is None:
             raise RuntimeError("No image loaded")
-        pipeline = self._export_pipeline()
+        # Capture every mutable editor input exactly once before rendering.
+        source_gray = self._base_gray
         settings = self._collect_settings()
+        engine = self._current_color_engine()
+        effects = self._current_effect_stack()
         context = self._current_mask_context()
-        return render_with_mask(lambda: pipeline.render(self._base_gray, settings), context)
+        pipeline = RenderPipeline(self._registry, engine, effects, cache_budget_bytes=0)
+        rendered_identity = (
+            id(source_gray), repr(settings), id(engine), id(effects),
+            source_gray.shape, "exact-export",
+        )
+        return render_with_mask(
+            lambda: pipeline.render(source_gray, settings), context,
+            caches=self._mask_caches, rendered_identity=rendered_identity)
 
     def _apply_preset(self, settings, palette, effects) -> None:
         panel = self.panel
@@ -882,11 +905,16 @@ class ImageEditor(QMainWindow):
         self._settle.stop()
         self._scheduler.invalidate()  # supersede any in-flight background render
         self._sync_pipeline()
-        settings = settings_from_controls(self.panel.state)
-        context = self._current_mask_context()
+        request = self._build_request(
+            RenderKind.FULL, target_max_side=max(self._reference_size()))
+        pipeline = self.pipeline.snapshot_context(
+            request.color_engine, request.effect_stack)
         result = render_with_mask(
-            lambda: self.pipeline.render_cached(self._base_gray, settings), context)
-        if self.panel.smart_mask_panel.overlay_check.isChecked() and context is not None:
+            lambda: pipeline.render_cached(request.source_gray, request.settings),
+            request.mask_context, caches=self._mask_caches,
+            rendered_identity=request.rendered_identity)
+        if request.show_mask_overlay and request.mask_context is not None:
+            context = request.mask_context
             s = context.settings
             mask = derive_master_mask(
                 context.probability, sensitivity=s.sensitivity, target=s.target,
@@ -931,8 +959,10 @@ class ImageEditor(QMainWindow):
         override wins over the kind-derived cap (used by zoom refinement to
         request a specific bucket)."""
         self._sync_pipeline()
+        source_gray = self._base_gray
         settings = settings_from_controls(self.panel.state)
-        logical_size = self._reference_size()  # (w, h)
+        logical_size = ((0, 0) if source_gray is None else
+                        (int(source_gray.shape[1]), int(source_gray.shape[0])))
         if target_max_side is None:
             if kind is RenderKind.FULL:
                 target_max_side = max(logical_size)
@@ -941,19 +971,21 @@ class ImageEditor(QMainWindow):
             else:  # SETTLE, ZOOM
                 target_max_side = self._policy_cap()
         mask_context = self._current_mask_context()
+        color_engine = self.pipeline.color_engine
+        effect_stack = self.pipeline.effect_stack
+        show_overlay = self.panel.smart_mask_panel.overlay_check.isChecked()
         return RenderRequest(
             generation=0,
             kind=kind,
             settings=settings,
-            source_id=id(self._base_gray),
+            source_id=id(source_gray),
             target_max_side=target_max_side,
             logical_size=logical_size,
-            color_engine=self.pipeline.color_engine,
-            effect_stack=self.pipeline.effect_stack,
+            color_engine=color_engine,
+            effect_stack=effect_stack,
             mask_context=mask_context,
-            source_gray=self._base_gray,
-            show_mask_overlay=(self.panel.smart_mask_panel.overlay_check.isChecked()
-                               and mask_context is not None),
+            source_gray=source_gray,
+            show_mask_overlay=(show_overlay and mask_context is not None),
         )
 
     def _do_render(self) -> None:
@@ -1014,7 +1046,8 @@ class ImageEditor(QMainWindow):
     def _launch_worker(self, request: RenderRequest) -> None:
         """Start one background render for an already-stamped request."""
         worker = _RenderWorker(self.pipeline, self._base_gray, request,
-                                is_cancelled=lambda: self._scheduler.should_cancel(request))
+                                is_cancelled=lambda: self._scheduler.should_cancel(request),
+                                mask_caches=self._mask_caches)
         worker.signals.finished.connect(self._on_rendered)
         worker.signals.failed.connect(self._on_render_failed)
         worker.signals.cancelled.connect(self._on_render_cancelled)
