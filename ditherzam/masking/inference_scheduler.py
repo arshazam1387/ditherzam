@@ -18,7 +18,6 @@ class InferenceScheduler:
         self._pending: InferenceRequest | None = None
         self._wanted_source: SourceIdentity | None = None
         self._wanted_model_hash: str | None = None
-        self._terminal_generations: set[int] = set()
 
     def _stamp(self, request: InferenceRequest) -> InferenceRequest:
         self._generation += 1
@@ -82,10 +81,11 @@ class InferenceScheduler:
         if not isinstance(request, InferenceRequest):
             raise TypeError("terminal must be an InferenceOutcome or InferenceRequest")
         with self._lock:
-            generation = request.generation
-            if generation in self._terminal_generations or self._active is not request:
+            # Object identity is intentional: only the exact launched snapshot may
+            # release the active slot. Once released, duplicate and out-of-order
+            # notifications necessarily fail this same guard without retained history.
+            if self._active is not request:
                 return None
-            self._terminal_generations.add(generation)
             self._active = None
             if self._pending is None:
                 return None
