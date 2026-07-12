@@ -18,11 +18,14 @@ from ditherzam.masking.contracts import (
     validate_confidence_array,
 )
 from ditherzam.masking.settings import OutsideMode
-from ditherzam.render_cache import MIB, _group_storage
+from ditherzam.render_cache import (
+    DEFAULT_CACHE_BUDGET_BYTES, MAX_EDITOR_RETAINED_CACHE_BYTES, MIB,
+    _group_storage,
+)
 
 
 DEFAULT_MASK_CACHE_BUDGET_BYTES = 64 * MIB
-MAX_EDITOR_RETAINED_CACHE_BYTES = 192 * MIB
+assert DEFAULT_CACHE_BUDGET_BYTES + DEFAULT_MASK_CACHE_BUDGET_BYTES == MAX_EDITOR_RETAINED_CACHE_BYTES
 
 
 @dataclass(frozen=True)
@@ -130,7 +133,10 @@ class MaskCaches:
             if eviction: self._evictions += 1
 
     def _put(self, kind: str, key, value) -> bool:
-        storage = _group_storage(value)
+        # ProbabilityMap is a value object rather than a container understood
+        # by RenderCache's walker.  Charge its actual immutable payload
+        # explicitly; otherwise inference entries would incorrectly cost zero.
+        storage = _group_storage(value.values if isinstance(value, ProbabilityMap) else value)
         if sum(storage.values()) > self._budget:
             return False
         with self._lock:

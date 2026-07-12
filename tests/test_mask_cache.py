@@ -1,10 +1,13 @@
 import numpy as np
 
-from ditherzam.masking.cache import CompositeIdentity, MaskCaches
+from ditherzam.masking.cache import (
+    CompositeIdentity, DEFAULT_MASK_CACHE_BUDGET_BYTES, MaskCaches,
+)
 from ditherzam.masking.contracts import (
     InferenceIdentity, MaskIdentity, ModelIdentity, ProbabilityMap, source_identity,
 )
 from ditherzam.masking.settings import MaskTarget, OutsideMode
+from ditherzam.render_cache import DEFAULT_CACHE_BUDGET_BYTES, MIB
 
 
 def _ids(seed=1, *, preprocessing="pp1", model="a" * 64):
@@ -60,6 +63,30 @@ def test_atomic_lru_oversized_and_metrics_are_bounded():
         pass
 
 
+def test_default_editor_allocations_sum_to_192_mib():
+    assert DEFAULT_CACHE_BUDGET_BYTES == 128 * MIB
+    assert DEFAULT_MASK_CACHE_BUDGET_BYTES == 64 * MIB
+    assert DEFAULT_CACHE_BUDGET_BYTES + DEFAULT_MASK_CACHE_BUDGET_BYTES == 192 * MIB
+
+
+def test_inference_payload_is_charged_and_oversized_probability_not_retained():
+    _, inference, _ = _ids()
+    caches = MaskCaches(23)  # float32 2x3 payload is 24 bytes
+    assert not caches.put_inference(_probability(inference))
+    assert caches.get_inference(inference) is None
+    assert caches.retained_bytes == 0
+
+
+def test_probability_alias_replacement_is_not_double_charged():
+    _, inference, _ = _ids()
+    probability = _probability(inference)
+    caches = MaskCaches(24)
+    assert caches.put_inference(probability)
+    assert caches.retained_bytes == probability.values.nbytes
+    assert caches.put_inference(probability)
+    assert caches.retained_bytes == probability.values.nbytes
+
+
 def test_clear_source_and_fifty_source_soak():
     caches = MaskCaches(80)
     first = None
@@ -72,6 +99,16 @@ def test_clear_source_and_fifty_source_soak():
     caches.clear_source(first)
     assert all(key.source != first for key in caches._stores["inference"])
     assert all(key.inference.source != first for key in caches._stores["derived"])
+
+
+def test_fifty_probability_sources_stay_within_retained_budget():
+    caches = MaskCaches(120)  # at most five 24-byte probability payloads
+    for seed in range(50):
+        _, inference, _ = _ids(seed)
+        assert caches.put_inference(_probability(inference))
+        assert caches.retained_bytes <= caches.budget_bytes
+    assert caches.entry_count == 5
+    assert caches.retained_bytes == 120
 
 
 def test_composite_identity_partitions_outside_source_and_alpha_version():
