@@ -325,3 +325,9 @@ class RenderPipeline:
     def clear_cache(self) -> None:
         with self._cache_lock:
             self._cache.clear()
+
+    def configure_cache_budget(self, budget_bytes: int) -> None:
+        """Replace the editor-owned render cache with an empty bounded cache."""
+        replacement = RenderCache(budget_bytes)
+        with self._cache_lock:
+            self._cache = replacement
