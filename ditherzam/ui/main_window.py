@@ -608,22 +608,41 @@ class ImageEditor(QMainWindow):
         ``gray_f32`` and ``rgb_u8`` remain the render and Source Colors inputs
         respectively.  RGBA retention is additional source authority only.
         """
-        gray = np.asarray(gray_f32, dtype=np.float32)
-        if gray.ndim != 2:
-            raise ValueError("gray_f32 must have shape (H, W)")
+        if not isinstance(gray_f32, np.ndarray) or gray_f32.dtype != np.float32:
+            raise TypeError("gray_f32 must be a float32 ndarray")
+        gray = gray_f32
+        if gray.ndim != 2 or 0 in gray.shape:
+            raise ValueError("gray_f32 must have non-empty shape (H, W)")
+        if not np.isfinite(gray).all() or np.any(gray < 0) or np.any(gray > 255):
+            raise ValueError("gray_f32 values must be finite and in [0, 255]")
         h, w = gray.shape
 
-        rgb = None if rgb_u8 is None else np.asarray(rgb_u8, dtype=np.uint8)
-        if rgb is not None and rgb.shape != (h, w, 3):
-            raise ValueError("rgb_u8 must have shape (H, W, 3) matching gray_f32")
+        rgb = rgb_u8
+        if rgb is not None:
+            if not isinstance(rgb, np.ndarray) or rgb.dtype != np.uint8:
+                raise TypeError("rgb_u8 must be a uint8 ndarray")
+            if rgb.shape != (h, w, 3):
+                raise ValueError("rgb_u8 must have non-empty shape (H, W, 3) matching gray_f32")
 
         if rgba_u8 is not None:
-            rgba_input = np.asarray(rgba_u8, dtype=np.uint8)
+            if not isinstance(rgba_u8, np.ndarray) or rgba_u8.dtype != np.uint8:
+                raise TypeError("rgba_u8 must be a uint8 ndarray")
+            rgba_input = rgba_u8
             if rgba_input.shape != (h, w, 4):
-                raise ValueError("rgba_u8 must have shape (H, W, 4) matching gray_f32")
+                raise ValueError("rgba_u8 must have non-empty shape (H, W, 4) matching gray_f32")
             if rgb is not None and not np.array_equal(rgba_input[..., :3], rgb):
                 raise ValueError("rgba_u8 RGB channels must match rgb_u8")
-            rgba = np.array(rgba_input, dtype=np.uint8, order="C", copy=True)
+            # The decode worker transfers a uniquely owned, read-only C array;
+            # adopting it avoids decoding RGBA only to duplicate it on the GUI
+            # thread. Mutable, borrowed, or strided programmatic inputs are copied.
+            safely_owned = (
+                rgba_input.flags.owndata
+                and not rgba_input.flags.writeable
+                and rgba_input.flags.c_contiguous
+                and rgba_input.base is None
+            )
+            rgba = rgba_input if safely_owned else np.array(
+                rgba_input, dtype=np.uint8, order="C", copy=True)
         else:
             source_rgb = rgb
             if source_rgb is None:

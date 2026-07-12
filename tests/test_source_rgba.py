@@ -60,7 +60,7 @@ def test_load_rgb_synthesizes_owned_opaque_rgba(qapp_fixture):
 
 def test_load_grayscale_synthesizes_rgba_without_changing_render_input(qapp_fixture):
     editor = _editor(qapp_fixture)
-    gray = np.array([[-2.0, 12.9, 300.0]], dtype=np.float32)
+    gray = np.array([[0.0, 12.9, 255.0]], dtype=np.float32)
     editor.load_array(gray)
 
     assert editor._base_gray is gray
@@ -74,10 +74,10 @@ def test_load_grayscale_synthesizes_rgba_without_changing_render_input(qapp_fixt
 @pytest.mark.parametrize(
     ("gray", "rgb", "rgba"),
     [
-        (np.zeros((2, 2, 1)), None, None),
-        (np.zeros((2, 2)), np.zeros((2, 3, 3)), None),
-        (np.zeros((2, 2)), None, np.zeros((2, 2, 3))),
-        (np.zeros((2, 2)), np.zeros((2, 2, 3)), np.zeros((3, 2, 4))),
+        (np.zeros((2, 2, 1), dtype=np.float32), None, None),
+        (np.zeros((2, 2), dtype=np.float32), np.zeros((2, 3, 3), dtype=np.uint8), None),
+        (np.zeros((2, 2), dtype=np.float32), None, np.zeros((2, 2, 3), dtype=np.uint8)),
+        (np.zeros((2, 2), dtype=np.float32), np.zeros((2, 2, 3), dtype=np.uint8), np.zeros((3, 2, 4), dtype=np.uint8)),
     ],
 )
 def test_invalid_source_shapes_fail_atomically(qapp_fixture, gray, rgb, rgba):
@@ -106,3 +106,70 @@ def test_explicit_rgba_is_owned_and_rgb_must_match(qapp_fixture):
 
     with pytest.raises(ValueError, match="must match"):
         editor.load_array(gray, rgb, np.array([[[9, 2, 3, 4]]], dtype=np.uint8))
+
+
+@pytest.mark.parametrize(
+    ("gray", "rgb", "rgba", "error"),
+    [
+        (np.zeros((1, 1), dtype=np.float64), None, None, TypeError),
+        ([[0.0]], None, None, TypeError),
+        (np.array([[np.nan]], dtype=np.float32), None, None, ValueError),
+        (np.array([[np.inf]], dtype=np.float32), None, None, ValueError),
+        (np.array([[-0.01]], dtype=np.float32), None, None, ValueError),
+        (np.array([[255.01]], dtype=np.float32), None, None, ValueError),
+        (np.zeros((0, 1), dtype=np.float32), None, None, ValueError),
+        (np.zeros((1, 1), dtype=np.float32), np.zeros((1, 1, 3), dtype=np.int16), None, TypeError),
+        (np.zeros((1, 1), dtype=np.float32), None, np.zeros((1, 1, 4), dtype=np.float32), TypeError),
+    ],
+)
+def test_noncanonical_values_and_dtypes_fail_atomically(
+    qapp_fixture, gray, rgb, rgba, error
+):
+    editor = _editor(qapp_fixture)
+    old_gray = np.ones((1, 1), dtype=np.float32)
+    editor.load_array(old_gray)
+    old_rgb = editor._base_rgb
+    old_rgba = editor._base_rgba
+
+    with pytest.raises(error):
+        editor.load_array(gray, rgb, rgba)
+
+    assert editor._base_gray is old_gray
+    assert editor._base_rgb is old_rgb
+    assert editor._base_rgba is old_rgba
+
+
+def test_owned_readonly_c_rgba_is_adopted_without_duplicate(qapp_fixture):
+    editor = _editor(qapp_fixture)
+    gray = np.zeros((2, 2), dtype=np.float32)
+    rgba = np.zeros((2, 2, 4), dtype=np.uint8)
+    rgba.setflags(write=False)
+
+    editor.load_array(gray, rgba[..., :3].copy(), rgba)
+
+    assert editor._base_rgba is rgba
+
+
+@pytest.mark.parametrize("kind", ["mutable", "borrowed", "strided"])
+def test_programmatic_rgba_without_exclusive_canonical_ownership_is_copied(
+    qapp_fixture, kind
+):
+    editor = _editor(qapp_fixture)
+    gray = np.zeros((2, 2), dtype=np.float32)
+    backing = np.zeros((2, 4, 4), dtype=np.uint8)
+    if kind == "mutable":
+        rgba = np.zeros((2, 2, 4), dtype=np.uint8)
+    elif kind == "borrowed":
+        rgba = backing[:, :2, :]
+        rgba.setflags(write=False)
+    else:
+        rgba = backing[:, ::2, :]
+        rgba.setflags(write=False)
+    rgb = np.array(rgba[..., :3], copy=True)
+
+    editor.load_array(gray, rgb, rgba)
+
+    assert editor._base_rgba is not rgba
+    assert editor._base_rgba.flags.owndata
+    assert editor._base_rgba.flags.c_contiguous
+    assert not editor._base_rgba.flags.writeable
