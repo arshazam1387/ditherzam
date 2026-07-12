@@ -96,6 +96,22 @@ def test_geometry_uses_exact_square_source_pixels_and_retains_hole_semantics() -
     assert np.all(expand_contract(thin, 1)[:, 4:7] == 1.0)
 
 
+@pytest.mark.parametrize("amount", [-4, -2, -1, 1, 2, 4])
+def test_fast_morphology_matches_brute_force_at_borders_and_low_density(amount: int) -> None:
+    rng = np.random.default_rng(20260711)
+    source = (rng.random((13, 17)) < 0.12).astype(np.float32)
+    source[0, 0] = source[-1, -1] = 1.0
+    radius = abs(amount)
+    padded = np.pad(source, radius, mode="constant")
+    expected = np.empty_like(source)
+    width = 2 * radius + 1
+    for y in range(source.shape[0]):
+        for x in range(source.shape[1]):
+            window = padded[y : y + width, x : x + width]
+            expected[y, x] = np.any(window) if amount > 0 else np.all(window)
+    assert np.array_equal(expand_contract(source, amount), expected)
+
+
 def test_zero_feather_is_hard_and_positive_feather_is_symmetric() -> None:
     mask = np.zeros((1, 9), dtype=np.float32)
     mask[0, 4:] = 1.0
