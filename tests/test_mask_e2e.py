@@ -45,7 +45,7 @@ def test_real_model_render_export_matrix_pending_asset(source_kind, outside, tar
     "disabled-byte-baseline-zero-work", "source-colors", "colored-dither",
     "effects-invert", "overlay-excluded", "preview-full-export", "latest-wins",
     "terminal-recovery", "unsupported-media", "fifty-cycle-rss-cache-192mib",
-    "performance-fields", "heartbeat-cancel-fields", "missing", "corrupt",
+    "performance-fields", "quality-fields", "heartbeat-cancel-fields", "missing", "corrupt",
     "offline-frozen-startup",
 ])
 def test_real_model_resilience_matrix_pending_asset(scenario):

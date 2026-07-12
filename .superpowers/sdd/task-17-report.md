@@ -35,6 +35,14 @@ performance claim.
   and exits without entering the Qt event loop. Synthetic injection tests it.
 - PyInstaller includes only the two exact locked DLL paths; a post-build verifier
   rejects missing, corrupt, or extra DLLs.
+- Frozen layout is now one consistent one-folder contract: the approved lock is
+  bundled under `packaging/`, every payload retains its locked relative parent,
+  DLLs live only under `onnxruntime/capi`, and the frozen app resolves its root
+  from `sys.executable`.
+- Evidence semantics enforce lowercase hashes, positive dimensions, surface-bound
+  PNG/JPEG formats, disabled baseline equality/zero work, masked output change,
+  single terminal/no stale publication, 192 MiB cache and heartbeat/cancel/growth
+  budgets, plus performance and quality thresholds.
 
 ## Verification
 
