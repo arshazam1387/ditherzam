@@ -8,7 +8,7 @@ from threading import Event
 import numpy as np
 
 from ditherzam.masking.adapter import InferenceResult
-from ditherzam.masking.contracts import ModelIdentity, SourceIdentity, validate_rgba_u8
+from ditherzam.masking.contracts import ModelIdentity, SourceIdentity, source_identity, validate_rgba_u8
 
 
 class CancellationToken:
@@ -53,10 +53,10 @@ class InferenceRequest:
         if not isinstance(self.cancellation, CancellationToken):
             raise TypeError("cancellation must be a CancellationToken")
         array = validate_rgba_u8(self.rgba)
-        if array.shape[:2] != (self.source.height, self.source.width):
-            raise ValueError("rgba dimensions must match source identity")
         snapshot = np.array(array, dtype=np.uint8, order="C", copy=True)
         snapshot.flags.writeable = False
+        if source_identity(snapshot) != self.source:
+            raise ValueError("source identity must exactly match the owned rgba snapshot")
         object.__setattr__(self, "rgba", snapshot)
 
 
