@@ -71,7 +71,8 @@ def _color_sig(engine):
         source = getattr(engine, "source_rgb", None)
         source_sig = ((source.shape, source.dtype.str,
                        hashlib.sha256(np.ascontiguousarray(source).tobytes()).hexdigest(),
-                       getattr(engine, "source_dither", None))
+                       getattr(engine, "source_dither", None),
+                       getattr(engine, "source_dither_brighten", None))
                       if source is not None else None)
         return context.key, source_sig
     colors = np.asarray(engine.palette.colors)

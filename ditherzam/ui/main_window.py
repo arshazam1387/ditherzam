@@ -647,6 +647,8 @@ class ImageEditor(QMainWindow):
             context_cache=self._color_context_cache,
             source_rgb=self._base_rgb if self._color_mode() == "source" else None,
             source_dither=self.panel.state.get("source_dither", 100),
+            source_dither_brighten=bool(
+                self.panel.state.get("source_dither_brighten", False)),
         )
 
     def _current_effect_stack(self):
