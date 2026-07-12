@@ -36,3 +36,21 @@ def test_apply_preset_routes_glow_into_tab(qapp_fixture):
     assert ed.glow_panel.state["glow_threshold"] == 100
     # not added to the name-only effects list
     assert "Epsilon Glow" not in ed.panel.state.get("effects", [])
+
+
+def test_apply_preset_restores_signal_and_lifecycle_guards_on_error(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.main_window import ImageEditor
+    ed = ImageEditor()
+    settings = ed._collect_settings()
+    monkeypatch.setattr(
+        ed.panel, "set_style", lambda *_args: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        ed._apply_preset(settings, None, [])
+
+    assert ed._applying_preset is False
+    assert not ed.panel.signalsBlocked()
+    assert not ed.glow_panel.signalsBlocked()

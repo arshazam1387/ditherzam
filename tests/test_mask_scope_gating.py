@@ -46,3 +46,29 @@ def test_video_guard_runs_before_dialog_pipeline_or_worker(monkeypatch, tmp_path
     ctrl.temp_dir = tmp_path
     ctrl.export_video()
     assert calls == ["warning"]
+
+
+def test_video_import_action_is_retained_and_tracks_mask_scope(qapp_fixture):
+    from PySide6.QtWidgets import QWidget
+    from ditherzam.ui.video_controller import VideoController
+
+    win = QWidget()
+    win.viewport = object()
+    current = [SmartMaskSettings(enabled=True)]
+    ctrl = VideoController(
+        win, object(), lambda: None, lambda: False,
+        mask_settings_provider=lambda: current[0],
+    )
+    ctrl.build_menu()
+    ctrl.refresh_mask_scope()
+    assert not ctrl._import_action.isEnabled()
+    assert "video" in ctrl._import_action.toolTip().lower()
+    assert not ctrl._export_action.isEnabled()
+
+    current[0] = SmartMaskSettings()
+    ctrl.refresh_mask_scope()
+    assert ctrl._import_action.isEnabled()
+    # Qt falls back to the action text when an explicit empty tooltip is set.
+    assert ctrl._import_action.toolTip() == "Import Video"
+    assert ctrl._import_action.statusTip() == ""
+    assert not ctrl._export_action.isEnabled()  # no imported media yet

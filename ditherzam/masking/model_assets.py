@@ -80,6 +80,45 @@ class ModelManifest:
     # that state instead of guessing exporter-generated names.
     output_names: tuple[str, ...] | None = None
 
+    def __post_init__(self) -> None:
+        """Fail closed even when callers construct the value object directly."""
+        if self.model_id not in APPROVED_MODEL_IDS:
+            raise ModelAssetError(
+                f"Model id is not approved for this release: {self.model_id!r}"
+            )
+        if self.upstream_commit != APPROVED_UPSTREAM_COMMIT:
+            raise ModelAssetError(
+                f"Upstream commit {self.upstream_commit!r} does not match the approved "
+                f"pinned state {APPROVED_UPSTREAM_COMMIT!r}"
+            )
+        for field_name in ("upstream_source_sha256", "onnx_sha256"):
+            value = getattr(self, field_name)
+            if not isinstance(value, str) or _normalize_sha256(value) != value:
+                raise ModelAssetError(
+                    f"{field_name} must be a lowercase SHA-256 hex digest: {value!r}"
+                )
+        if (isinstance(self.onnx_byte_count, bool)
+                or not isinstance(self.onnx_byte_count, int)
+                or self.onnx_byte_count < 0):
+            raise ModelAssetError(
+                f"onnx_byte_count must be a non-negative int: {self.onnx_byte_count!r}"
+            )
+        _validate_relative_path(self.relative_path)
+        if (self.input_tensor != EXPECTED_INPUT_TENSOR
+                or self.output_tensor != EXPECTED_OUTPUT_TENSOR):
+            raise ModelAssetError(
+                "Model manifest tensor contract does not match the supported adapter "
+                f"contract: input={self.input_tensor!r} output={self.output_tensor!r}"
+            )
+        if self.output_names is not None:
+            names = self.output_names
+            if (not isinstance(names, tuple) or len(names) != 7
+                    or any(not isinstance(name, str) or not name.strip() for name in names)
+                    or len(set(names)) != 7):
+                raise ModelAssetError(
+                    "output_names must contain exactly seven unique non-blank names"
+                )
+
 
 _REQUIRED_TOP_LEVEL_FIELDS = (
     "model_id",

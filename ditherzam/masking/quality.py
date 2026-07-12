@@ -149,7 +149,7 @@ def boundary_f_score(
     distance) of some ground-truth boundary pixel, and symmetrically for
     recall. Both-empty is a perfect match (1.0); exactly one empty is 0.0.
     """
-    if not isinstance(tolerance_px, int) or tolerance_px < 0:
+    if isinstance(tolerance_px, bool) or not isinstance(tolerance_px, int) or tolerance_px < 0:
         raise QualityMetricError(f"tolerance_px must be a non-negative int, got {tolerance_px!r}")
 
     pred_b, truth_b = _validate_and_binarize(pred, truth)

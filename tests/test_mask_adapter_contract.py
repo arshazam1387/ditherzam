@@ -7,14 +7,14 @@ import numpy as np
 import pytest
 
 from ditherzam.masking.adapter import InferenceCancelled, NoClearSubject
-from ditherzam.masking.model_assets import EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR, ModelManifest
+from ditherzam.masking.model_assets import APPROVED_UPSTREAM_COMMIT, EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR, ModelManifest
 from ditherzam.masking.contracts import source_identity
 from ditherzam.masking.ort_adapter import INPUT_NAME, MANIFEST_ALGORITHM_VERSION, MANIFEST_OUTPUT_SEMANTICS, MANIFEST_PREPROCESSING, OUTPUT_NAME, OrtSegmentationAdapter, postprocess_probability, preprocess_u2net
 
 
 def _manifest(data: bytes) -> ModelManifest:
     digest = hashlib.sha256(data).hexdigest()
-    return ModelManifest("u2netp", "1", "repo", "a" * 40, "source", "b" * 64,
+    return ModelManifest("u2netp", "1", "repo", APPROVED_UPSTREAM_COMMIT, "source", "b" * 64,
                          "Apache-2.0", "attr", "rev", 17, (("onnx", "1"),),
                          digest, len(data), EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR,
                          MANIFEST_PREPROCESSING, MANIFEST_OUTPUT_SEMANTICS,

@@ -94,7 +94,7 @@ class VideoController:
     # --- menu construction ---
     def build_menu(self) -> QMenu:
         menu = QMenu("Video", self.win)
-        menu.addAction("Import Video", self.import_video)
+        self._import_action = menu.addAction("Import Video", self.import_video)
         self._export_action = menu.addAction("Export Video", self.export_video)
         self._export_action.setEnabled(False)
         return menu
@@ -127,14 +127,20 @@ class VideoController:
         return False
 
     def refresh_mask_scope(self) -> None:
-        """Keep export availability truthful without weakening its media prerequisite."""
-        action = getattr(self, "_export_action", None)
-        if action is None:
-            return
+        """Keep import/export availability truthful without weakening prerequisites."""
         allowed = (self.mask_settings_provider is None
                    or mask_allows_media("video", self.mask_settings_provider()))
-        action.setEnabled(self.temp_dir is not None and allowed)
-        action.setToolTip("" if allowed else unsupported_mask_message("video"))
+        message = "" if allowed else unsupported_mask_message("video")
+        import_action = getattr(self, "_import_action", None)
+        if import_action is not None:
+            import_action.setEnabled(allowed)
+            import_action.setToolTip(message)
+            import_action.setStatusTip(message)
+        export_action = getattr(self, "_export_action", None)
+        if export_action is not None:
+            export_action.setEnabled(self.temp_dir is not None and allowed)
+            export_action.setToolTip(message)
+            export_action.setStatusTip(message)
 
     # --- import ---
     def import_video(self) -> None:

@@ -199,6 +199,12 @@ def test_boundary_f_score_rejects_negative_tolerance():
         boundary_f_score(mask, mask, tolerance_px=-1)
 
 
+def test_boundary_f_score_rejects_bool_tolerance():
+    mask = np.zeros((2, 2), dtype=np.uint8)
+    with pytest.raises(QualityMetricError, match="non-negative int"):
+        boundary_f_score(mask, mask, tolerance_px=True)
+
+
 # -- aggregate_quality ------------------------------------------------------------
 
 

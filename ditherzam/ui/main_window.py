@@ -725,40 +725,41 @@ class ImageEditor(QMainWindow):
         panel = self.panel
         panel.blockSignals(True)
         self.glow_panel.blockSignals(True)
-        for key in ("contrast", "midtones", "highlights", "luminance_threshold", "blur"):
-            value = int(getattr(settings, key))
-            panel.state[key] = value
-            if key in panel._sliders:
-                panel._sliders[key].setValue(value)
-        panel.saturation_slider.setValue(int(settings.saturation))
-        panel.scale_slider.setValue(int(settings.scale))
-        panel.invert_toggle.setChecked(bool(settings.invert))
-        panel.preview_toggle.setChecked(bool(settings.preview_disabled))
-        from ..effects.glow_params import glow_state_from_params, GLOW_DEFAULTS
-        panel.effects_list.clear()
-        glow_state = None
-        non_glow = []
-        for name, params in effects:
-            if name == "Epsilon Glow":
-                glow_state = glow_state_from_params(params)
-            else:
-                panel.effects_list.addItem(name)
-                non_glow.append(name)
-        panel.state["effects"] = non_glow
-        # push glow params into the Glow tab (enable + sliders), or disable if absent
-        gp = self.glow_panel
-        gp.enable_toggle.setChecked(bool(glow_state))
-        if glow_state:
-            for key, slider in gp._sliders.items():
-                slider.setValue(int(glow_state.get(key, GLOW_DEFAULTS[key])))
-        if palette is not None:
-            panel.set_working_palette(palette)
-        panel.set_style(settings.style, settings.params)
-        if smart_mask is not None:
-            panel.smart_mask_panel.set_settings(smart_mask)
-        panel.blockSignals(False)
-        self.glow_panel.blockSignals(False)
-        self._applying_preset = False
+        try:
+            for key in ("contrast", "midtones", "highlights", "luminance_threshold", "blur"):
+                value = int(getattr(settings, key))
+                panel.state[key] = value
+                if key in panel._sliders:
+                    panel._sliders[key].setValue(value)
+            panel.saturation_slider.setValue(int(settings.saturation))
+            panel.scale_slider.setValue(int(settings.scale))
+            panel.invert_toggle.setChecked(bool(settings.invert))
+            panel.preview_toggle.setChecked(bool(settings.preview_disabled))
+            from ..effects.glow_params import glow_state_from_params, GLOW_DEFAULTS
+            panel.effects_list.clear()
+            glow_state = None
+            non_glow = []
+            for name, params in effects:
+                if name == "Epsilon Glow":
+                    glow_state = glow_state_from_params(params)
+                else:
+                    panel.effects_list.addItem(name)
+                    non_glow.append(name)
+            panel.state["effects"] = non_glow
+            gp = self.glow_panel
+            gp.enable_toggle.setChecked(bool(glow_state))
+            if glow_state:
+                for key, slider in gp._sliders.items():
+                    slider.setValue(int(glow_state.get(key, GLOW_DEFAULTS[key])))
+            if palette is not None:
+                panel.set_working_palette(palette)
+            panel.set_style(settings.style, settings.params)
+            if smart_mask is not None:
+                panel.smart_mask_panel.set_settings(smart_mask)
+        finally:
+            panel.blockSignals(False)
+            self.glow_panel.blockSignals(False)
+            self._applying_preset = False
         if smart_mask is not None:
             self._apply_mask_settings_lifecycle(smart_mask)
         self._refresh_mask_scope_actions()
