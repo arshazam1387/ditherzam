@@ -2,6 +2,7 @@ import numpy as np
 
 from ditherzam.masking.cache import (
     CompositeIdentity, DEFAULT_MASK_CACHE_BUDGET_BYTES, MaskCaches,
+    editor_cache_allocation,
 )
 from ditherzam.masking.contracts import (
     InferenceIdentity, MaskIdentity, ModelIdentity, ProbabilityMap, source_identity,
@@ -63,10 +64,24 @@ def test_atomic_lru_oversized_and_metrics_are_bounded():
         pass
 
 
-def test_default_editor_allocations_sum_to_192_mib():
-    assert DEFAULT_CACHE_BUDGET_BYTES == 128 * MIB
-    assert DEFAULT_MASK_CACHE_BUDGET_BYTES == 64 * MIB
-    assert DEFAULT_CACHE_BUDGET_BYTES + DEFAULT_MASK_CACHE_BUDGET_BYTES == 192 * MIB
+def test_editor_allocation_preserves_unmasked_default_and_splits_masked_budget():
+    assert DEFAULT_CACHE_BUDGET_BYTES == 192 * MIB
+    assert editor_cache_allocation(False).render_bytes == 192 * MIB
+    assert editor_cache_allocation(False).mask_bytes == 0
+    masked = editor_cache_allocation(True)
+    assert masked.render_bytes == 128 * MIB
+    assert masked.mask_bytes == DEFAULT_MASK_CACHE_BUDGET_BYTES == 64 * MIB
+    assert masked.render_bytes + masked.mask_bytes == 192 * MIB
+
+
+def test_editor_allocation_rejects_invalid_custom_aggregate():
+    import pytest
+    with pytest.raises(ValueError, match="exceeds"):
+        editor_cache_allocation(True, render_bytes=192 * MIB, mask_bytes=64 * MIB)
+    with pytest.raises(ValueError, match="zero"):
+        editor_cache_allocation(False, render_bytes=128 * MIB, mask_bytes=64 * MIB)
+    custom = editor_cache_allocation(True, render_bytes=100 * MIB, mask_bytes=50 * MIB)
+    assert custom.render_bytes + custom.mask_bytes == 150 * MIB
 
 
 def test_inference_payload_is_charged_and_oversized_probability_not_retained():

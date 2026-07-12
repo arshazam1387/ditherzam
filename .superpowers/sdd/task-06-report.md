@@ -10,8 +10,9 @@ Implemented three explicit Smart Mask cache partitions in
 - Outer composites use `CompositeIdentity`, covering rendered output identity,
   mask identity, outside mode, source identity, and alpha algorithm version.
 - All partitions share one bounded LRU and unique NumPy backing-store accounting.
-  The default mask sub-budget is 64 MiB; the staged render-cache default is
-  now 128 MiB, making the combined per-editor allocation exactly 192 MiB.
+  The standalone/mask-disabled staged render-cache default remains 192 MiB.
+  An explicit editor allocation contract yields 192/0 MiB when masking is
+  disabled and 128/64 MiB when enabled, rejecting custom sums over 192 MiB.
 - Oversized entries are not retained, eviction is entry-atomic, source-scoped
   clearing spans all partitions, and cached derived/composite arrays are owned
   immutable snapshots.
@@ -25,10 +26,17 @@ Result: **20 passed** in 1.76s.
 Reviewer follow-up fixed inference accounting by explicitly charging
 `ProbabilityMap.values` (the probability value object itself is not a generic
 container). Tests now cover oversized inference rejection, replacement/alias
-accounting, and a 50-source probability-map soak. The combined default budget
-policy is regression-tested at 128 MiB render + 64 MiB mask = 192 MiB.
+accounting, and a 50-source probability-map soak. The editor allocation policy
+is regression-tested at 192/0 MiB when disabled and 128/64 MiB when enabled.
+SM-12 must instantiate the actual editor-owned cache instances from this
+contract and test their summed instance budgets; SM-06 does not claim that
+later integration has already occurred.
 
 Follow-up result: **24 passed** in 3.13s using the same focused targets.
+
+Final allocation-contract follow-up: **25 passed** in 1.82s. This restores the
+standalone 192 MiB render default while retaining the explicit bounded editor
+split for SM-12 integration.
 
 The optional full suite was also started in the foreground with the documented
 environment and a dedicated basetemp, but exceeded the 120-second command limit

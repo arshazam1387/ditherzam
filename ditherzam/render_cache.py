@@ -11,11 +11,10 @@ import numpy as np
 
 
 MIB = 1024 * 1024
-# The per-editor retained-cache ceiling is shared with Smart Mask.  Keep the
-# staged pipeline's allocation at 128 MiB and reserve the remaining 64 MiB for
-# inference, derived-mask, and outer-composite results.
 MAX_EDITOR_RETAINED_CACHE_BYTES = 192 * MIB
-DEFAULT_CACHE_BUDGET_BYTES = 128 * MIB
+# Standalone and mask-disabled pipelines retain the established full budget.
+# Mask-enabled editors use masking.cache.editor_cache_allocation to split it.
+DEFAULT_CACHE_BUDGET_BYTES = MAX_EDITOR_RETAINED_CACHE_BYTES
 
 
 def _iter_arrays(value, seen_containers: set[int]):

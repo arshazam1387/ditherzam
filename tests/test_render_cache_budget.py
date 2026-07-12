@@ -19,11 +19,11 @@ def _array(nbytes: int) -> np.ndarray:
     return np.zeros(nbytes, dtype=np.uint8)
 
 
-def test_default_budget_reserves_64_mib_for_mask_caches_and_metrics_are_read_only():
+def test_default_budget_is_192_mib_and_metrics_are_read_only():
     cache = RenderCache()
 
-    assert DEFAULT_CACHE_BUDGET_BYTES == 128 * MIB
-    assert cache.budget_bytes == 128 * MIB
+    assert DEFAULT_CACHE_BUDGET_BYTES == 192 * MIB
+    assert cache.budget_bytes == 192 * MIB
     assert cache.retained_bytes == 0
     assert cache.entry_count == 0
     assert cache.eviction_count == 0
