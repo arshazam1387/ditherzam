@@ -26,6 +26,14 @@ def test_old_and_malformed_mask_presets_load_safe_defaults_and_clamp():
                                                     expansion_px=-64)
 
 
+def test_nonfinite_and_bad_mask_numbers_use_field_defaults():
+    for bad in (float("nan"), float("inf"), float("-inf"), "bad", None):
+        contents = preset_to_settings({"smart_mask": {
+            "sensitivity": bad, "feather_px": bad, "expansion_px": bad,
+        }})
+        assert contents.smart_mask == SmartMaskSettings()
+
+
 def test_session_and_asset_fields_are_never_persisted():
     preset = settings_to_preset(RenderSettings(), smart_mask=SmartMaskSettings(True))
     forbidden = {"array", "source", "candidate", "overlay", "progress", "error",

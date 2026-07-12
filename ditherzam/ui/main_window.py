@@ -17,7 +17,8 @@ from ditherzam.dithering import registry as _dither_registry
 from ditherzam.color.context import ColorContextCache
 from ditherzam.render import RenderCancelled, RenderPipeline
 from ditherzam.masking.cache import MaskCaches, editor_cache_allocation
-from ditherzam.masking.contracts import ModelIdentity, ProbabilityMap, source_identity
+from ditherzam.masking.contracts import (InferenceIdentity, ModelIdentity, ProbabilityMap,
+                                         source_identity)
 from ditherzam.masking.inference_request import InferenceOutcome, InferenceRequest, InferenceTerminal
 from ditherzam.masking.inference_scheduler import InferenceScheduler
 from ditherzam.masking.ort_adapter import PREPROCESSING_VERSION
@@ -212,6 +213,7 @@ class ImageEditor(QMainWindow):
         self._base_rgb: np.ndarray | None = None
         self._base_rgba: np.ndarray | None = None
         self._preview_palette = None
+        self._applying_preset = False
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
         self._mask_pool = QThreadPool(self)
@@ -302,6 +304,7 @@ class ImageEditor(QMainWindow):
         self._wire_export()
         self._wire_video()
         self._wire_animation()
+        self._refresh_mask_scope_actions()
 
     def _mask_dependencies_available(self) -> bool:
         return (callable(getattr(self._mask_adapter, "infer", None))
@@ -318,6 +321,12 @@ class ImageEditor(QMainWindow):
         self._mask_cache_enabled = enabled
 
     def _on_mask_settings_changed(self, settings: SmartMaskSettings) -> None:
+        self._apply_mask_settings_lifecycle(settings)
+        self._refresh_mask_scope_actions()
+        self.schedule_render()
+
+    def _apply_mask_settings_lifecycle(self, settings: SmartMaskSettings) -> None:
+        """Apply mask ownership/inference effects once after an atomic state update."""
         self._configure_editor_caches(settings.enabled)
         if not settings.enabled:
             self._cancel_mask_detection()
@@ -328,8 +337,18 @@ class ImageEditor(QMainWindow):
         elif settings.target is MaskTarget.WHOLE_IMAGE:
             self._cancel_mask_detection()
         elif self._mask_probability is None:
-            self._request_mask_detection()
-        self.schedule_render()
+            if (self._base_rgba is not None and self._mask_dependencies_available()):
+                source = source_identity(self._base_rgba)
+                identity = InferenceIdentity(
+                    source, self._mask_model, self._mask_preprocessing_version, "primary")
+                cached = self._mask_caches.get_inference(identity)
+                if cached is not None:
+                    self._mask_source = source
+                    self._mask_probability = cached
+                    self.panel.smart_mask_panel.set_valid_mask_available(True)
+                    self.panel.smart_mask_panel.set_status(MaskPanelStatus.READY)
+                else:
+                    self._request_mask_detection()
 
     def _request_mask_detection(self) -> None:
         settings = self.panel.smart_mask_panel.settings
@@ -695,7 +714,15 @@ class ImageEditor(QMainWindow):
             target_shape=source_gray.shape[:2])
 
     def _apply_preset(self, settings, palette, effects, smart_mask=None) -> None:
+        # Drop queued renders before mutating several signal-producing controls.
+        self._debounce.stop()
+        self._settle.stop()
+        self._zoom_debounce.stop()
+        self._scheduler.invalidate()
+        self._applying_preset = True
         panel = self.panel
+        panel.blockSignals(True)
+        self.glow_panel.blockSignals(True)
         for key in ("contrast", "midtones", "highlights", "luminance_threshold", "blur"):
             value = int(getattr(settings, key))
             panel.state[key] = value
@@ -727,11 +754,14 @@ class ImageEditor(QMainWindow):
         panel.set_style(settings.style, settings.params)
         if smart_mask is not None:
             panel.smart_mask_panel.set_settings(smart_mask)
+        panel.blockSignals(False)
+        self.glow_panel.blockSignals(False)
+        self._applying_preset = False
+        if smart_mask is not None:
+            self._apply_mask_settings_lifecycle(smart_mask)
+        self._refresh_mask_scope_actions()
         if self._base_gray is not None:
             self.render_now()
-            if (smart_mask is not None and smart_mask.enabled
-                    and smart_mask.target is not MaskTarget.WHOLE_IMAGE):
-                self._request_mask_detection()
 
     # -- menu handlers --
     def _on_save_preset(self):
@@ -921,6 +951,7 @@ class ImageEditor(QMainWindow):
         self._configure_editor_caches(settings.enabled)
         if settings.enabled and settings.target is not MaskTarget.WHOLE_IMAGE:
             self._request_mask_detection()
+        self._refresh_mask_scope_actions()
 
     def set_style(self, name: str) -> None:
         self.panel.set_style(name)
@@ -962,6 +993,8 @@ class ImageEditor(QMainWindow):
         return qimg
 
     def schedule_render(self) -> None:
+        if self._applying_preset:
+            return
         self._full_preview_requested = False       # any edit returns to the cap
         self._last_zoom_bucket = None               # a normal edit re-settles the baseline
         self._debounce.start(self._debounce_ms)   # fast proxy
@@ -1028,6 +1061,26 @@ class ImageEditor(QMainWindow):
             return True
         QMessageBox.warning(self, "Smart Mask", unsupported_mask_message(kind))
         return False
+
+    def _refresh_mask_scope_actions(self) -> None:
+        """Expose the scope policy in actions while retaining handler guards."""
+        from ditherzam.masking.scope import mask_allows_media, unsupported_mask_message
+        settings = self.panel.smart_mask_panel.settings
+        blocked = not mask_allows_media("svg", settings)
+        message = unsupported_mask_message("this media") if blocked else ""
+        for key in ("export_svg", "batch_folder"):
+            action = getattr(self, "_export_actions", {}).get(key)
+            if action is not None:
+                action.setEnabled(not blocked)
+                action.setToolTip(message)
+                action.setStatusTip(message)
+        panel = getattr(self, "timeline_panel", None)
+        if panel is not None:
+            panel.export_btn.setEnabled(not blocked)
+            panel.export_btn.setToolTip(message)
+        controller = getattr(self, "video_controller", None)
+        if controller is not None:
+            controller.refresh_mask_scope()
 
     def _do_render(self) -> None:
         """Debounce tick: request a fast proxy render."""
