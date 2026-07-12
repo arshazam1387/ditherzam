@@ -353,8 +353,10 @@ class ImageEditor(QMainWindow):
     def _request_mask_detection(self) -> None:
         settings = self.panel.smart_mask_panel.settings
         if (not settings.enabled or settings.target is MaskTarget.WHOLE_IMAGE
-                or self._base_rgba is None
-                or not self._mask_dependencies_available()):
+                or self._base_rgba is None):
+            return
+        if not self._mask_dependencies_available():
+            self.panel.smart_mask_panel.set_status(MaskPanelStatus.MODEL_UNAVAILABLE)
             return
         if self._mask_source is None:
             self._mask_source = source_identity(self._base_rgba)

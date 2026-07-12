@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from ditherzam.masking.release_gate import ReleaseBundleError, verify_release_bundle
+from benchmarks.smart_mask_certification import certify_case, certify_resilience
 
 ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "packaging" / "smart-mask-release.lock.json"
@@ -20,17 +21,23 @@ def _approved_bundle_or_skip():
 
 @pytest.mark.parametrize("source_kind", ["rgb", "rgba", "grayscale"])
 @pytest.mark.parametrize("outside", ["original", "transparent", "black", "white"])
-@pytest.mark.parametrize("target,invert", [("subject", False), ("subject", True), ("background", False), ("background", True)])
-def test_real_model_render_export_matrix_pending_asset(source_kind, outside, target, invert):
+@pytest.mark.parametrize("target,invert", [("disabled", False), ("subject", False), ("subject", True), ("background", False), ("background", True), ("whole", False)])
+@pytest.mark.parametrize("surface", ["capped", "full", "png-exact", "jpeg-white-flatten"])
+def test_real_model_render_export_matrix_pending_asset(source_kind, outside, target, invert, surface):
     bundle = _approved_bundle_or_skip()
-    pytest.fail(f"approved asset E2E adapter not completed for {source_kind}/{outside}/{target}/{invert}: {bundle}")
+    record = certify_case(bundle, source_kind=source_kind, outside=outside, target=target,
+                          invert=invert, surface=surface)
+    assert record["bundle_verified"]
 
 
 @pytest.mark.parametrize("scenario", [
     "no-subject", "oom", "cancel", "source-replacement", "stale-progress",
-    "source-colors", "colored-dither", "effects-invert", "preview-full-export",
-    "unsupported-media", "fifty-cycle-rss", "offline-frozen-startup",
+    "disabled-byte-baseline-zero-work", "source-colors", "colored-dither",
+    "effects-invert", "overlay-excluded", "preview-full-export", "latest-wins",
+    "terminal-recovery", "unsupported-media", "fifty-cycle-rss-cache-192mib",
+    "performance-fields", "heartbeat-cancel-fields", "missing", "corrupt",
+    "offline-frozen-startup",
 ])
 def test_real_model_resilience_matrix_pending_asset(scenario):
     bundle = _approved_bundle_or_skip()
-    pytest.fail(f"approved asset E2E resilience adapter not completed for {scenario}: {bundle}")
+    assert certify_resilience(bundle, scenario)["bundle_verified"]
