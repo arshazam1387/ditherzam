@@ -94,3 +94,16 @@ def test_historical_grayscale_png_and_jpeg_are_accepted(tmp_path):
     jpg = save_raster(gray, tmp_path / "gray.jpg")
     np.testing.assert_array_equal(np.asarray(Image.open(png)), gray)
     assert np.asarray(Image.open(jpg).convert("RGB")).shape == (2, 2, 3)
+
+
+@pytest.mark.parametrize("value", [np.nan, np.inf, -np.inf])
+def test_non_finite_float_values_fail_before_cast(value, tmp_path):
+    image = np.zeros((2, 2, 3), np.float32)
+    image[0, 0, 0] = value
+    with pytest.raises(RasterExportError, match="finite"):
+        save_raster(image, tmp_path / "bad.png")
+
+
+def test_boolean_values_are_not_uint8_like(tmp_path):
+    with pytest.raises(RasterExportError, match="boolean"):
+        save_raster(np.zeros((2, 2, 3), dtype=bool), tmp_path / "bad.png")

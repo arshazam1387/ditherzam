@@ -25,8 +25,12 @@ def _canonical_u8(image: object) -> np.ndarray:
         raise RasterExportError(
             "raster image shape must be (H, W), (H, W, 3), or (H, W, 4)"
         )
-    if arr.dtype.kind not in "buif":
+    if arr.dtype.kind == "b":
+        raise RasterExportError("boolean raster values are not meaningful uint8-like data")
+    if arr.dtype.kind not in "uif":
         raise RasterExportError("raster image values must be numeric")
+    if arr.dtype.kind == "f" and not np.isfinite(arr).all():
+        raise RasterExportError("raster image values must be finite")
     return np.clip(arr, 0, 255).astype(np.uint8)
 
 
