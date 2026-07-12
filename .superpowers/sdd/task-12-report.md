@@ -35,15 +35,20 @@ Implemented editor-owned Smart Mask inference coordination and source invalidati
   context, while an already-accounted prior result remains valid on ordinary
   re-detect failures.
 - Final review fix: editor close marks inference as nonpublishable, invalidates and
-  clears scheduled work, and waits for the owned pool to retire. A controlled
+  clears scheduled work, and polls the owned pool asynchronously before a guarded
+  final close. A controlled
   blocking inference test proves the global render pool remains available and the
-  inference pool reaches zero active threads on close.
+  GUI heartbeat remains responsive through multiple ignored-close polls; after the
+  blocker releases, the editor closes and the inference pool reaches zero active
+  threads.
 
 ## Verification
 
 - JIT-off focused editor/lifecycle/request/worker/scheduler/thread-safety/
   resilience/cancellation/cache-budget after final review fixes: **58 passed**.
 - Real-JIT required targets after final review fixes: **21 passed**.
+- Async-close focused lifecycle/worker/render gate: **41 passed JIT-off** and the
+  named lifecycle/thread-safety/cancellation gate remains **21 passed real-JIT**.
 - `py_compile` and `git diff --check`: passed.
 - The bounded full-suite gate was attempted twice (120 s and 300 s) and reached
   its time bounds without producing a summary under quiet capture. No focused or

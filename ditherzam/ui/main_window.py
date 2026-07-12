@@ -163,6 +163,8 @@ class ImageEditor(QMainWindow):
         self._mask_preprocessing_version = mask_preprocessing_version
         self._mask_scheduler = InferenceScheduler()
         self._mask_closing = False
+        self._mask_close_finalizing = False
+        self._mask_close_timer: QTimer | None = None
         self._mask_source = None
         self._mask_probability: ProbabilityMap | None = None
         self._base_gray: np.ndarray | None = None
@@ -358,12 +360,31 @@ class ImageEditor(QMainWindow):
             self._launch_mask_worker(trailing)
 
     def closeEvent(self, event) -> None:
-        """Cancel inference and synchronously retire this editor's owned pool."""
+        """Cancel inference and retire the owned pool without blocking the GUI."""
+        if self._mask_close_finalizing:
+            super().closeEvent(event)
+            return
         self._mask_closing = True
         self._mask_scheduler.invalidate_source(None)
         self._mask_pool.clear()
-        self._mask_pool.waitForDone(5000)
-        super().closeEvent(event)
+        if self._mask_pool.activeThreadCount() == 0:
+            self._mask_close_finalizing = True
+            super().closeEvent(event)
+            return
+        event.ignore()
+        if self._mask_close_timer is None:
+            self._mask_close_timer = QTimer(self)
+            self._mask_close_timer.setInterval(10)
+            self._mask_close_timer.timeout.connect(self._poll_mask_pool_close)
+        self._mask_close_timer.start()
+
+    def _poll_mask_pool_close(self) -> None:
+        if self._mask_pool.activeThreadCount() != 0:
+            return
+        if self._mask_close_timer is not None:
+            self._mask_close_timer.stop()
+        self._mask_close_finalizing = True
+        self.close()
 
     def _current_mask_context(self) -> MaskContext | None:
         settings = self.panel.smart_mask_panel.settings

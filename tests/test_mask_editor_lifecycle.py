@@ -1,8 +1,8 @@
 import numpy as np
-from threading import Event, Thread
+from threading import Event
 import time
 
-from PySide6.QtCore import QRunnable
+from PySide6.QtCore import QRunnable, QTimer
 
 from ditherzam.masking.adapter import InferenceResult
 from ditherzam.masking.contracts import InferenceIdentity, ModelIdentity, ProbabilityMap
@@ -178,6 +178,7 @@ class _BlockingRunnable(QRunnable):
 
 def test_blocking_inference_pool_does_not_block_render_pool_and_close_retires_it(qapp_fixture):
     window, _ = editor()
+    window.show()
     started, release, finished = Event(), Event(), Event()
     window._mask_pool.start(_BlockingRunnable(started, release, finished))
     assert started.wait(1)
@@ -188,10 +189,24 @@ def test_blocking_inference_pool_does_not_block_render_pool_and_close_retires_it
 
     window._pool.start(Quick())
     assert render_done.wait(1), "global render pool was blocked by inference"
-    closer = Thread(target=lambda: (time.sleep(.05), release.set()), daemon=True)
-    closer.start()
-    window.close()
-    closer.join(1)
+    heartbeats = []
+    heartbeat = QTimer(); heartbeat.setInterval(5)
+    heartbeat.timeout.connect(lambda: heartbeats.append(time.monotonic()))
+    heartbeat.start()
+    assert window.close() is False
+    deadline = time.monotonic() + .15
+    while time.monotonic() < deadline:
+        qapp_fixture.processEvents(); time.sleep(.005)
+    assert len(heartbeats) >= 2
+    assert window.isVisible(), "first close must be ignored while inference is active"
+    assert window._mask_closing and not window._mask_close_finalizing
+    release.set()
+    deadline = time.monotonic() + 2
+    while window.isVisible() and time.monotonic() < deadline:
+        qapp_fixture.processEvents(); time.sleep(.005)
+    heartbeat.stop()
     assert finished.is_set()
+    assert not window.isVisible()
     assert window._mask_pool.activeThreadCount() == 0
     assert window._mask_closing is True
+    assert window._mask_close_finalizing is True
