@@ -117,3 +117,11 @@ def test_post_build_inventory_accepts_only_exact_locked_dlls(tmp_path):
     verify(dist, lock)
     (capi / "unexpected.dll").write_bytes(b"x")
     with pytest.raises(RuntimeError, match="inventory"): verify(dist, lock)
+
+
+def test_pyinstaller_spec_uses_locked_one_folder_layout():
+    spec = (Path(__file__).resolve().parents[1] / "packaging/ditherzam-smart-mask.spec").read_text(encoding="utf-8")
+    assert 'contents_directory="."' in spec
+    assert 'datas.append((str(LOCK), "packaging"))' in spec
+    assert "collect_dynamic_libs" not in spec and "collect_data_files" not in spec
+    assert '("onnxruntime.dll", "onnxruntime_providers_shared.dll")' in spec
