@@ -1,9 +1,14 @@
 import numpy as np
+from threading import Event, Thread
+import time
+
+from PySide6.QtCore import QRunnable
 
 from ditherzam.masking.adapter import InferenceResult
 from ditherzam.masking.contracts import InferenceIdentity, ModelIdentity, ProbabilityMap
 from ditherzam.masking.inference_request import InferenceOutcome, InferenceTerminal
 from ditherzam.masking.settings import MaskTarget, SmartMaskSettings
+from ditherzam.masking.cache import MaskCaches
 from ditherzam.render_cache import MIB
 from ditherzam.ui.main_window import ImageEditor
 from ditherzam.ui.render_request import RenderKind
@@ -149,3 +154,44 @@ def test_inference_uses_editor_owned_serial_pool(qapp_fixture):
     window, _ = editor()
     assert window._mask_pool is not window._pool
     assert window._mask_pool.maxThreadCount() == 1
+
+
+def test_cache_rejection_never_publishes_direct_probability(qapp_fixture):
+    window, launched = editor(); window.load_array(*source())
+    settings = SmartMaskSettings(enabled=True); window.panel.smart_mask_panel.set_settings(settings)
+    window._on_mask_settings_changed(settings)
+    window._mask_caches = MaskCaches(8)
+    window._on_mask_terminal(success(launched[0]))
+    assert window._mask_probability is None
+    assert window._current_mask_context() is None
+    assert window._mask_caches.retained_bytes == 0
+    assert window.panel.smart_mask_panel.status is MaskPanelStatus.ERROR
+
+
+class _BlockingRunnable(QRunnable):
+    def __init__(self, started, release, finished):
+        super().__init__(); self.started = started; self.release = release; self.finished = finished
+
+    def run(self):
+        self.started.set(); self.release.wait(5); self.finished.set()
+
+
+def test_blocking_inference_pool_does_not_block_render_pool_and_close_retires_it(qapp_fixture):
+    window, _ = editor()
+    started, release, finished = Event(), Event(), Event()
+    window._mask_pool.start(_BlockingRunnable(started, release, finished))
+    assert started.wait(1)
+    render_done = Event()
+
+    class Quick(QRunnable):
+        def run(self): render_done.set()
+
+    window._pool.start(Quick())
+    assert render_done.wait(1), "global render pool was blocked by inference"
+    closer = Thread(target=lambda: (time.sleep(.05), release.set()), daemon=True)
+    closer.start()
+    window.close()
+    closer.join(1)
+    assert finished.is_set()
+    assert window._mask_pool.activeThreadCount() == 0
+    assert window._mask_closing is True

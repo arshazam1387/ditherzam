@@ -30,12 +30,20 @@ Implemented editor-owned Smart Mask inference coordination and source invalidati
   while the editor rejects stale source/model/generation progress and clears it on
   terminals. Inference uses an editor-owned single-thread pool so blocking inference
   cannot consume the render pool and trailing work remains serialized.
+- Final review fix: cache admission is now the sole probability publication
+  boundary. Oversized/rejected maps never become direct editor authority or render
+  context, while an already-accounted prior result remains valid on ordinary
+  re-detect failures.
+- Final review fix: editor close marks inference as nonpublishable, invalidates and
+  clears scheduled work, and waits for the owned pool to retire. A controlled
+  blocking inference test proves the global render pool remains available and the
+  inference pool reaches zero active threads on close.
 
 ## Verification
 
 - JIT-off focused editor/lifecycle/request/worker/scheduler/thread-safety/
-  resilience/cancellation/cache-budget after review fixes: **56 passed**.
-- Real-JIT required targets after review fixes: **19 passed**.
+  resilience/cancellation/cache-budget after final review fixes: **58 passed**.
+- Real-JIT required targets after final review fixes: **21 passed**.
 - `py_compile` and `git diff --check`: passed.
 - The bounded full-suite gate was attempted twice (120 s and 300 s) and reached
   its time bounds without producing a summary under quiet capture. No focused or

@@ -162,6 +162,7 @@ class ImageEditor(QMainWindow):
         self._mask_model = mask_model
         self._mask_preprocessing_version = mask_preprocessing_version
         self._mask_scheduler = InferenceScheduler()
+        self._mask_closing = False
         self._mask_source = None
         self._mask_probability: ProbabilityMap | None = None
         self._base_gray: np.ndarray | None = None
@@ -319,22 +320,30 @@ class ImageEditor(QMainWindow):
         self._mask_pool.start(worker)
 
     def _on_mask_progress(self, request: InferenceRequest, progress: int) -> None:
-        if (self._mask_scheduler.is_current(request)
+        if (not self._mask_closing and self._mask_scheduler.is_current(request)
                 and request.source == self._mask_source
                 and request.model == self._mask_model
                 and self.panel.smart_mask_panel.status is MaskPanelStatus.DETECTING):
             self.panel.smart_mask_panel.set_status(MaskPanelStatus.DETECTING, progress)
 
     def _on_mask_terminal(self, outcome: InferenceOutcome) -> None:
+        if self._mask_closing:
+            self._mask_scheduler.on_terminal(outcome)
+            return
         current = self._mask_scheduler.is_current(outcome.request)
         if current and outcome.request.source == self._mask_source:
             panel = self.panel.smart_mask_panel
             if outcome.terminal is InferenceTerminal.SUCCESS:
-                self._mask_probability = outcome.result.probability
-                self._mask_caches.put_inference(self._mask_probability)
-                panel.set_valid_mask_available(True)
-                panel.set_status(MaskPanelStatus.READY)
-                self.schedule_render()
+                candidate = outcome.result.probability
+                if self._mask_caches.put_inference(candidate):
+                    self._mask_probability = candidate
+                    panel.set_valid_mask_available(True)
+                    panel.set_status(MaskPanelStatus.READY)
+                    self.schedule_render()
+                else:
+                    # Cache admission is the publication boundary. Never retain
+                    # an unaccounted full-resolution array in editor authority.
+                    panel.set_status(MaskPanelStatus.ERROR)
             elif outcome.terminal is InferenceTerminal.NO_SUBJECT:
                 panel.set_status(MaskPanelStatus.NO_CLEAR_SUBJECT)
             elif outcome.terminal is InferenceTerminal.CANCELLED:
@@ -347,6 +356,14 @@ class ImageEditor(QMainWindow):
         if trailing is not None:
             self.panel.smart_mask_panel.set_status(MaskPanelStatus.DETECTING)
             self._launch_mask_worker(trailing)
+
+    def closeEvent(self, event) -> None:
+        """Cancel inference and synchronously retire this editor's owned pool."""
+        self._mask_closing = True
+        self._mask_scheduler.invalidate_source(None)
+        self._mask_pool.clear()
+        self._mask_pool.waitForDone(5000)
+        super().closeEvent(event)
 
     def _current_mask_context(self) -> MaskContext | None:
         settings = self.panel.smart_mask_panel.settings
