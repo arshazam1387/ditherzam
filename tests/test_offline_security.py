@@ -43,7 +43,7 @@ def test_masking_package_imports_are_stdlib_or_local_only():
     import ast
 
     allowed_top_levels = {
-        "__future__", "collections", "dataclasses", "hashlib", "pathlib", "threading", "types", "typing",
+        "__future__", "collections", "dataclasses", "hashlib", "json", "pathlib", "threading", "types", "typing",
         "yaml", "ditherzam",
         # numpy is a pure offline compute library (SM-02's quality metric
         # oracle is required to be pure-NumPy); it does no networking.
