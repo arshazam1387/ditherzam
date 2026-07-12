@@ -170,6 +170,8 @@ class ImageEditor(QMainWindow):
         self._preview_palette = None
         self.last_qimage: QImage | None = None
         self._pool = QThreadPool.globalInstance()
+        self._mask_pool = QThreadPool(self)
+        self._mask_pool.setMaxThreadCount(1)
         self._debounce_ms = debounce_ms
         self._settle_ms = settle_ms
         self._zoom_debounce_ms = zoom_debounce_ms
@@ -272,7 +274,13 @@ class ImageEditor(QMainWindow):
 
     def _on_mask_settings_changed(self, settings: SmartMaskSettings) -> None:
         self._configure_editor_caches(settings.enabled)
-        if not settings.enabled or settings.target is MaskTarget.WHOLE_IMAGE:
+        if not settings.enabled:
+            self._cancel_mask_detection()
+            self._mask_probability = None
+            self._mask_source = None
+            self._mask_caches.clear()
+            self.panel.smart_mask_panel.set_valid_mask_available(False)
+        elif settings.target is MaskTarget.WHOLE_IMAGE:
             self._cancel_mask_detection()
         elif self._mask_probability is None:
             self._request_mask_detection()
@@ -281,9 +289,11 @@ class ImageEditor(QMainWindow):
     def _request_mask_detection(self) -> None:
         settings = self.panel.smart_mask_panel.settings
         if (not settings.enabled or settings.target is MaskTarget.WHOLE_IMAGE
-                or self._base_rgba is None or self._mask_source is None
+                or self._base_rgba is None
                 or not self._mask_dependencies_available()):
             return
+        if self._mask_source is None:
+            self._mask_source = source_identity(self._base_rgba)
         request = InferenceRequest(
             self._mask_source, self._mask_model, self._mask_preprocessing_version,
             self._base_rgba,
@@ -305,7 +315,15 @@ class ImageEditor(QMainWindow):
                        worker.signals.cancelled, worker.signals.model_unavailable,
                        worker.signals.failed):
             signal.connect(self._on_mask_terminal)
-        self._pool.start(worker)
+        worker.signals.progress.connect(self._on_mask_progress)
+        self._mask_pool.start(worker)
+
+    def _on_mask_progress(self, request: InferenceRequest, progress: int) -> None:
+        if (self._mask_scheduler.is_current(request)
+                and request.source == self._mask_source
+                and request.model == self._mask_model
+                and self.panel.smart_mask_panel.status is MaskPanelStatus.DETECTING):
+            self.panel.smart_mask_panel.set_status(MaskPanelStatus.DETECTING, progress)
 
     def _on_mask_terminal(self, outcome: InferenceOutcome) -> None:
         current = self._mask_scheduler.is_current(outcome.request)
@@ -781,7 +799,7 @@ class ImageEditor(QMainWindow):
         self._base_gray = gray
         self._base_rgb = rgb
         self._base_rgba = rgba
-        self._mask_source = source_identity(rgba)
+        self._mask_source = None
         self.pipeline.clear_cache()  # drop the previous image's cached intermediates
         self._pending_refit = True  # a new source: the next paint should fit
         mask_panel = self.panel.smart_mask_panel

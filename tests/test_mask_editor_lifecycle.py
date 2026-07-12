@@ -39,14 +39,20 @@ def success(request):
     return InferenceOutcome(request, InferenceTerminal.SUCCESS, result=result)
 
 
-def test_disabled_load_and_whole_image_do_not_infer(qapp_fixture):
+def test_disabled_load_and_whole_image_do_not_infer(qapp_fixture, monkeypatch):
     window, launched = editor()
+    calls = []
+    from ditherzam.masking.contracts import source_identity as real_source_identity
+    monkeypatch.setattr("ditherzam.ui.main_window.source_identity",
+                        lambda rgba: calls.append(rgba) or real_source_identity(rgba))
     window.load_array(*source())
     assert launched == []
+    assert calls == []
     window.panel.smart_mask_panel.set_settings(SmartMaskSettings(enabled=True,
         target=MaskTarget.WHOLE_IMAGE))
     window._on_mask_settings_changed(window.panel.smart_mask_panel.settings)
     assert launched == []
+    assert calls == []
 
 
 def test_enable_infers_once_edits_reuse_and_request_freezes_context(qapp_fixture):
@@ -114,3 +120,32 @@ def test_actual_editor_cache_budgets_obey_global_ceiling(qapp_fixture):
             <= 192 * MIB)
     assert (window.pipeline.cache_metrics["retained_bytes"] + window._mask_caches.retained_bytes
             <= 192 * MIB)
+    window._on_mask_terminal(success(window._mask_scheduler._active))
+    assert window._mask_probability is not None
+    assert window._mask_caches.get_inference(window._mask_probability.identity) is window._mask_probability
+    assert window._mask_probability.values.nbytes <= window._mask_caches.retained_bytes
+    disabled = SmartMaskSettings(enabled=False)
+    window.panel.smart_mask_panel.set_settings(disabled)
+    window._on_mask_settings_changed(disabled)
+    assert window._mask_probability is None and window._mask_source is None
+    assert window._mask_caches.retained_bytes == 0
+    assert window.pipeline.cache_metrics["budget_bytes"] == 192 * MIB
+
+
+def test_only_current_progress_is_published_and_terminal_clears_it(qapp_fixture):
+    window, launched = editor(); window.load_array(*source())
+    settings = SmartMaskSettings(enabled=True); window.panel.smart_mask_panel.set_settings(settings)
+    window._on_mask_settings_changed(settings); current = launched[0]
+    window._on_mask_progress(current, 10)
+    assert window.panel.smart_mask_panel.progress_label.text() == "Detecting 10%"
+    window.load_array(*source(2))
+    window._on_mask_progress(current, 90)
+    assert window.panel.smart_mask_panel.progress_label.text() != "Detecting 90%"
+    window._on_mask_terminal(InferenceOutcome(current, InferenceTerminal.CANCELLED))
+    assert window.panel.smart_mask_panel.progress_label.text() == ""
+
+
+def test_inference_uses_editor_owned_serial_pool(qapp_fixture):
+    window, _ = editor()
+    assert window._mask_pool is not window._pool
+    assert window._mask_pool.maxThreadCount() == 1

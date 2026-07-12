@@ -30,6 +30,7 @@ class InferenceSignals(QObject):
     cancelled = Signal(object)  # InferenceOutcome
     model_unavailable = Signal(object)  # InferenceOutcome
     failed = Signal(object)  # InferenceOutcome
+    progress = Signal(object, int)  # immutable request, coarse safe-boundary percent
 
 
 class InferenceWorker(QRunnable):
@@ -63,14 +64,17 @@ class InferenceWorker(QRunnable):
     def run(self) -> None:
         """Emit exactly one terminal signal, including every error path."""
         try:
+            self.signals.progress.emit(self._request, 0)
             if self._request.cancellation.should_cancel():
                 raise InferenceCancelled("segmentation inference cancelled")
+            self.signals.progress.emit(self._request, 10)
             result = self._adapter.infer(
                 self._request.rgba,
                 should_cancel=self._request.cancellation.should_cancel,
             )
             if self._request.cancellation.should_cancel():
                 raise InferenceCancelled("segmentation inference cancelled")
+            self.signals.progress.emit(self._request, 90)
             if not isinstance(result, InferenceResult):
                 raise TypeError("adapter must return an InferenceResult")
             identity = result.probability.identity
@@ -117,4 +121,6 @@ class InferenceWorker(QRunnable):
                 _LOG.exception("Smart Mask inference failed")
                 outcome = self._outcome(InferenceTerminal.FAILED, error=exc)
                 signal = self.signals.failed
+        if outcome.terminal is InferenceTerminal.SUCCESS:
+            self.signals.progress.emit(self._request, 100)
         signal.emit(outcome)
