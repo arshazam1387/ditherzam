@@ -47,12 +47,12 @@ def test_masking_package_imports_are_stdlib_or_local_only():
         "yaml", "ditherzam",
         # numpy is a pure offline compute library (SM-02's quality metric
         # oracle is required to be pure-NumPy); it does no networking.
-            "numpy",
-            # enum is stdlib, used for SM-03's MaskTarget/OutsideMode.
-            "enum",
-            # Pillow performs local-only mask morphology/resampling (SM-04).
-            "PIL",
-        }
+        "numpy",
+        # enum is stdlib, used for SM-03's MaskTarget/OutsideMode.
+        "enum",
+        # Pillow performs local-only mask feathering/resampling (SM-04).
+        "PIL",
+    }
     offenders = []
     for path in _masking_source_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
