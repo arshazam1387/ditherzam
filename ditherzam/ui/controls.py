@@ -58,7 +58,7 @@ class ControlPanel(QWidget):
             "invert": False, "preview_disabled": False,
             "style": "None", "scale": 5, "params": {},
             "palette": "grayscale", "color_mode": "off", "effects": [],
-            "source_dither": 100,
+            "source_dither": 100, "source_dither_brighten": False,
             "depth": 2, "color_mapping": "match",
             "palette_autosave": False, "extract_unit": "k",
             "palette_preview": True, "palette_wheel_cycle": False,
@@ -229,6 +229,14 @@ class ControlPanel(QWidget):
         self.source_dither_row.setVisible(False)
         layout.addWidget(self.source_dither_row)
 
+        self.source_dither_brighten_check = QCheckBox("Brighten marks")
+        self.source_dither_brighten_check.setToolTip(
+            "Colored Dither marks lift the image toward white instead of darkening it")
+        self.source_dither_brighten_check.toggled.connect(
+            self._on_source_dither_brighten_toggle)
+        self.source_dither_brighten_check.setVisible(False)
+        layout.addWidget(self.source_dither_brighten_check)
+
         self.mapping_combo = NoScrollComboBox()
         self.mapping_combo.addItems(list(RAMP_MODES))
         self.mapping_combo.currentTextChanged.connect(self._on_mapping_changed)
@@ -396,6 +404,10 @@ class ControlPanel(QWidget):
         self.state["invert"] = bool(checked)
         self.changed.emit()
 
+    def _on_source_dither_brighten_toggle(self, checked: bool) -> None:
+        self.state["source_dither_brighten"] = bool(checked)
+        self.changed.emit()
+
     def _on_palette_changed(self, text: str) -> None:
         self.state["palette"] = text
         self.working_palette = self.store.get(text)
@@ -474,6 +486,7 @@ class ControlPanel(QWidget):
     def _on_mode_changed(self, text: str) -> None:
         self.state["color_mode"] = text
         self.source_dither_row.setVisible(text == "source")
+        self.source_dither_brighten_check.setVisible(text == "source")
         self.changed.emit()
 
     def _on_mapping_changed(self, text: str) -> None:

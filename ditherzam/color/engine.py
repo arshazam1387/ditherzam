@@ -232,7 +232,8 @@ class ColorEngine:
                  depth: int = 2, mapping: str = "match", phase: float = 0.0,
                  context_cache: ColorContextCache | None = None,
                  source_rgb: np.ndarray | None = None,
-                 source_dither: float = 100.0) -> None:
+                 source_dither: float = 100.0,
+                 source_dither_brighten: bool = False) -> None:
         self.palette = palette
         self.mode = mode
         self.depth = depth
@@ -242,6 +243,9 @@ class ColorEngine:
         self.source_rgb = (None if source_rgb is None else
                            np.asarray(source_rgb, dtype=np.float32)[..., :3])
         self.source_dither = max(0.0, min(100.0, float(source_dither)))
+        # When True, Colored Dither marks screen (lift toward white) instead of
+        # multiply (sink toward black), so they brighten the image, not darken it.
+        self.source_dither_brighten = bool(source_dither_brighten)
 
     @property
     def context(self):
@@ -259,7 +263,7 @@ class ColorEngine:
     def with_settings(self, **changes) -> "ColorEngine":
         """Return an engine derived from this one without mutating shared state."""
         allowed = {"palette", "mode", "depth", "mapping", "phase", "source_rgb",
-                   "source_dither"}
+                   "source_dither", "source_dither_brighten"}
         unknown = changes.keys() - allowed
         if unknown:
             raise TypeError(f"unknown color settings: {sorted(unknown)!r}")
@@ -272,6 +276,8 @@ class ColorEngine:
             context_cache=self.context_cache,
             source_rgb=changes.get("source_rgb", self.source_rgb),
             source_dither=changes.get("source_dither", self.source_dither),
+            source_dither_brighten=changes.get(
+                "source_dither_brighten", self.source_dither_brighten),
         )
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
@@ -299,9 +305,18 @@ class ColorEngine:
             # Color the dither marks themselves: the locally simplified source
             # supplies hue/chroma, while the selected dither supplies lightness.
             # This is not a color layer beneath a monochrome pattern.
-            peak = np.maximum(np.max(simplified, axis=2, keepdims=True), 1.0)
-            local_hue = simplified / peak
-            colored_dither = local_hue * dither_luma[..., None]
+            if self.source_dither_brighten:
+                # Screen blend: a mark (low dither luma) lifts the pixel toward
+                # white; the field (luma 255) stays the base color. Marks brighten
+                # the image instead of darkening it.
+                colored_dither = np.float32(255.0) - (
+                    np.float32(255.0) - simplified) * (
+                    dither_luma[..., None] / np.float32(255.0))
+            else:
+                # Multiply blend: a mark sinks the pixel toward black (darken).
+                peak = np.maximum(np.max(simplified, axis=2, keepdims=True), 1.0)
+                local_hue = simplified / peak
+                colored_dither = local_hue * dither_luma[..., None]
             return clamp_u8(simplified * (np.float32(1.0) - influence) +
                             colored_dither * influence)
         if self.mode == "ramp":
