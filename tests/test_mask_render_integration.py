@@ -167,3 +167,54 @@ def test_proxy_complete_branch_runs_once_across_mask_only_edits(monkeypatch):
             rendered_identity=(context.source, "creative-a"),
         )
     assert calls["branch"] == 1
+
+
+def test_disabled_proxy_full_render_now_and_export_never_build_mask_identity(
+        qapp_fixture, monkeypatch):
+    from ditherzam.dithering import registry
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.main_window import ImageEditor, _RenderWorker
+    from ditherzam.ui.render_request import RenderKind, RenderRequest
+
+    def forbidden(_self):
+        raise AssertionError("disabled render evaluated masked identity")
+
+    monkeypatch.setattr(RenderRequest, "rendered_identity", property(forbidden))
+    base = np.zeros((4, 4), np.float32)
+    for kind in (RenderKind.DRAG, RenderKind.FULL):
+        request = RenderRequest(1, kind, RenderSettings(style="None", scale=1),
+                                1, 4, (4, 4), source_gray=base)
+        _RenderWorker(RenderPipeline(registry), base, request).run()
+
+    editor = ImageEditor(registry=registry)
+    editor.load_array(base)
+    editor.render_now()
+    editor._rendered_rgb()
+
+
+def test_exact_reconstructed_value_context_hits_and_creative_change_misses(
+        qapp_fixture, monkeypatch):
+    from ditherzam.dithering import registry
+    from ditherzam.render import RenderPipeline
+    from ditherzam.ui.main_window import ImageEditor
+
+    base = np.full((2, 2), 120, np.float32)
+    context = _context(np.ones((2, 2), np.float32), outside=OutsideMode.BLACK)
+    editor = ImageEditor(registry=registry)
+    editor.load_array(base)
+    editor._configure_editor_caches(True)
+    monkeypatch.setattr(editor, "_current_mask_context", lambda: context)
+    real = RenderPipeline.render
+    calls = {"render": 0}
+
+    def render(self, *args, **kwargs):
+        calls["render"] += 1
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(RenderPipeline, "render", render)
+    editor._rendered_rgb()
+    editor._rendered_rgb()  # independently reconstructed but value-equal context
+    assert calls["render"] == 1
+    editor.panel.state["contrast"] = 60
+    editor._rendered_rgb()
+    assert calls["render"] == 2

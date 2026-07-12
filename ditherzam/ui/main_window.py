@@ -100,22 +100,29 @@ class _RenderWorker(QRunnable):
             source = (self._request.source_gray if self._request.source_gray is not None
                       else self._base_gray)
             if self._request.mode == "proxy":
-                render = lambda: render_preview(
-                    pipeline, source, self._request.settings,
-                    self._request.target_max_side, is_cancelled=self._is_cancelled,
-                    mask_context=self._request.mask_context,
-                    mask_caches=self._mask_caches,
-                    rendered_identity=self._request.rendered_identity)
+                if self._request.mask_context is None:
+                    result = render_preview(
+                        pipeline, source, self._request.settings,
+                        self._request.target_max_side, is_cancelled=self._is_cancelled)
+                else:
+                    result = render_preview(
+                        pipeline, source, self._request.settings,
+                        self._request.target_max_side, is_cancelled=self._is_cancelled,
+                        mask_context=self._request.mask_context,
+                        mask_caches=self._mask_caches,
+                        rendered_identity=self._request.rendered_identity)
             else:
                 render = lambda: pipeline.render_cached(
                     source, self._request.settings, is_cancelled=self._is_cancelled)
-            result = (render() if self._request.mode == "proxy" else
-                      render_with_mask(
-                          render, self._request.mask_context,
-                          caches=self._mask_caches,
-                          rendered_identity=self._request.rendered_identity,
-                          is_cancelled=self._is_cancelled,
-                          target_shape=source.shape[:2]))
+                if self._request.mask_context is None:
+                    result = render()
+                else:
+                    result = render_with_mask(
+                        render, self._request.mask_context,
+                        caches=self._mask_caches,
+                        rendered_identity=self._request.rendered_identity,
+                        is_cancelled=self._is_cancelled,
+                        target_shape=source.shape[:2])
             if self._request.show_mask_overlay and self._request.mask_context is not None:
                 if self._is_cancelled is not None and self._is_cancelled():
                     raise RenderCancelled
@@ -671,9 +678,13 @@ class ImageEditor(QMainWindow):
         effects = self._current_effect_stack()
         context = self._current_mask_context()
         pipeline = RenderPipeline(self._registry, engine, effects, cache_budget_bytes=0)
+        if context is None:
+            return pipeline.render(source_gray, settings)
+        from ditherzam.render import render_context_signature, render_settings_signature
         rendered_identity = (
-            id(source_gray), repr(settings), id(engine), id(effects),
-            source_gray.shape, "exact-export",
+            context.source, render_settings_signature(settings),
+            render_context_signature(engine, effects), source_gray.shape,
+            "exact-export-v1",
         )
         return render_with_mask(
             lambda: pipeline.render(source_gray, settings), context,
@@ -911,11 +922,14 @@ class ImageEditor(QMainWindow):
             RenderKind.FULL, target_max_side=max(self._reference_size()))
         pipeline = self.pipeline.snapshot_context(
             request.color_engine, request.effect_stack)
-        result = render_with_mask(
-            lambda: pipeline.render_cached(request.source_gray, request.settings),
-            request.mask_context, caches=self._mask_caches,
-            rendered_identity=request.rendered_identity,
-            target_shape=request.source_gray.shape[:2])
+        renderer = lambda: pipeline.render_cached(request.source_gray, request.settings)
+        if request.mask_context is None:
+            result = renderer()
+        else:
+            result = render_with_mask(
+                renderer, request.mask_context, caches=self._mask_caches,
+                rendered_identity=request.rendered_identity,
+                target_shape=request.source_gray.shape[:2])
         if request.show_mask_overlay and request.mask_context is not None:
             context = request.mask_context
             s = context.settings
