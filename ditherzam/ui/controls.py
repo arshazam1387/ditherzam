@@ -18,6 +18,7 @@ from ..dithering.parameters import parameter_specs
 from .delegates import populate_dither_combo
 from .palette_editor import SwatchStrip
 from .palette_picker import PalettePicker
+from .smart_mask_panel import SmartMaskPanel
 from .widgets import (
     InvisibleSpinBox,
     NoScrollComboBox,
@@ -74,6 +75,8 @@ class ControlPanel(QWidget):
         layout.setSpacing(6)
 
         self._build_dither_section(layout)
+        self.smart_mask_panel = SmartMaskPanel()
+        layout.addWidget(self.smart_mask_panel)
         self._build_adjustments_section(layout)
         self._build_color_section(layout)
         self._build_effects_section(layout)
