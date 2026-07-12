@@ -12,7 +12,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from ..render import RenderSettings
+from ..render import RenderSettings, render_context_signature, render_settings_signature
 from ..masking.contracts import ProbabilityMap, SourceIdentity, validate_rgba_u8
 from ..masking.settings import SmartMaskSettings
 
@@ -85,8 +85,10 @@ class RenderRequest:
     def rendered_identity(self) -> tuple:
         """Hashable identity for a completed pre-mask branch."""
         return (
-            self.source_id, repr(self.settings), id(self.color_engine),
-            id(self.effect_stack), self.target_max_side, self.mode,
+            (self.mask_context.source if self.mask_context is not None else self.source_id),
+            render_settings_signature(self.settings),
+            render_context_signature(self.color_engine, self.effect_stack),
+            self.target_max_side, self.mode, "complete-branch-v1",
         )
 
     @property

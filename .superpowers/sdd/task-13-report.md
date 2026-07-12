@@ -48,3 +48,19 @@ and existing stage-order/cache-key invariance. Final gates:
 The broken temporary Python base was safely replaced with a local uv-managed
 Python 3.12.13 path in ignored `.venv/pyvenv.cfg`; no environment file is
 committed.
+
+## Cache-key and proxy-reuse correction
+
+The final review findings removed all short-lived object IDs from masked render
+identities. Signatures now use source identity, every render-setting value,
+content-based color context, effect values, target geometry, mode, and an
+algorithm version. Source Colors hashes its actual pixel content.
+
+Masked previews now query the composite cache before rendering. Composite
+misses reuse the complete proxy branch through the existing bounded staged
+cache using an explicit stable cache key; sensitivity, feather, expansion,
+invert, outside, and overlay edits therefore do not rerun creative stages.
+Creative settings, source identity, and proxy geometry remain key partitions.
+
+- Focused JIT-off cache/integration/order gate: 21 passed.
+- Named real-JIT integration/color/style gate: 17 passed.

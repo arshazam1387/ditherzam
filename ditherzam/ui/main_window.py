@@ -114,7 +114,8 @@ class _RenderWorker(QRunnable):
                           render, self._request.mask_context,
                           caches=self._mask_caches,
                           rendered_identity=self._request.rendered_identity,
-                          is_cancelled=self._is_cancelled))
+                          is_cancelled=self._is_cancelled,
+                          target_shape=source.shape[:2]))
             if self._request.show_mask_overlay and self._request.mask_context is not None:
                 if self._is_cancelled is not None and self._is_cancelled():
                     raise RenderCancelled
@@ -676,7 +677,8 @@ class ImageEditor(QMainWindow):
         )
         return render_with_mask(
             lambda: pipeline.render(source_gray, settings), context,
-            caches=self._mask_caches, rendered_identity=rendered_identity)
+            caches=self._mask_caches, rendered_identity=rendered_identity,
+            target_shape=source_gray.shape[:2])
 
     def _apply_preset(self, settings, palette, effects) -> None:
         panel = self.panel
@@ -912,7 +914,8 @@ class ImageEditor(QMainWindow):
         result = render_with_mask(
             lambda: pipeline.render_cached(request.source_gray, request.settings),
             request.mask_context, caches=self._mask_caches,
-            rendered_identity=request.rendered_identity)
+            rendered_identity=request.rendered_identity,
+            target_shape=request.source_gray.shape[:2])
         if request.show_mask_overlay and request.mask_context is not None:
             context = request.mask_context
             s = context.settings
