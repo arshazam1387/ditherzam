@@ -190,7 +190,7 @@ def validate_confidence_array(array: object, *, name: str = "confidence array") 
     return array
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class ProbabilityMap:
     """One inference run's immutable adapter output.
 
@@ -198,6 +198,11 @@ class ProbabilityMap:
     resolution -- 1.0 means foreground. Cached separately from any derived
     mask so sensitivity/target/invert/geometry/feather edits reuse it
     without rerunning inference.
+
+    Equality/hash are keyed on ``identity`` alone: an inference identity fully
+    determines the confidence payload, and a raw ndarray field cannot support
+    default dataclass eq/hash anyway. ``values`` is stored as an owned,
+    read-only C-contiguous copy so no external view can mutate it.
     """
 
     identity: InferenceIdentity
@@ -214,7 +219,19 @@ class ProbabilityMap:
                 f"source identity dimensions {expected_shape}; shape mismatch is "
                 "never silently resized"
             )
-        self.values.flags.writeable = False
+        # Own the memory: a defensive C-contiguous copy so a caller's view/slice
+        # of a larger writable base buffer can never mutate the stored payload.
+        owned = np.array(self.values, dtype=np.float32, order="C", copy=True)
+        owned.flags.writeable = False
+        object.__setattr__(self, "values", owned)
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, ProbabilityMap):
+            return NotImplemented
+        return self.identity == other.identity
+
+    def __hash__(self) -> int:
+        return hash(self.identity)
 
 
 def source_identity(rgba_u8: np.ndarray) -> SourceIdentity:
