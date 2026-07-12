@@ -34,6 +34,7 @@ def test_missing_model_editor_starts_renders_unmasked_and_reports_unavailable(qa
     rgba = np.zeros((3, 4, 4), np.uint8); rgba[..., :3] = 91; rgba[..., 3] = 255
     gray = np.full((3, 4), 91, np.float32)
     window.load_array(gray, rgba[..., :3], rgba)
+    historical = np.frombuffer(window.render_now().bits(), dtype=np.uint8).copy()
     window.panel.smart_mask_panel.set_settings(SmartMaskSettings(enabled=True))
     window._on_mask_settings_changed(window.panel.smart_mask_panel.settings)
     window._request_mask_detection()
@@ -41,3 +42,5 @@ def test_missing_model_editor_starts_renders_unmasked_and_reports_unavailable(qa
     assert window._current_mask_context() is None
     request = window._build_request(__import__("ditherzam.ui.render_request", fromlist=["RenderKind"]).RenderKind.FULL)
     assert request.mask_context is None
+    after = np.frombuffer(window.render_now().bits(), dtype=np.uint8).copy()
+    assert np.array_equal(after, historical)

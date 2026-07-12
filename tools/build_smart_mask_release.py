@@ -14,8 +14,12 @@ def main() -> int:
     verify_release_bundle(root, lock)
     if sys.version_info[:2] != (3, 12) or sys.platform != "win32":
         raise SystemExit("Smart Mask frozen release requires Windows Python 3.12")
-    return subprocess.call([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
+    code = subprocess.call([sys.executable, "-m", "PyInstaller", "--clean", "--noconfirm",
                             str(root / "packaging" / "ditherzam-smart-mask.spec")], cwd=root)
+    if code == 0:
+        from tools.verify_smart_mask_frozen_inventory import verify
+        verify(root / "dist" / "ditherzam", lock)
+    return code
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import socket
+import io
 from pathlib import Path
 
 import pytest
@@ -43,6 +44,9 @@ output_names: [a, b, c, d, e, f, g]
     files = {"model_manifest": _put(root, "models/manifest.yaml", manifest)}
     for role, name in (("license", "LICENSE.txt"), ("notice", "NOTICE.txt"), ("provenance", "provenance.json")):
         files[role] = _put(root, name, f"{role}:{content_id}".encode(), content_id)
+    from PIL import Image
+    fixture = io.BytesIO(); Image.new("RGBA", (3, 2), (40, 50, 60, 255)).save(fixture, "PNG")
+    files["smoke_fixture"] = _put(root, "fixtures/smoke.png", fixture.getvalue(), content_id)
     dlls = {name: _put(root, f"onnxruntime/capi/{name}", f"fake-{name}".encode())
             for name in ("onnxruntime.dll", "onnxruntime_providers_shared.dll")}
     lock_data = {"schema": 1, "status": "approved", "content_id": content_id,
@@ -87,3 +91,29 @@ def test_schema_and_duplicate_paths_fail_closed(tmp_path):
     data["files"]["notice"] = dict(data["files"]["license"])
     lock.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ReleaseBundleError, match="reuse"): verify_release_bundle(tmp_path, lock)
+
+
+def test_offline_smoke_executes_fake_local_adapter_and_emits_hashed_evidence(tmp_path):
+    from types import SimpleNamespace
+    from ditherzam.offline_smoke import run
+    lock, _ = _valid_bundle(tmp_path)
+    class Adapter:
+        def infer(self, rgba):
+            return SimpleNamespace(probability=SimpleNamespace(values=np.full(rgba.shape[:2], .75, np.float32)))
+    import numpy as np
+    output = io.StringIO()
+    assert run(lock, adapter_factory=Adapter, output=output, bundle_root=tmp_path) == 0
+    evidence = json.loads(output.getvalue())
+    assert evidence["executed"] is True
+    assert {v["format"] for v in evidence["outputs"].values()} == {"PNG", "JPEG"}
+
+
+def test_post_build_inventory_accepts_only_exact_locked_dlls(tmp_path):
+    from tools.verify_smart_mask_frozen_inventory import verify
+    lock, data = _valid_bundle(tmp_path)
+    dist = tmp_path / "dist"; capi = dist / "onnxruntime" / "capi"; capi.mkdir(parents=True)
+    for name, record in data["ort_dlls"].items():
+        (capi / name).write_bytes((tmp_path / record["path"]).read_bytes())
+    verify(dist, lock)
+    (capi / "unexpected.dll").write_bytes(b"x")
+    with pytest.raises(RuntimeError, match="inventory"): verify(dist, lock)
