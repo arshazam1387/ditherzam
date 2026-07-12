@@ -49,7 +49,7 @@ def _resize_source_rgba(source: np.ndarray, shape: tuple[int, int]) -> np.ndarra
 
 def render_with_mask(renderer: Callable[[], np.ndarray], mask_context=None, *,
                      caches: MaskCaches | None = None, rendered_identity=None,
-                     is_cancelled=None) -> np.ndarray:
+                     is_cancelled=None, target_shape=None) -> np.ndarray:
     """Render one complete branch and optionally outer-composite its mask.
 
     ``mask_context is None`` is the explicit historical bypass: no source hash,
@@ -58,8 +58,6 @@ def render_with_mask(renderer: Callable[[], np.ndarray], mask_context=None, *,
     if mask_context is None:
         return renderer()
 
-    _cancel(is_cancelled)
-    rendered = renderer()
     _cancel(is_cancelled)
     settings = mask_context.settings
     source = mask_context.source_rgba
@@ -78,7 +76,12 @@ def render_with_mask(renderer: Callable[[], np.ndarray], mask_context=None, *,
         )
         _cancel(is_cancelled)
     _cancel(is_cancelled)
-    target_shape = rendered.shape[:2]
+    rendered = None
+    if target_shape is None:
+        rendered = renderer()
+        _cancel(is_cancelled)
+        target_shape = rendered.shape[:2]
+    target_shape = tuple(target_shape)
     mask = master if master.shape == target_shape else resize_mask_area(master, target_shape)
     _cancel(is_cancelled)
     target_source = _resize_source_rgba(source, target_shape)
@@ -94,6 +97,9 @@ def render_with_mask(renderer: Callable[[], np.ndarray], mask_context=None, *,
             if derived_new:
                 caches.put_derived(mask_identity, master)
             return cached
+    if rendered is None:
+        rendered = renderer()
+        _cancel(is_cancelled)
     result = composite_masked(rendered, target_source, mask, settings.outside)
     _cancel(is_cancelled)
     if caches is not None:

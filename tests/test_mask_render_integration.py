@@ -9,7 +9,7 @@ from ditherzam.masking.settings import OutsideMode, SmartMaskSettings
 from ditherzam.ui.render_request import MaskContext
 
 
-def _context(probability, *, outside=OutsideMode.ORIGINAL):
+def _context(probability, *, outside=OutsideMode.ORIGINAL, **setting_changes):
     probability = np.asarray(probability, np.float32)
     rgba = np.zeros((*probability.shape, 4), np.uint8)
     rgba[..., :3] = (10, 20, 30); rgba[..., 3] = 255; rgba.flags.writeable = False
@@ -17,7 +17,8 @@ def _context(probability, *, outside=OutsideMode.ORIGINAL):
     identity = InferenceIdentity(source, ModelIdentity("m", "1", "a" * 64), "p", "primary")
     prob = ProbabilityMap(identity, np.asarray(probability, np.float32))
     return MaskContext(source, rgba, prob,
-                       SmartMaskSettings(enabled=True, feather_px=0, outside=outside))
+                       SmartMaskSettings(enabled=True, feather_px=0, outside=outside,
+                                         **setting_changes))
 
 
 def test_disabled_is_literal_direct_historical_call(monkeypatch):
@@ -100,9 +101,16 @@ def test_full_worker_uses_request_context_with_shared_bounded_stage_cache(
     from ditherzam.ui.main_window import _RenderWorker
     from ditherzam.ui.render_request import RenderKind, RenderRequest
 
-    live = RenderPipeline(registry, color_engine=object(), effect_stack=object(),
+    class Engine:
+        context = type("Context", (), {"key": ("palette",)})()
+        source_rgb = None
+
+    class Effects:
+        items = ()
+
+    live = RenderPipeline(registry, color_engine=Engine(), effect_stack=Effects(),
                           cache_budget_bytes=4096)
-    request_engine, request_effect = object(), object()
+    request_engine, request_effect = Engine(), Effects()
     request = RenderRequest(
         1, RenderKind.FULL, RenderSettings(style="None"), 7, 2, (2, 2),
         request_engine, request_effect,
@@ -118,10 +126,44 @@ def test_full_worker_uses_request_context_with_shared_bounded_stage_cache(
     monkeypatch.setattr(RenderPipeline, "render_cached", render_cached)
     worker = _RenderWorker(live, np.ones((2, 2), np.float32), request)
     # Simulate GUI context reassignment after request capture.
-    live.color_engine, live.effect_stack = object(), object()
+    live.color_engine, live.effect_stack = Engine(), Effects()
     worker.run()
     assert observed["engine"] is request_engine
     assert observed["effect"] is request_effect
     assert observed["cache"] is live._cache
     assert observed["lock"] is live._cache_lock
     assert observed["source"] is request.source_gray
+
+
+def test_proxy_complete_branch_runs_once_across_mask_only_edits(monkeypatch):
+    import ditherzam.render as render_module
+    from ditherzam.dithering import registry
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.preview import render_preview
+
+    base = np.arange(16 * 24, dtype=np.float32).reshape(16, 24) % 256
+    pipeline = RenderPipeline(registry, cache_budget_bytes=1024 * 1024)
+    caches = MaskCaches(1024 * 1024)
+    real = render_module.apply_contrast
+    calls = {"branch": 0}
+
+    def contrast(*args, **kwargs):
+        calls["branch"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(render_module, "apply_contrast", contrast)
+    probability = np.linspace(0, 1, base.size, dtype=np.float32).reshape(base.shape)
+    contexts = [
+        _context(probability),
+        _context(probability, sensitivity=60),
+        _context(probability, expansion_px=2),
+        _context(probability, invert=True),
+        _context(probability, outside=OutsideMode.BLACK),
+    ]
+    for context in contexts:
+        render_preview(
+            pipeline, base, RenderSettings(style="None", scale=1), 12,
+            mask_context=context, mask_caches=caches,
+            rendered_identity=(context.source, "creative-a"),
+        )
+    assert calls["branch"] == 1

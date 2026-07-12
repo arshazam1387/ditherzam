@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import threading
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -68,7 +69,8 @@ def _color_sig(engine):
     context = getattr(engine, "context", None)
     if context is not None:
         source = getattr(engine, "source_rgb", None)
-        source_sig = ((id(source), source.shape,
+        source_sig = ((source.shape, source.dtype.str,
+                       hashlib.sha256(np.ascontiguousarray(source).tobytes()).hexdigest(),
                        getattr(engine, "source_dither", None))
                       if source is not None else None)
         return context.key, source_sig
@@ -91,6 +93,19 @@ def _effect_sig(stack):
         return None
     return tuple((name, tuple(sorted((k, repr(v)) for k, v in params.items())))
                  for name, params in stack.items)
+
+
+def render_settings_signature(settings) -> tuple:
+    """Stable value signature for every creative render setting."""
+    return tuple(
+        (name, _params_sig(value) if name == "params" else value)
+        for name, value in vars(settings).items()
+    )
+
+
+def render_context_signature(color_engine=None, effect_stack=None) -> tuple:
+    """Stable value/content signature matching staged-cache context keys."""
+    return (_color_sig(color_engine), _effect_sig(effect_stack))
 
 
 @dataclass
@@ -213,7 +228,7 @@ class RenderPipeline:
 
     # ------------------------------------------------------------------ cache
     def render_cached(self, base_gray_f32, settings: RenderSettings,
-                      temporal_field=None, is_cancelled=None) -> np.ndarray:
+                      temporal_field=None, is_cancelled=None, cache_key=None) -> np.ndarray:
         """Output-identical to ``render()`` but reuses intermediate arrays whose
         inputs are unchanged since the last call. Intended for interactive editing
         where one control moves at a time. Not on the frozen ``render()`` contract;
@@ -228,8 +243,8 @@ class RenderPipeline:
           L6 invert
         """
         with self._cache_lock:
-            cache_key = id(base_gray_f32)
-            cached = self._cache.get(cache_key)
+            entry_key = id(base_gray_f32) if cache_key is None else cache_key
+            cached = self._cache.get(entry_key)
             # Never mutate a retained group: admission/eviction is atomic and a
             # failed or oversized render cannot publish a partial chain.
             c = dict(cached) if cached is not None else {}
@@ -239,7 +254,9 @@ class RenderPipeline:
             # L1: tonal adjustments
             adj_sig = (settings.contrast, settings.midtones,
                        settings.highlights, settings.blur)
-            if (c.get("_base") is not base_gray_f32 or c.get("adj_sig") != adj_sig
+            same_base = (c.get("_base") is base_gray_f32 if cache_key is None
+                         else c.get("_base_key") == cache_key)
+            if (not same_base or c.get("adj_sig") != adj_sig
                     or "g" not in c):
                 # Fresh, call-private buffer -- never the shared/module-global
                 # kind, so a later render's in-place work can't corrupt this
@@ -250,6 +267,7 @@ class RenderPipeline:
                 g = _tonal_stage(apply_highlights, g, settings.highlights, buf)
                 g = apply_blur(g, settings.blur)
                 c["_base"] = base_gray_f32
+                c["_base_key"] = cache_key
                 c["adj_sig"] = adj_sig
                 c["g"] = g
                 dirty = True
@@ -331,7 +349,7 @@ class RenderPipeline:
                 result = clamp_u8(apply_invert(fx, True, out=buf), inplace=True)
             else:
                 result = np.asarray(fx, np.uint8)
-            self._cache.put(cache_key, c)
+            self._cache.put(entry_key, c)
             return result
 
     def clear_cache(self) -> None:

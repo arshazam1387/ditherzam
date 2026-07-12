@@ -110,19 +110,31 @@ def render_preview(pipeline, base_gray, settings, max_side: int,
     byte-identical to an export-time full-res field), which is expected for a
     screen preview.
     """
+    h, w = base_gray.shape[:2]
+    factor = proxy_factor(h, w, max_side)
+    target_shape = (h, w) if factor <= 1 else preview_target_size(h, w, max_side)
+
     def render_complete_branch() -> np.ndarray:
-        h, w = base_gray.shape[:2]
-        factor = proxy_factor(h, w, max_side)
         if factor <= 1:
+            if mask_context is not None and temporal_field is None:
+                return pipeline.render_cached(
+                    base_gray, settings, is_cancelled=is_cancelled,
+                    cache_key=("mask-proxy", rendered_identity, target_shape))
             return pipeline.render(base_gray, settings, temporal_field=temporal_field,
                                    is_cancelled=is_cancelled)
-        target_h, target_w = preview_target_size(h, w, max_side)
+        target_h, target_w = target_shape
         small = nearest_upscale_to(base_gray, (target_w, target_h))
         psettings = replace(settings, scale=proxy_scale(settings.scale, factor))
-        rgb_small = pipeline.render(small, psettings, temporal_field=temporal_field,
-                                    is_cancelled=is_cancelled)
+        if mask_context is not None and temporal_field is None:
+            rgb_small = pipeline.render_cached(
+                small, psettings, is_cancelled=is_cancelled,
+                cache_key=("mask-proxy", rendered_identity, target_shape))
+        else:
+            rgb_small = pipeline.render(small, psettings, temporal_field=temporal_field,
+                                        is_cancelled=is_cancelled)
         return np.asarray(rgb_small, dtype=np.uint8)
 
     return render_with_mask(
         render_complete_branch, mask_context, caches=mask_caches,
-        rendered_identity=rendered_identity, is_cancelled=is_cancelled)
+        rendered_identity=rendered_identity, is_cancelled=is_cancelled,
+        target_shape=target_shape)
