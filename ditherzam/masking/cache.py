@@ -18,14 +18,47 @@ from ditherzam.masking.contracts import (
     validate_confidence_array,
 )
 from ditherzam.masking.settings import OutsideMode
-from ditherzam.render_cache import (
-    DEFAULT_CACHE_BUDGET_BYTES, MAX_EDITOR_RETAINED_CACHE_BYTES, MIB,
-    _group_storage,
-)
+from ditherzam.render_cache import MAX_EDITOR_RETAINED_CACHE_BYTES, MIB, _group_storage
 
 
 DEFAULT_MASK_CACHE_BUDGET_BYTES = 64 * MIB
-assert DEFAULT_CACHE_BUDGET_BYTES + DEFAULT_MASK_CACHE_BUDGET_BYTES == MAX_EDITOR_RETAINED_CACHE_BYTES
+DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES = 128 * MIB
+
+
+@dataclass(frozen=True)
+class EditorCacheAllocation:
+    """Budgets for the two cache instances owned by one image editor."""
+    render_bytes: int
+    mask_bytes: int
+
+    def __post_init__(self) -> None:
+        values = (self.render_bytes, self.mask_bytes)
+        if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+            raise ValueError("cache allocations must be integer byte counts")
+        if any(value < 0 for value in values):
+            raise ValueError("cache allocations must be non-negative")
+        if sum(values) > MAX_EDITOR_RETAINED_CACHE_BYTES:
+            raise ValueError("combined cache allocation exceeds the 192 MiB editor ceiling")
+
+
+def editor_cache_allocation(mask_enabled: bool, *, render_bytes: int | None = None,
+                            mask_bytes: int | None = None) -> EditorCacheAllocation:
+    """Return the validated split an editor must use for its owned caches.
+
+    SM-12 must instantiate both actual caches from this result and verify their
+    summed budgets. Standalone RenderCache behavior is intentionally unchanged.
+    """
+    if not isinstance(mask_enabled, bool):
+        raise ValueError("mask_enabled must be bool")
+    allocation = EditorCacheAllocation(
+        (DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES if mask_enabled else MAX_EDITOR_RETAINED_CACHE_BYTES)
+        if render_bytes is None else render_bytes,
+        (DEFAULT_MASK_CACHE_BUDGET_BYTES if mask_enabled else 0)
+        if mask_bytes is None else mask_bytes,
+    )
+    if not mask_enabled and allocation.mask_bytes != 0:
+        raise ValueError("mask-disabled editors must allocate zero mask-cache bytes")
+    return allocation
 
 
 @dataclass(frozen=True)
