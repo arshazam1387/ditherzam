@@ -5,15 +5,47 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from ditherzam.masking.composite import flatten_rgba_white
 
-def save_raster(rgb_u8: np.ndarray, path) -> Path:
-    """Save an HxWx3 (or HxW grayscale) uint8 array as PNG/JPG by file extension."""
-    path = Path(path)
-    arr = np.clip(np.asarray(rgb_u8), 0, 255).astype(np.uint8)
-    img = Image.fromarray(arr)
-    ext = path.suffix.lower()
-    if ext in (".jpg", ".jpeg"):
-        img.convert("RGB").save(path, "JPEG", quality=95)
+
+class RasterExportError(ValueError):
+    """Raised when an array or file extension cannot be exported safely."""
+
+
+def _canonical_u8(image: object) -> np.ndarray:
+    """Validate raster geometry, then perform the historical uint8 coercion."""
+    arr = np.asarray(image)
+    if arr.ndim == 2:
+        if 0 in arr.shape:
+            raise RasterExportError("raster image must not be empty")
+    elif arr.ndim == 3 and arr.shape[2] in (3, 4):
+        if 0 in arr.shape[:2]:
+            raise RasterExportError("raster image must not be empty")
     else:
-        img.save(path)
+        raise RasterExportError(
+            "raster image shape must be (H, W), (H, W, 3), or (H, W, 4)"
+        )
+    if arr.dtype.kind not in "buif":
+        raise RasterExportError("raster image values must be numeric")
+    return np.clip(arr, 0, 255).astype(np.uint8)
+
+
+def save_raster(image_u8: np.ndarray, path) -> Path:
+    """Save grayscale/RGB/RGBA raster data with explicit format semantics.
+
+    PNG preserves straight RGBA bytes exactly. JPEG cannot store transparency,
+    so straight RGBA is deterministically flattened onto white before encoding.
+    Numeric uint8-like inputs retain the historical clip-and-cast behavior.
+    """
+    path = Path(path)
+    ext = path.suffix.lower()
+    if ext not in (".png", ".jpg", ".jpeg"):
+        raise RasterExportError(f"unsupported raster extension: {ext or '<none>'}")
+    arr = _canonical_u8(image_u8)
+    if ext in (".jpg", ".jpeg"):
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            arr = flatten_rgba_white(arr)
+        Image.fromarray(arr).convert("RGB").save(path, "JPEG", quality=95)
+    else:
+        Image.fromarray(arr).save(path, "PNG")
     return path

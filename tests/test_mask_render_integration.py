@@ -218,3 +218,29 @@ def test_exact_reconstructed_value_context_hits_and_creative_change_misses(
     editor.panel.state["contrast"] = 60
     editor._rendered_rgb()
     assert calls["render"] == 2
+
+
+def test_jpeg_transparency_notice_is_nonblocking_and_shown_once(qapp_fixture, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+    from ditherzam.dithering import registry
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor(registry=registry)
+    editor.load_array(np.zeros((2, 2), np.float32))
+    rgba = np.zeros((2, 2, 4), np.uint8)
+    paths = iter((str(tmp_path / "one.jpg"), str(tmp_path / "two.jpg")))
+    messages = []
+    monkeypatch.setattr(editor, "_rendered_rgb", lambda: rgba)
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName", staticmethod(lambda *args: (next(paths), ""))
+    )
+    monkeypatch.setattr(
+        editor.statusBar(), "showMessage", lambda message, timeout=0: messages.append((message, timeout))
+    )
+
+    editor._on_export_raster("JPEG Files (*.jpg)", ".jpg")
+    editor._on_export_raster("JPEG Files (*.jpg)", ".jpg")
+
+    assert messages == [
+        ("JPEG does not support transparency; transparent pixels are flattened onto white.", 8000)
+    ]
