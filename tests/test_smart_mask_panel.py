@@ -107,3 +107,61 @@ def test_source_reset_turns_off_overlay_and_resets_lifecycle(qapp_fixture):
     panel.reset_for_source()
     assert not panel.overlay_check.isChecked()
     assert panel.status is MaskPanelStatus.NEEDS_DETECTION
+
+
+def test_disclosure_is_independent_and_preserves_state(qapp_fixture):
+    panel = SmartMaskPanel()
+    panel.show()
+    settings_seen = []
+    overlay_seen = []
+    panel.settings_changed.connect(settings_seen.append)
+    panel.overlay_changed.connect(overlay_seen.append)
+    panel.enabled_check.click()
+    panel.sensitivity_slider.setValue(71)
+    before = panel.settings
+    settings_seen.clear()
+    panel.disclosure_button.click()
+    assert not panel.controls_widget.isVisible()
+    assert panel.settings == before
+    assert settings_seen == [] and overlay_seen == []
+    panel.disclosure_button.click()
+    assert panel.controls_widget.isVisibleTo(panel)
+    assert panel.settings == before
+
+
+def test_set_settings_reconciles_stale_lifecycle_without_signals(qapp_fixture):
+    panel = SmartMaskPanel()
+    settings_seen = []
+    panel.settings_changed.connect(settings_seen.append)
+    panel.set_status(MaskPanelStatus.DETECTING, 44)
+    panel.set_settings(SmartMaskSettings(enabled=True))
+    assert panel.status is MaskPanelStatus.NEEDS_DETECTION
+    assert panel.progress_label.text() == ""
+    panel.set_valid_mask_available(True)
+    assert panel.status is MaskPanelStatus.READY
+    panel.set_status(MaskPanelStatus.DETECTING, 12)
+    panel.set_settings(SmartMaskSettings(enabled=False))
+    assert panel.status is MaskPanelStatus.DISABLED
+    panel.set_settings(SmartMaskSettings(enabled=True))
+    assert panel.status is MaskPanelStatus.READY
+    assert settings_seen == []
+
+
+def test_labels_accessibility_and_focus_policy(qapp_fixture):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    panel = SmartMaskPanel()
+    buddies = {label.text(): label.buddy() for label in panel.findChildren(QLabel)
+               if label.buddy() is not None}
+    assert buddies["Target"] is panel.target_combo
+    assert buddies["Detected subject"] is panel.candidate_combo
+    assert buddies["Sensitivity"] is panel.sensitivity_slider
+    assert buddies["Edge feather"] is panel.feather_slider
+    assert buddies["Expand / contract"] is panel.expansion_slider
+    assert buddies["Outside region"] is panel.outside_combo
+    assert panel.target_combo.accessibleName() == "Target"
+    assert panel.status_label.accessibleName() == "Smart Mask status"
+    assert panel.candidate_combo.focusPolicy() is Qt.FocusPolicy.NoFocus
+    for spin in (panel.sensitivity_spin, panel.feather_spin, panel.expansion_spin):
+        assert spin.focusPolicy() is Qt.FocusPolicy.NoFocus
