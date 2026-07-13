@@ -255,7 +255,11 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
                 if _hash01(x, y, 101) >= local:
                     ink = True
             if not ink and count > 0 and b > 0.0:
-                for n in range(1, count + 1):
+                visible = b * count            # breath extends echo reach
+                nmax = int(visible) + 1
+                if nmax > count:
+                    nmax = count
+                for n in range(1, nmax + 1):
                     off = math.sin(y * 0.1 + phase_rad + n * 0.7) * wave
                     sx = int(x - n * spacing - off)
                     if sx < 0 or sx >= w:
@@ -264,8 +268,11 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
                     xr = sx + 2 if sx + 2 < w else w - 1
                     yd = y + 2 if y + 2 < h else h - 1
                     if s0 != (img[y, xr] < thr) or s0 != (img[yd, sx] < thr):
-                        decay = 1.0 - (n - 1.0) / count      # 1.0 .. 1/count
-                        if _hash01(x, y, 202 + n) < b * (0.35 + 0.65 * decay):
+                        if n <= visible:
+                            ink = True         # fully visible echo: continuous line
+                            break
+                        # outermost echo fades in smoothly as breath grows
+                        if _hash01(x, y, 202 + n) < (visible - int(visible)):
                             ink = True
                             break
             if not ink and img[y, x] >= thr:
