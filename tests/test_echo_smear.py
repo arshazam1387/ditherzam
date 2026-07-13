@@ -110,34 +110,35 @@ def test_echo_spacing_changes_pixels():
     assert np.any(a != b)
 
 
-def _streak_columns(out):
-    # Columns that are ink for their entire height.
-    return {x for x in range(out.shape[1]) if np.all(out[:, x] == 0.0)}
-
-
-def test_streaks_are_full_height_and_scale_with_slider():
+def test_streaks_drip_below_subject_never_above():
     img = _subject_square(128)
-    img[50:80, 40:90] = 20.0                     # widen subject so many columns qualify
-    off = entry().func(img.copy(), (0, 10, 0, 0, 0, 0, 0), THR)
-    lo = entry().func(img.copy(), (0, 10, 0, 0, 30, 0, 0), THR)
-    hi = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
-    assert _streak_columns(off) == set()
-    assert len(_streak_columns(hi)) >= len(_streak_columns(lo))
-    assert len(_streak_columns(hi)) >= 1
-
-
-def test_streaks_only_from_subject_columns():
-    img = np.full((64, 64), 230.0, dtype=np.float32)   # no subject anywhere
+    img[50:80, 40:90] = 20.0
     out = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
-    assert _streak_columns(out) == set()
+    dripping = [x for x in range(128)
+                if np.any(img[:, x] < 128.0) and np.all(out[100:, x] == 0.0)]
+    assert len(dripping) >= 1
+    for x in dripping:
+        top = int(np.argmax(img[:, x] < 128.0))   # first subject row
+        assert np.all(out[:top, x] == 255.0)      # nothing above the subject
 
 
-def test_streaks_survive_breath_zero():
+def test_streaks_off_at_zero_and_only_from_subject_columns():
+    img = np.full((64, 64), 230.0, dtype=np.float32)
+    out = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
+    assert np.all(out == 255.0)                   # no subject anywhere -> nothing
+    img2 = _subject_square(128)
+    img2[50:80, 40:90] = 20.0
+    off = entry().func(img2.copy(), (0, 10, 0, 0, 0, 0, 0), THR)
+    below = off[80:, 40:90]
+    assert np.all(below == 255.0)                 # streak 0 -> no drips
+
+
+def test_streak_drips_independent_of_breath():
     img = _subject_square(128)
     img[50:80, 40:90] = 20.0
     b0 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
     b100 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 100), THR)
-    assert _streak_columns(b0) == _streak_columns(b100)
+    np.testing.assert_array_equal(b0[100:, :], b100[100:, :])
 
 
 def test_dust_appears_left_of_subject():
@@ -203,6 +204,22 @@ def test_echoes_are_continuous_at_partial_breath():
     out = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 68), THR)
     col = out[22:42, 40]   # echo 1 solid: visible = 0.68 * 3 = 2.04 >= 1
     assert np.all(col == 0.0)
+
+
+def test_echoes_only_right_of_trailing_edge():
+    img = _subject_square()
+    out = entry().func(img.copy(), (6, 10, 0, 0, 0, 0, 100), THR)
+    left = out[:, 0:10]                            # strictly left of the square
+    assert np.all(left == 255.0)                   # no rings on the leading side
+
+
+def test_echoes_hug_subject_vertical_extent():
+    img = _subject_square()
+    out = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 100), THR)
+    above = out[0:20, 31:]                         # above the square, right side
+    below = out[44:, 31:]                          # below the square, right side
+    assert np.all(above == 255.0)
+    assert np.all(below == 255.0)
 
 
 def test_wave_frequency_changes_pixels():

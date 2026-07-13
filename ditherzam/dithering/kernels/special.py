@@ -229,24 +229,23 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
     b = breath / 100.0
     dissolve_gate = b * dissolve / 100.0 * 2.0
     phase_rad = phase * math.pi / 180.0
-    subject_gate = thr            # column qualifies if it contains any subject pixel
-    streak_prob = streak / 100.0 * 0.08
-    col_streak = np.zeros(w, dtype=np.uint8)
+    freq = wave_freq / 100.0
+
+    # Streak pre-pass: selected columns drip straight down from the column's
+    # lowest subject pixel; -1 marks columns with no subject or not selected.
+    streak_prob = streak / 100.0 * 0.12
+    drip_from = np.full(w, -1, dtype=np.int64)
     for x in prange(w):
-        has_subject = False
-        for y in range(h):
-            if img[y, x] < subject_gate:
-                has_subject = True
-                break
-        if has_subject and _hash01(x, 0, 303) < streak_prob:
-            col_streak[x] = 1
+        if _hash01(x, 0, 303) < streak_prob:
+            for y in range(h - 1, -1, -1):
+                if img[y, x] < thr:
+                    drip_from[x] = y
+                    break
+
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
             ink = False
-            if col_streak[x] == 1:
-                out[y, x] = 0.0
-                continue
             if img[y, x] < thr:
                 xl = x - 3 if x >= 3 else 0
                 xr2 = x + 3 if x + 3 < w else w - 1
@@ -254,24 +253,23 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
                 local = dissolve_gate * (1.5 if near_edge else 0.75)
                 if _hash01(x, y, 101) >= local:
                     ink = True
+            if not ink and drip_from[x] >= 0 and y > drip_from[x]:
+                ink = True
             if not ink and count > 0 and b > 0.0:
-                visible = b * count            # breath extends echo reach
+                visible = b * count
                 nmax = int(visible) + 1
                 if nmax > count:
                     nmax = count
                 for n in range(1, nmax + 1):
-                    off = math.sin(y * (wave_freq / 100.0) + phase_rad + n * 0.7) * wave
+                    off = math.sin(y * freq + phase_rad + n * 0.7) * wave
                     sx = int(x - n * spacing - off)
-                    if sx < 0 or sx >= w:
+                    if sx < 0 or sx + 1 >= w:
                         continue
-                    s0 = img[y, sx] < thr
-                    xr = sx + 2 if sx + 2 < w else w - 1
-                    yd = y + 2 if y + 2 < h else h - 1
-                    if s0 != (img[y, xr] < thr) or s0 != (img[yd, sx] < thr):
+                    # trailing (right) edge only: subject at sx, background at sx+1
+                    if img[y, sx] < thr and img[y, sx + 1] >= thr:
                         if n <= visible:
-                            ink = True         # fully visible echo: continuous line
+                            ink = True
                             break
-                        # outermost echo fades in smoothly as breath grows
                         if _hash01(x, y, 202 + n) < (visible - int(visible)):
                             ink = True
                             break
