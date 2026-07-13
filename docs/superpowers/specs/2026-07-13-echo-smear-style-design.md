@@ -38,7 +38,7 @@ stills. The red-on-black color is out of scope — it is an ordinary
 | `echo_spacing_slider` | Echo Spacing | 2 | 40 | 10 | pixels between successive echoes |
 | `echo_wave_amount_slider` | Wave Amount | 0 | 32 | 8 | vertical wiggle amplitude of each echo |
 | `echo_wave_phase_slider` | Wave Phase | 0 | 360 | 0 | scrubs the wave position (manual motion on stills) |
-| `echo_streak_slider` | Streak Amount | 0 | 100 | 20 | density of 1-px full-height streaks from sparse bright features |
+| `echo_streak_slider` | Streak Amount | 0 | 100 | 20 | density of 1-px drip streaks falling from the subject's lowest edge |
 | `echo_dissolve_slider` | Dissolve Amount | 0 | 100 | 30 | how much of the subject body erodes into speckle dust |
 | `echo_breath_slider` | Breath | 0 | 100 | 50 | master cycle: 0 = fully solid subject, 100 = fully dissolved |
 | `echo_wave_frequency_slider` | Wave Frequency | 1 | 100 | 10 | wave frequency of the echo wiggle (value/100 rad per px; 10 = classic 0.1) |
@@ -52,8 +52,8 @@ Effects styles so the golden harness probes real defaults.
 `luminance_threshold_value` is the subject tone gate (darkness above it =
 subject). Two passes inside one kernel call:
 
-1. **Column pass** (parallel over columns): per-column max subject
-   darkness → `col_peak[w]`, drives streaks.
+1. **Column pass** (parallel over columns): hash-selected columns record
+   their lowest subject row in `drip_from[w]`, driving drip streaks.
 2. **Pixel pass** (parallel over rows). Let `b = Breath/100`. Pixel is ink
    (0.0) if ANY of:
    - **Body** — pixel is subject AND survives dissolve: deterministic

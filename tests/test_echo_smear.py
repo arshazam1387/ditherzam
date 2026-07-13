@@ -207,19 +207,34 @@ def test_echoes_are_continuous_at_partial_breath():
 
 
 def test_echoes_only_right_of_trailing_edge():
+    # Discriminator: the old any-boundary kernel echoed BOTH edges rightward.
+    # With spacing 4, count 6, wave 0, its left-edge boundaries at sx=8,9
+    # (bg vs subject at sx+2=10,11) landed echoes at x = sx + 4n, inking the
+    # background band x=31..33 in subject rows (x=32: n=6, sx=8; x=33: n=6,
+    # sx=9 / n=1, sx=29).  Trailing-edge semantics fire only at sx=30,
+    # echoing to x = 30 + 4n = 34,38,... so 31..33 must stay white.
     img = _subject_square()
-    out = entry().func(img.copy(), (6, 10, 0, 0, 0, 0, 100), THR)
-    left = out[:, 0:10]                            # strictly left of the square
-    assert np.all(left == 255.0)                   # no rings on the leading side
+    out = entry().func(img.copy(), (6, 4, 0, 0, 0, 0, 100), THR)
+    assert np.all(out[22:42, 31:34] == 255.0)
+    # Forward pin (white under the old kernel too): echoes displace
+    # rightward only — min echo x = 8 + spacing >= 12 — so ink may never
+    # appear strictly left of the square.
+    assert np.all(out[:, 0:10] == 255.0)
 
 
 def test_echoes_hug_subject_vertical_extent():
     img = _subject_square()
     out = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 100), THR)
-    above = out[0:20, 31:]                         # above the square, right side
-    below = out[44:, 31:]                          # below the square, right side
-    assert np.all(above == 255.0)
-    assert np.all(below == 255.0)
+    # Discriminator: the old kernel's yd=y+2 top-boundary test fired at
+    # y=20,21 (bg vs subject at y+2=22,23) for sx=10..30, inking
+    # x = sx + 10n within 31: (e.g. y=20, x=40, n=1, sx=30).  Trailing-edge
+    # echoes need img[y,sx] < thr, impossible above the square.
+    assert np.all(out[20:22, 31:] == 255.0)
+    # Forward pins (old kernel was already white here): far field above,
+    # and rows below the square — the old bottom boundary fired at y=40,41
+    # (inside the body), so rows 42+ were clean for it too.
+    assert np.all(out[0:20, 31:] == 255.0)
+    assert np.all(out[42:, 31:] == 255.0)
 
 
 def test_wave_frequency_changes_pixels():
