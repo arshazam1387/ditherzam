@@ -16,7 +16,7 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QRunnable, Signal
 from PySide6.QtWidgets import QApplication, QWidget
 
 import ditherzam.ui.video_controller as vc_mod
@@ -215,6 +215,87 @@ def test_export_video_worker_args_identical_regardless_of_cap(tmp_path, monkeypa
         results.append(started[0].args)
 
     assert results[0] == results[1]
+
+
+# ---- worker lifetime: queued terminal signals must survive worker GC --------
+
+class _ThreadedDitherWorker(QRunnable):
+    """Real QRunnable that emits finished from a pool thread, like the real
+    worker. The pool deletes it (autoDelete) the instant run() returns, so the
+    queued finished emission is only delivered if the controller kept the
+    Python wrapper (and its signals QObject) alive."""
+
+    def __init__(self, in_dir, out_dir, pipeline, settings) -> None:
+        super().__init__()
+        self.signals = _FakeSignals()
+
+    def cancel(self) -> None:
+        pass
+
+    def run(self) -> None:
+        self.signals.finished.emit(1)
+
+
+_assemble_instances: list = []
+
+
+class _RecordingAssembleWorker(QRunnable):
+    def __init__(self, frames_dir, fps, orig_video, out) -> None:
+        super().__init__()
+        _assemble_instances.append(self)
+        self.signals = _FakeSignals()
+
+    def run(self) -> None:
+        self.signals.finished.emit("out")
+
+
+def test_dither_finished_survives_worker_gc(tmp_path, monkeypatch):
+    """Regression: nothing kept the started worker alive, so the WorkerSignals
+    QObject was destroyed when run() returned and the queued finished/error
+    emission was silently dropped -- export stalled after the dither phase with
+    no output and no error dialog."""
+    import gc
+    import time
+
+    _assemble_instances.clear()
+    win = _window()
+    ctrl = VideoController(win, object(), lambda: object(), lambda: False,
+                           cap_provider=lambda: 1440)
+    ctrl.temp_dir = tmp_path
+    (tmp_path / "original_frames").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "dithered_frames").mkdir(parents=True, exist_ok=True)
+    ctrl.input_file = "in.mp4"
+    ctrl.framerate = 24.0
+    monkeypatch.setattr(vc_mod, "VideoDitherWorker", _ThreadedDitherWorker)
+    monkeypatch.setattr(vc_mod, "VideoAssembleWorker", _RecordingAssembleWorker)
+    monkeypatch.setattr(vc_mod.QFileDialog, "getSaveFileName",
+                        lambda *a, **k: (str(tmp_path / "out.mp4"), ""))
+
+    class _SilentMessageBox:   # the modal export-complete box would block the loop
+        critical = staticmethod(lambda *a, **k: None)
+        warning = staticmethod(lambda *a, **k: None)
+        information = staticmethod(lambda *a, **k: None)
+
+    monkeypatch.setattr(vc_mod, "QMessageBox", _SilentMessageBox)
+
+    ctrl.export_video()   # real QThreadPool; no test-held reference to the worker
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline and not _assemble_instances:
+        gc.collect()
+        _app.processEvents()
+        time.sleep(0.01)
+
+    assert len(_assemble_instances) == 1, \
+        "dither finished signal was dropped; assemble phase never started"
+
+    # and the assemble worker's own finished must arrive too (export-complete UI)
+    deadline = time.time() + 10.0
+    while time.time() < deadline and ctrl._active_workers:
+        gc.collect()
+        _app.processEvents()
+        time.sleep(0.01)
+    assert not ctrl._active_workers, "terminal signals must release kept workers"
 
 
 def test_export_video_uses_export_pipeline_snapshot(tmp_path, monkeypatch):
