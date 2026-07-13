@@ -69,3 +69,41 @@ def test_deterministic(image):
     a = entry().func(image.copy(), DEFAULTS, THR)
     b = entry().func(image.copy(), DEFAULTS, THR)
     np.testing.assert_array_equal(a, b)
+
+
+def _subject_square(size=64):
+    # Dark 20px-wide square on white: crisp silhouette with a right edge at x=30.
+    img = np.full((size, size), 230.0, dtype=np.float32)
+    img[22:42, 10:31] = 20.0
+    return img
+
+
+def test_echoes_add_ink_right_of_subject():
+    img = _subject_square()
+    none = entry().func(img.copy(), (0, 10, 8, 0, 0, 0, 100), THR)
+    some = entry().func(img.copy(), (6, 10, 8, 0, 0, 0, 100), THR)
+    right = slice(None), slice(32, None)          # strictly right of the square
+    assert (some[right] == 0.0).sum() > (none[right] == 0.0).sum()
+    # body region unchanged by echoes
+    np.testing.assert_array_equal(some[22:42, 10:31], none[22:42, 10:31])
+
+
+def test_echoes_vanish_at_breath_zero():
+    img = _subject_square()
+    out = entry().func(img.copy(), (6, 10, 8, 0, 0, 0, 0), THR)
+    expected = np.where(img < 128.0, 0.0, 255.0).astype(np.float32)
+    np.testing.assert_array_equal(out, expected)
+
+
+def test_wave_phase_moves_the_waves():
+    img = _subject_square()
+    a = entry().func(img.copy(), (6, 10, 8, 0, 0, 0, 100), THR)
+    b = entry().func(img.copy(), (6, 10, 8, 180, 0, 0, 100), THR)
+    assert np.any(a != b)
+
+
+def test_echo_spacing_changes_pixels():
+    img = _subject_square()
+    a = entry().func(img.copy(), (6, 4, 8, 0, 0, 0, 100), THR)
+    b = entry().func(img.copy(), (6, 20, 8, 0, 0, 0, 100), THR)
+    assert np.any(a != b)
