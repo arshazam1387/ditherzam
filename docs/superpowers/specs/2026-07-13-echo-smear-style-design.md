@@ -37,7 +37,7 @@ stills. The red-on-black color is out of scope — it is an ordinary
 | `echo_count_slider` | Echo Count | 0 | 16 | 6 | number of silhouette echo outlines |
 | `echo_spacing_slider` | Echo Spacing | 2 | 40 | 10 | pixels between successive echoes |
 | `echo_wave_amount_slider` | Wave Amount | 0 | 32 | 8 | vertical wiggle amplitude of each echo |
-| `echo_wave_phase_slider` | Wave Phase | 0 | 360 | 0 | scrubs the wave position (manual motion on stills) |
+| `echo_wave_phase_slider` | Wave Phase | 0 | 360 | 0 | travels the echo lines along the smear axis (0→360 marches each line one spacing inward, seamless loop) and scrolls the wiggle |
 | `echo_streak_slider` | Streak Amount | 0 | 100 | 20 | density of 1-px drip streaks falling from the subject's lowest edge |
 | `echo_dissolve_slider` | Dissolve Amount | 0 | 100 | 30 | how much of the subject body erodes into speckle dust |
 | `echo_breath_slider` | Breath | 0 | 100 | 50 | master cycle: 0 = fully solid subject, 100 = fully dissolved |
@@ -61,9 +61,13 @@ subject). Two passes inside one kernel call:
      densest near the silhouette edge (edge proximity via the
      neighbor-band test at small radius).
    - **Echo n = 1..Echo Count** — sample source at
-     `sx = x − n·spacing − sin(y·f + phase_rad + n·Δ)·wave` (`f` = Wave
-     Frequency/100 rad/px, default 0.1, `Δ` a fixed per-echo phase stagger
-     ≈0.7 rad so echoes don't align); ink where the sample is the
+     `sx = x − (n − phase/360)·spacing − sin(y·f + phase_rad + e·Δ)·wave`
+     (`e = n − phase/360` is the continuous echo index/line identity,
+     `f` = Wave Frequency/100 rad/px, default 0.1, `Δ` a fixed per-echo
+     phase stagger ≈0.7 rad so echoes don't align); the loop runs one
+     extra line (`n = 1..count+1`) so the cycle wraps seamlessly, and any
+     line whose travel distance `d = e·spacing` drops below 1px is
+     skipped as arrived at the subject; ink where the sample is the
      subject's trailing (right) edge (`img[y,sx] < thr` and
      `img[y,sx+1] >= thr`) — echoes are wavy vertical strokes hugging the
      silhouette, on the smear side only; Breath sets the visible
