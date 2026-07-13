@@ -231,10 +231,24 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
     if dissolve_gate > 1.0:
         dissolve_gate = 1.0
     phase_rad = phase * math.pi / 180.0
+    subject_gate = thr            # column qualifies if it contains any subject pixel
+    streak_prob = streak / 100.0 * 0.08
+    col_streak = np.zeros(w, dtype=np.uint8)
+    for x in prange(w):
+        has_subject = False
+        for y in range(h):
+            if img[y, x] < subject_gate:
+                has_subject = True
+                break
+        if has_subject and _hash01(x, 0, 303) < streak_prob:
+            col_streak[x] = 1
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
             ink = False
+            if col_streak[x] == 1:
+                out[y, x] = 0.0
+                continue
             if img[y, x] < thr:
                 if _hash01(x, y, 101) >= dissolve_gate:
                     ink = True
