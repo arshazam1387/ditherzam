@@ -63,13 +63,16 @@ subject). Two passes inside one kernel call:
    - **Echo n = 1..Echo Count** — sample source at
      `sx = x − n·spacing − sin(y·f + phase_rad + n·Δ)·wave` (`f` = Wave
      Frequency/100 rad/px, default 0.1, `Δ` a fixed per-echo phase stagger
-     ≈0.7 rad so echoes don't align); ink if the
-     sample lies on a subject band edge (Topography-style neighbor band
-     difference), drawn as continuous outlines; Breath sets the visible
+     ≈0.7 rad so echoes don't align); ink where the sample is the
+     subject's trailing (right) edge (`img[y,sx] < thr` and
+     `img[y,sx+1] >= thr`) — echoes are wavy vertical strokes hugging the
+     silhouette, on the smear side only; Breath sets the visible
      echo reach (`visible = b * count`) with only the outermost echo
      fading in stochastically (echoes vanish at Breath 0).
-   - **Streak** — `col_peak[x]` beats gate derived from Streak Amount AND
-     column selected by hash (1-px thin, sparse).
+   - **Streak** — selected columns (hash-gated, probability
+     `streak/100 * 0.12`) drip straight down from the column's lowest
+     subject pixel to the frame bottom; never above or through the
+     subject; independent of Breath.
    - **Dust** — hash-noise speckle with probability decaying with distance
      past the subject edge, scaled by `Dissolve × b`.
    Else background (255.0).
