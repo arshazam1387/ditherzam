@@ -195,3 +195,10 @@ def test_echoes_are_continuous_lines_at_full_breath():
     # echo 1 of the square's right edge (x=30) with wave=0 lands at column 40
     col = out[22:42, 40]
     assert np.all(col == 0.0)
+
+
+def test_echoes_are_continuous_at_partial_breath():
+    img = _subject_square()
+    out = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 68), THR)
+    col = out[22:42, 40]   # echo 1 solid: visible = 0.68 * 3 = 2.04 >= 1
+    assert np.all(col == 0.0)
