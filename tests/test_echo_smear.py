@@ -107,3 +107,33 @@ def test_echo_spacing_changes_pixels():
     a = entry().func(img.copy(), (6, 4, 8, 0, 0, 0, 100), THR)
     b = entry().func(img.copy(), (6, 20, 8, 0, 0, 0, 100), THR)
     assert np.any(a != b)
+
+
+def _streak_columns(out):
+    # Columns that are ink for their entire height.
+    return {x for x in range(out.shape[1]) if np.all(out[:, x] == 0.0)}
+
+
+def test_streaks_are_full_height_and_scale_with_slider():
+    img = _subject_square(128)
+    img[50:80, 40:90] = 20.0                     # widen subject so many columns qualify
+    off = entry().func(img.copy(), (0, 10, 0, 0, 0, 0, 0), THR)
+    lo = entry().func(img.copy(), (0, 10, 0, 0, 30, 0, 0), THR)
+    hi = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
+    assert _streak_columns(off) == set()
+    assert len(_streak_columns(hi)) >= len(_streak_columns(lo))
+    assert len(_streak_columns(hi)) >= 1
+
+
+def test_streaks_only_from_subject_columns():
+    img = np.full((64, 64), 230.0, dtype=np.float32)   # no subject anywhere
+    out = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
+    assert _streak_columns(out) == set()
+
+
+def test_streaks_survive_breath_zero():
+    img = _subject_square(128)
+    img[50:80, 40:90] = 20.0
+    b0 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
+    b100 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 100), THR)
+    assert _streak_columns(b0) == _streak_columns(b100)
