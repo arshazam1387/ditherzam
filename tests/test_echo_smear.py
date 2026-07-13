@@ -4,8 +4,8 @@ import pytest
 from ditherzam.dithering import registry
 from ditherzam.dithering.parameters import parameter_specs
 
-# param tuple order: (count, spacing, wave, phase, streak, dissolve, breath)
-DEFAULTS = (6, 10, 8, 0, 20, 30, 50)
+# param tuple order: (count, spacing, wave, phase, streak, dissolve, breath, wave_freq)
+DEFAULTS = (6, 10, 8, 0, 20, 30, 50, 10)
 THR = np.float32(128.0)
 
 
@@ -32,7 +32,7 @@ def test_registered_in_special_effects():
     assert e.param_sliders == (
         "echo_count_slider", "echo_spacing_slider", "echo_wave_amount_slider",
         "echo_wave_phase_slider", "echo_streak_slider", "echo_dissolve_slider",
-        "echo_breath_slider",
+        "echo_breath_slider", "echo_wave_frequency_slider",
     )
 
 
@@ -48,6 +48,7 @@ def test_parameter_metadata_exact():
         "echo_streak_slider": ("Streak Amount", 0, 100, 20),
         "echo_dissolve_slider": ("Dissolve Amount", 0, 100, 30),
         "echo_breath_slider": ("Breath", 0, 100, 50),
+        "echo_wave_frequency_slider": ("Wave Frequency", 1, 100, 10),
     }
 
 
@@ -165,8 +166,8 @@ def test_partial_dissolve_erodes_partially():
 def test_each_native_control_changes_pixels(image):
     e = entry()
     base = e.func(image.copy(), DEFAULTS, THR)
-    alternatives = (12, 20, 20, 180, 80, 90, 100)
-    assert len(e.param_sliders) == 7
+    alternatives = (12, 20, 20, 180, 80, 90, 100, 60)
+    assert len(e.param_sliders) == 8
     for index, value in enumerate(alternatives):
         params = list(DEFAULTS)
         params[index] = value
@@ -202,3 +203,17 @@ def test_echoes_are_continuous_at_partial_breath():
     out = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 68), THR)
     col = out[22:42, 40]   # echo 1 solid: visible = 0.68 * 3 = 2.04 >= 1
     assert np.all(col == 0.0)
+
+
+def test_wave_frequency_changes_pixels():
+    img = _subject_square()
+    a = entry().func(img.copy(), (6, 10, 8, 0, 0, 0, 100, 10), THR)
+    b = entry().func(img.copy(), (6, 10, 8, 0, 0, 0, 100, 60), THR)
+    assert np.any(a != b)
+
+
+def test_default_wave_frequency_is_backward_compatible():
+    img = _subject_square()
+    seven = entry().func(img.copy(), (6, 10, 8, 0, 20, 30, 68), THR)
+    eight = entry().func(img.copy(), (6, 10, 8, 0, 20, 30, 68, 10), THR)
+    np.testing.assert_array_equal(seven, eight)
