@@ -228,8 +228,6 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
     h, w = img.shape
     b = breath / 100.0
     dissolve_gate = b * dissolve / 100.0 * 2.0
-    if dissolve_gate > 1.0:
-        dissolve_gate = 1.0
     phase_rad = phase * math.pi / 180.0
     subject_gate = thr            # column qualifies if it contains any subject pixel
     streak_prob = streak / 100.0 * 0.08
@@ -250,7 +248,11 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
                 out[y, x] = 0.0
                 continue
             if img[y, x] < thr:
-                if _hash01(x, y, 101) >= dissolve_gate:
+                xl = x - 3 if x >= 3 else 0
+                xr2 = x + 3 if x + 3 < w else w - 1
+                near_edge = img[y, xl] >= thr or img[y, xr2] >= thr
+                local = dissolve_gate * (1.5 if near_edge else 0.75)
+                if _hash01(x, y, 101) >= local:
                     ink = True
             if not ink and count > 0 and b > 0.0:
                 for n in range(1, count + 1):
@@ -266,6 +268,14 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
                         if _hash01(x, y, 202 + n) < b * (0.35 + 0.65 * decay):
                             ink = True
                             break
+            if not ink and img[y, x] >= thr:
+                dust_gate = b * dissolve / 100.0 * 0.5
+                if dust_gate > 0.0:
+                    reach = spacing * (count if count > 0 else 4)
+                    xs = x + 1 + int(_hash01(x, y, 404) * reach)
+                    if xs < w and img[y, xs] < thr:
+                        if _hash01(x, y, 505) < dust_gate:
+                            ink = True
             out[y, x] = 0.0 if ink else 255.0
     return out
 
