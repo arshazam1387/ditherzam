@@ -183,15 +183,18 @@ def test_partial_dissolve_erodes_partially():
     assert 0.2 < frac < 0.9                      # eroded but present
 
 
-def test_each_native_control_changes_pixels(image):
+def test_each_native_control_changes_pixels():
+    rng = np.random.default_rng(7)
+    img = np.full((48, 48), 235.0, dtype=np.float32)
+    img[4:24, :] = rng.integers(0, 256, (20, 48)).astype(np.float32)  # textured subject band, 24 rows of drop below
     e = entry()
-    base = e.func(image.copy(), DEFAULTS, THR)
+    base = e.func(img.copy(), DEFAULTS, THR)
     alternatives = (12, 20, 20, 180, 80, 90, 100, 60)
     assert len(e.param_sliders) == 8
     for index, value in enumerate(alternatives):
         params = list(DEFAULTS)
         params[index] = value
-        changed = e.func(image.copy(), tuple(params), THR)
+        changed = e.func(img.copy(), tuple(params), THR)
         assert np.any(changed != base), e.param_sliders[index]
 
 
