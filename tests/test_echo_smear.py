@@ -249,3 +249,20 @@ def test_default_wave_frequency_is_backward_compatible():
     seven = entry().func(img.copy(), (6, 10, 8, 0, 20, 30, 68), THR)
     eight = entry().func(img.copy(), (6, 10, 8, 0, 20, 30, 68, 10), THR)
     np.testing.assert_array_equal(seven, eight)
+
+
+def test_wave_phase_travels_echoes_toward_subject():
+    img = _subject_square()
+    a = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 100, 10), THR)
+    b = entry().func(img.copy(), (3, 10, 0, 180, 0, 0, 100, 10), THR)
+    assert np.any(a != b)                       # RED today: wave=0 makes phase a dead slider
+    assert np.all(a[22:42, 40] == 0.0)          # phase 0: first echo one spacing out
+    assert np.all(a[22:42, 35] == 255.0)
+    assert np.all(b[22:42, 35] == 0.0)          # phase 180: line traveled half a spacing inward
+
+
+def test_wave_phase_full_cycle_is_seamless():
+    img = _subject_square()
+    a = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 100, 10), THR)
+    c = entry().func(img.copy(), (3, 10, 0, 360, 0, 0, 100, 10), THR)
+    np.testing.assert_array_equal(a, c)         # wave=0: 360 wraps exactly to 0

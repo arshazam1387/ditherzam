@@ -257,20 +257,22 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
                 ink = True
             if not ink and count > 0 and b > 0.0:
                 visible = b * count
-                nmax = int(visible) + 1
-                if nmax > count:
-                    nmax = count
-                for n in range(1, nmax + 1):
-                    off = math.sin(y * freq + phase_rad + n * 0.7) * wave
-                    sx = int(x - n * spacing - off)
+                t = (phase % 360.0) / 360.0     # travel fraction along the smear axis
+                for n in range(1, count + 2):   # +1 line so the cycle wraps seamlessly
+                    e_idx = n - t               # continuous echo index (line identity)
+                    d = e_idx * spacing
+                    if d < 1.0:
+                        continue                # this line has arrived at the subject
+                    off = math.sin(y * freq + phase_rad + e_idx * 0.7) * wave
+                    sx = int(x - d - off)
                     if sx < 0 or sx + 1 >= w:
                         continue
                     # trailing (right) edge only: subject at sx, background at sx+1
                     if img[y, sx] < thr and img[y, sx + 1] >= thr:
-                        if n <= visible:
+                        if e_idx <= visible:
                             ink = True
                             break
-                        if _hash01(x, y, 202 + n) < (visible - int(visible)):
+                        if _hash01(x, y, 202 + n) < (visible + 1.0 - e_idx):
                             ink = True
                             break
             if not ink and img[y, x] >= thr:
