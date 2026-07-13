@@ -28,7 +28,14 @@ produces a playing MP4 with audio.
 **Rule:** a QRunnable's signals must outlive `run()` — either keep the wrapper
 referenced until terminal-signal delivery, or connect to bound methods of a
 long-lived QObject (which is why `main_window.py` render/mask/decode paths never
-broke). **Latent same-pattern risk:** `timeline_panel.py` `AnimationController` is
-a plain Python class whose `_launch_worker` connections are functors with the
-sender as context — same hazard if worker refs are ever dropped; audit if animation
-preview ever "stalls silently".
+broke).
+
+**Second victim (fixed 2026-07-13):** the ANIMATION preview — user report
+"play/amplitude do absolutely nothing" — was the same bug. `AnimationController`
+(`timeline_panel.py`) is a plain Python class, so its bound-method slots are
+functors anchored to the dying `WorkerSignals`; worse, the dropped terminal signal
+never called `_advance_scheduler()`, wedging `RenderScheduler` busy forever after
+the FIRST frame. Live animated preview worked at `bb7324e` (synchronous render)
+and broke at `f5406f1` (Task 4.1 async workers). Same keepalive fix in
+`_launch_worker`; regression test `test_frame_delivery_survives_worker_gc` (the
+suite's inline stand-in pool masks this class of bug — real-pool tests required).

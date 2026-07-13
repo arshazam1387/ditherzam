@@ -180,6 +180,43 @@ def test_stale_result_delivered_after_newer_request_is_not_painted():
     assert captured == []   # stale (superseded) frame never reaches the sink
 
 
+# ---- worker lifetime: queued signals must survive worker GC -----------------
+
+def test_frame_delivery_survives_worker_gc():
+    """Regression: nothing kept the launched _AnimRenderWorker alive, so its
+    signals QObject died when run() returned and the queued finished emission
+    was dropped -- the frame never reached the sink AND the scheduler stayed
+    busy forever, so play/scrub/amplitude went completely dead. Must use the
+    REAL thread pool with no test-held worker reference (the inline stand-in
+    pool used elsewhere keeps the worker alive and masks the bug)."""
+    import gc
+    import time
+
+    base = np.full((16, 16), 128.0, np.float32)
+    p = TimelinePanel(length=5)
+    p.pattern_combo.setCurrentText("static")
+    p.amp_slider.setValue(60)
+    settings = RenderSettings(style="Bayer-Matrix 4x4", scale=1)
+    ctrl = AnimationController(
+        p, RenderPipeline(registry), lambda: (base, settings),
+        Timeline(length=5), seed=0)
+    captured = []
+    ctrl.on_frame = captured.append
+
+    ctrl.render_frame(2)
+
+    deadline = time.time() + 10.0
+    while time.time() < deadline and not captured:
+        gc.collect()
+        _app.processEvents()
+        time.sleep(0.01)
+
+    assert captured, "frame result signal was dropped; animation preview dead"
+    assert captured[0].shape == (16, 16, 3)
+    # the scheduler must be released too, or every later frame wedges
+    assert not ctrl._scheduler._busy
+
+
 # ---- export stays exact and cap-independent (hazard #2) ---------------------
 
 def test_export_never_reads_cap_provider():

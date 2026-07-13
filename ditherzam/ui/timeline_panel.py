@@ -188,6 +188,7 @@ class AnimationController:
         self.export_pipeline_provider = export_pipeline_provider
         self.on_frame = None                # callable(np.uint8 HxWx3) | None
         self._pool = QThreadPool.globalInstance()
+        self._active_workers: set = set()
         self._scheduler = RenderScheduler()
         self._last_base_gray = None
         panel.frame_changed.connect(self.render_frame)
@@ -226,6 +227,20 @@ class AnimationController:
         worker.signals.finished.connect(self._on_frame_rendered)
         worker.signals.failed.connect(self._on_frame_terminal)
         worker.signals.cancelled.connect(self._on_frame_terminal)
+        # Hold the wrapper until a terminal signal is delivered: QThreadPool
+        # deletes the C++ runnable when run() returns, and without this ref the
+        # signals QObject dies with it, dropping the queued emission -- the
+        # frame is lost and the scheduler wedges busy forever (same bug as
+        # VideoController._start_worker; AnimationController is not a QObject,
+        # so these bound-method slots don't anchor delivery either).
+        self._active_workers.add(worker)
+
+        def release(*_args) -> None:
+            self._active_workers.discard(worker)
+
+        worker.signals.finished.connect(release)
+        worker.signals.failed.connect(release)
+        worker.signals.cancelled.connect(release)
         self._pool.start(worker)
 
     def _on_frame_rendered(self, rgb, request: _AnimRequest) -> None:
