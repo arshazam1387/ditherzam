@@ -86,10 +86,27 @@ class VideoController:
         self.export_pipeline_provider = export_pipeline_provider
         self.mask_settings_provider = mask_settings_provider
         self.pool = QThreadPool.globalInstance()
+        self._active_workers: set = set()
         self.temp_dir: Path | None = None
         self.input_file: str | None = None
         self.framerate: float = 24.0
         self.player = FramePlayer(self._show_frame)
+
+    def _start_worker(self, worker) -> None:
+        """Start a QRunnable worker, holding the Python wrapper until a terminal
+        signal is delivered. QThreadPool owns only the C++ runnable and deletes
+        it the moment run() returns; without this reference the WorkerSignals
+        QObject is destroyed with the wrapper, and the queued finished/error
+        emission (posted to the GUI thread but not yet delivered) is dropped --
+        the export chain then stalls silently after the worker completes."""
+        self._active_workers.add(worker)
+
+        def release(*_args) -> None:
+            self._active_workers.discard(worker)
+
+        worker.signals.finished.connect(release)
+        worker.signals.error.connect(release)
+        self.pool.start(worker)
 
     # --- menu construction ---
     def build_menu(self) -> QMenu:
@@ -173,7 +190,7 @@ class VideoController:
         worker = VideoImportWorker(path, str(self.temp_dir / "original_frames"))
         worker.signals.error.connect(lambda m: (dlg.close(), self._error(m)))
         worker.signals.finished.connect(lambda _fd: self._on_imported(dlg))
-        self.pool.start(worker)
+        self._start_worker(worker)
 
     def _on_imported(self, dlg) -> None:
         dlg.close()
@@ -228,9 +245,9 @@ class VideoController:
                             QMessageBox.information(self.win, "Video",
                                                     "Video export complete!"))
             )
-            self.pool.start(assemble)
+            self._start_worker(assemble)
 
         dither.signals.progress.connect(on_dither_progress)
         dither.signals.error.connect(lambda m: (prog.close(), self._error(m)))
         dither.signals.finished.connect(on_dither_done)
-        self.pool.start(dither)
+        self._start_worker(dither)
