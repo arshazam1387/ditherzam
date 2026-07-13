@@ -30,7 +30,7 @@ stills. The red-on-black color is out of scope — it is an ordinary
 - No changes to any existing kernel, pipeline stage, or shared code other
   than adding an `_unpack7` helper beside `_unpack5`/`_unpack6`.
 
-## Native sliders (7)
+## Native sliders (8)
 
 | slider key | Label | min | max | default | Effect |
 |---|---|---|---|---|---|
@@ -41,6 +41,7 @@ stills. The red-on-black color is out of scope — it is an ordinary
 | `echo_streak_slider` | Streak Amount | 0 | 100 | 20 | density of 1-px full-height streaks from sparse bright features |
 | `echo_dissolve_slider` | Dissolve Amount | 0 | 100 | 30 | how much of the subject body erodes into speckle dust |
 | `echo_breath_slider` | Breath | 0 | 100 | 50 | master cycle: 0 = fully solid subject, 100 = fully dissolved |
+| `echo_wave_frequency_slider` | Wave Frequency | 1 | 100 | 10 | wave frequency of the echo wiggle (value/100 rad per px; 10 = classic 0.1) |
 
 Rows go in `parameters.py` `parameter_specs` exactly like other Special
 Effects styles so the golden harness probes real defaults.
@@ -60,9 +61,9 @@ subject). Two passes inside one kernel call:
      densest near the silhouette edge (edge proximity via the
      neighbor-band test at small radius).
    - **Echo n = 1..Echo Count** — sample source at
-     `sx = x − n·spacing − sin(y·f + phase_rad + n·Δ)·wave` (`f` a fixed
-     wave frequency ≈0.1/px, `Δ` a fixed per-echo phase stagger ≈0.7 rad so
-     echoes don't align); ink if the
+     `sx = x − n·spacing − sin(y·f + phase_rad + n·Δ)·wave` (`f` = Wave
+     Frequency/100 rad/px, default 0.1, `Δ` a fixed per-echo phase stagger
+     ≈0.7 rad so echoes don't align); ink if the
      sample lies on a subject band edge (Topography-style neighbor band
      difference), drawn as continuous outlines; Breath sets the visible
      echo reach (`visible = b * count`) with only the outermost echo

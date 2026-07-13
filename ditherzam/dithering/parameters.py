@@ -173,6 +173,7 @@ _KEY_SPECS = {
     "echo_streak_slider": ("Streak Amount", 0, 100, 20),
     "echo_dissolve_slider": ("Dissolve Amount", 0, 100, 30),
     "echo_breath_slider": ("Breath", 0, 100, 50),
+    "echo_wave_frequency_slider": ("Wave Frequency", 1, 100, 10),
 }
 
 _STYLE_PARAMETERS = {
