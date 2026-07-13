@@ -34,11 +34,10 @@ inclusion. Then run SM-17 frozen Windows offline build/smoke and per-case eviden
 4K/RSS/cancellation/PNG/JPEG QA. Do not merge before those gates or before resolving/
 explicitly waiving the 71 pre-existing creative-kernel golden failures.
 
-**Gotcha to carry:** branch base (creative-dither commit `0335773`) has **71
-pre-existing `test_kernels_all` golden-fixture failures** JIT-off, unrelated to masking
-(golden fixtures need regeneration after the generative/creative-dither kernel changes).
-Every masking task confirms it adds ZERO new failures beyond those 71. FLAG to user
-before merging either branch to main.
+**Gotcha (RESOLVED 2026-07-12):** the branch base's 71 pre-existing
+`test_kernels_all` golden-fixture failures were resolved by the classic-defaults
+restoration — see [[049-classic-dither-defaults-restored]]. Golden suite fully
+green; no longer a merge blocker.
 
 **Orchestration history:**
 `docs/superpowers/HANDOFF-smart-subject-masking-orchestration.md`; the live ledger is

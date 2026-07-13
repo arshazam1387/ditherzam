@@ -274,7 +274,7 @@ def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_ce
 @registry.register("Artifact Modulation", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "artifact_base_frequency_slider", "artifact_tone_frequency_slider", "artifact_amplitude_slider", "artifact_phase_slider", "wave_line_spacing_slider"))
 def artifact_modulation(image_array, parameter, luminance_threshold_value):
-    p, base, tone, amp, phase, spacing = _unpack6(parameter, 4, 9, 18, 104, 45, 100)
+    p, base, tone, amp, phase, spacing = _unpack6(parameter, 1, 5, 10, 128, 0, 100)
     return _waveform_alt(image_array.astype(np.float32),
                          luminance_threshold_value, float(p), float(base), float(tone), _half_span(amp), float(phase), float(spacing))
 
@@ -283,7 +283,7 @@ def artifact_modulation(image_array, parameter, luminance_threshold_value):
 @registry.register("Atkinson-VHS", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "vhs_line_width_slider", "vhs_line_brightness_slider", "vhs_spacing_curve_slider", "vhs_line_offset_slider"))
 def atkinson_vhs(image_array, parameter, luminance_threshold_value):
-    lc, width, bright, curve, offset = _unpack5(parameter, 6, 2, 255, 100, 0)
+    lc, width, bright, curve, offset = _unpack5(parameter, 1, 1, 255, 100, 0)
     return _atkinson_vhs(image_array.astype(np.float32),
                          luminance_threshold_value, int(lc), max(1, int(width)), float(bright), float(curve) / 100.0, int(offset))
 
@@ -292,7 +292,7 @@ def atkinson_vhs(image_array, parameter, luminance_threshold_value):
 @registry.register("Glitch", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "glitch_seed_slider", "glitch_row_hold_slider", "glitch_direction_bias_slider", "glitch_wrap_slider"))
 def glitch(image_array, parameter, luminance_threshold_value):
-    intensity, seed, hold, bias, wrap = _unpack5(parameter, 8, 0, 4, 50, 1)
+    intensity, seed, hold, bias, wrap = _unpack5(parameter, 1, 0, 1, 50, 1)
     return _glitch(image_array.astype(np.float32),
                    luminance_threshold_value, int(intensity), int(seed), max(1, int(hold)), float(bias) / 100.0, bool(wrap))
 
@@ -334,7 +334,7 @@ def uniform_modulation_y(image_array, parameter, luminance_threshold_value):
                                   "smoothing_factor_slider",
                                   "bleed_fraction_slider", "diffusion_error_gain_slider", "diffusion_decay_slider"))
 def uniform_modulation_x(image_array, parameter, luminance_threshold_value):
-    ls, smooth, bleed, gain, decay = _unpack5(parameter, 2, 50, 25, 100, 10)
+    ls, smooth, bleed, gain, decay = _unpack5(parameter, 1, 0, 0, 100, 0)
     return _uniform_modulation(image_array.astype(np.float32),
                                luminance_threshold_value,
                                int(ls), float(smooth) / 100.0, float(bleed) / 100.0, False, float(gain) / 100.0, float(decay) / 100.0)

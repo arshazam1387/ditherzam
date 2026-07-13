@@ -5,19 +5,19 @@ from ditherzam.dithering import registry
 
 
 DEFAULTS = {
-    "Artifact Modulation": (4, 9, 18, 104, 45), "Atkinson-VHS": (6, 2, 255, 100, 0),
-    "Glitch": (8, 0, 4, 50, 1), "Modulated Diffuse Y": (1, 100, 0, 0, 0),
+    "Artifact Modulation": (1, 5, 10, 128, 0), "Atkinson-VHS": (1, 1, 255, 100, 0),
+    "Glitch": (1, 0, 1, 50, 1), "Modulated Diffuse Y": (1, 100, 0, 0, 0),
     "Modulated Diffuse X": (1, 100, 0, 0, 0), "Uniform Modulation Y": (2, 50, 25, 100, 10),
-    "Uniform Modulation X": (2, 50, 25, 100, 10), "Waveform": (1, 5, 30, 128, 0),
+    "Uniform Modulation X": (1, 0, 0, 100, 0), "Waveform": (1, 5, 30, 128, 0),
     "Waveform Alt": (1, 5, 10, 128, 0), "Ordered Modulation": (1, 20, 40, 50, 0),
     "Smooth Diffuse": (1, 5, 100, 100, 0), "Stucki Diffusion Lines": (5, 50, 20, 30, 128),
     "Atkinson Line Modulation": (5, 5, 8, 100, 100), "Contrast Aware Y": (1, 25, 64, 100, 1),
     "Contrast Aware X": (1, 25, 64, 100, 1), "Radial Burst": (24, 0, 0, 0, 128),
-    "Wave": (15, 15, 0, 50, 128), "Noise": (220, 0, 0, 2, 100),
-    "Topography": (3, 12, 10, 2, 0), "Thresholder": (1, 1, 1, 64, 0),
-    "Diagonal": (8, 100, 35, 1, 0), "Displace Contour": (70, 2, 0, 3, 4),
+    "Wave": (15, 15, 0, 50, 128), "Noise": (255, 0, 0, 1, 100),
+    "Topography": (1, 8, 10, 1, 0), "Thresholder": (1, 1, 1, 64, 0),
+    "Diagonal": (1, 100, 100, 1, 0), "Displace Contour": (50, 1, 0, 1, 0),
     "Sine Wave Modulation": (5, 10, 10, 0, 100), "Vortex": (6, 15, 0, 0, 0),
-    "Concentric Rings": (30, 0, 0, 0, 100), "Wireframe Alt": (8, 70, 70, 140, 2),
+    "Concentric Rings": (30, 0, 0, 0, 100), "Wireframe Alt": (1, 100, 100, 100, 1),
     "Crosshatch Alt": (4, 15, 40, 65, 85),
 }
 
