@@ -166,6 +166,13 @@ _KEY_SPECS = {
     "bayer_cell_size_slider": ("Bayer Cell Size", 1, 16, 1),
     "wave_line_spacing_slider": ("Line Spacing", 25, 400, 100),
     "diffusion_line_spacing_slider": ("Line Spacing", 1, 20, 1),
+    "echo_count_slider": ("Echo Count", 0, 16, 6),
+    "echo_spacing_slider": ("Echo Spacing", 2, 40, 10),
+    "echo_wave_amount_slider": ("Wave Amount", 0, 32, 8),
+    "echo_wave_phase_slider": ("Wave Phase", 0, 360, 0),
+    "echo_streak_slider": ("Streak Amount", 0, 100, 20),
+    "echo_dissolve_slider": ("Dissolve Amount", 0, 100, 30),
+    "echo_breath_slider": ("Breath", 0, 100, 50),
 }
 
 _STYLE_PARAMETERS = {
