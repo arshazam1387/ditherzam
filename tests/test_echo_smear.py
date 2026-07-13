@@ -172,3 +172,18 @@ def test_each_native_control_changes_pixels(image):
         params[index] = value
         changed = e.func(image.copy(), tuple(params), THR)
         assert np.any(changed != base), e.param_sliders[index]
+
+
+def test_default_output_not_collapsed(gradient):
+    out = entry().func(gradient.copy(), DEFAULTS, THR)
+    ink = (out == 0.0).mean()
+    assert 0.02 < ink < 0.98
+
+
+def test_not_a_duplicate_of_contour_family(image):
+    from tests.golden_harness import default_param
+    ours = entry().func(image.copy(), DEFAULTS, THR)
+    for name in ("Topography", "Topography Alt", "Displace Contour"):
+        other = registry.get_entry(name)
+        theirs = other.func(image.copy(), default_param(other), THR)
+        assert np.any(ours != theirs), name
