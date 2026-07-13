@@ -187,3 +187,11 @@ def test_not_a_duplicate_of_contour_family(image):
         other = registry.get_entry(name)
         theirs = other.func(image.copy(), default_param(other), THR)
         assert np.any(ours != theirs), name
+
+
+def test_echoes_are_continuous_lines_at_full_breath():
+    img = _subject_square()
+    out = entry().func(img.copy(), (3, 10, 0, 0, 0, 0, 100), THR)
+    # echo 1 of the square's right edge (x=30) with wave=0 lands at column 40
+    col = out[22:42, 40]
+    assert np.all(col == 0.0)

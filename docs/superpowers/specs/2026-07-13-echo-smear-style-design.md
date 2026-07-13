@@ -64,8 +64,9 @@ subject). Two passes inside one kernel call:
      wave frequency ≈0.1/px, `Δ` a fixed per-echo phase stagger ≈0.7 rad so
      echoes don't align); ink if the
      sample lies on a subject band edge (Topography-style neighbor band
-     difference), gated by per-echo decay hash-noise (later echoes
-     sparser) and scaled by `b` (echoes vanish at Breath 0).
+     difference), drawn as continuous outlines; Breath sets the visible
+     echo reach (`visible = b * count`) with only the outermost echo
+     fading in stochastically (echoes vanish at Breath 0).
    - **Streak** — `col_peak[x]` beats gate derived from Streak Amount AND
      column selected by hash (1-px thin, sparse).
    - **Dust** — hash-noise speckle with probability decaying with distance
