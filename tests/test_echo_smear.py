@@ -110,35 +110,54 @@ def test_echo_spacing_changes_pixels():
     assert np.any(a != b)
 
 
-def test_streaks_drip_below_subject_never_above():
+def _drip_scene():
     img = _subject_square(128)
     img[50:80, 40:90] = 20.0
-    out = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
-    dripping = [x for x in range(128)
-                if np.any(img[:, x] < 128.0) and np.all(out[100:, x] == 0.0)]
-    assert len(dripping) >= 1
-    for x in dripping:
-        top = int(np.argmax(img[:, x] < 128.0))   # first subject row
-        assert np.all(out[:top, x] == 255.0)      # nothing above the subject
+    return img
 
 
-def test_streaks_off_at_zero_and_only_from_subject_columns():
-    img = np.full((64, 64), 230.0, dtype=np.float32)
-    out = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
-    assert np.all(out == 255.0)                   # no subject anywhere -> nothing
-    img2 = _subject_square(128)
-    img2[50:80, 40:90] = 20.0
-    off = entry().func(img2.copy(), (0, 10, 0, 0, 0, 0, 0), THR)
-    below = off[80:, 40:90]
-    assert np.all(below == 255.0)                 # streak 0 -> no drips
+def test_drips_fall_below_subject_and_fade():
+    out = entry().func(_drip_scene(), (0, 10, 0, 0, 100, 0, 0, 10), THR)
+    near = out[82:100, :]                       # just below the wide block
+    tail = out[110:, :]
+    assert (near == 0.0).sum() > 0
+    assert (near == 0.0).mean() > (tail == 0.0).mean()   # dissolves with distance
 
 
-def test_streak_drips_independent_of_breath():
-    img = _subject_square(128)
-    img[50:80, 40:90] = 20.0
-    b0 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
-    b100 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 100), THR)
-    np.testing.assert_array_equal(b0[100:, :], b100[100:, :])
+def test_drips_never_above_subject():
+    out = entry().func(_drip_scene(), (0, 10, 8, 0, 100, 0, 0, 10), THR)
+    assert np.all(out[:22, :] == 255.0)         # nothing above the topmost subject row
+
+
+def test_wave_phase_sways_drips():
+    a = entry().func(_drip_scene(), (0, 10, 8, 0, 100, 0, 0, 10), THR)
+    b = entry().func(_drip_scene(), (0, 10, 8, 180, 100, 0, 0, 10), THR)
+    assert np.any(a[82:, :] != b[82:, :])       # drips ride Wave Phase
+
+
+def test_straight_drips_at_wave_zero_confined_near_origin_columns():
+    img = _drip_scene()
+    out = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0, 10), THR)
+    ink_cols = {x for x in range(128) if (out[82:, x] == 0.0).any()}
+    subject_cols = {x for x in range(128) if (img[:, x] < 128.0).any()}
+    widened = set()
+    for x in subject_cols:
+        widened.update((x - 1, x, x + 1))       # 3px taper near the body
+    assert ink_cols <= widened
+
+
+def test_drips_off_at_zero_and_only_from_subject_columns():
+    blank = np.full((64, 64), 230.0, dtype=np.float32)
+    out = entry().func(blank.copy(), (0, 10, 0, 0, 100, 0, 0, 10), THR)
+    assert np.all(out == 255.0)
+    off = entry().func(_drip_scene(), (0, 10, 0, 0, 0, 0, 0, 10), THR)
+    assert np.all(off[82:, :] == 255.0)
+
+
+def test_drips_independent_of_breath():
+    b0 = entry().func(_drip_scene(), (0, 10, 0, 0, 100, 0, 0, 10), THR)
+    b100 = entry().func(_drip_scene(), (0, 10, 0, 0, 100, 0, 100, 10), THR)
+    np.testing.assert_array_equal(b0[82:, :], b100[82:, :])
 
 
 def test_dust_appears_left_of_subject():
