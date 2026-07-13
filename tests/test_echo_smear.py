@@ -137,3 +137,38 @@ def test_streaks_survive_breath_zero():
     b0 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 0), THR)
     b100 = entry().func(img.copy(), (0, 10, 0, 0, 100, 0, 100), THR)
     assert _streak_columns(b0) == _streak_columns(b100)
+
+
+def test_dust_appears_left_of_subject():
+    img = _subject_square()
+    no_dust = entry().func(img.copy(), (0, 10, 0, 0, 0, 0, 100), THR)
+    dust = entry().func(img.copy(), (6, 10, 0, 0, 0, 100, 100), THR)
+    left = slice(None), slice(0, 10)             # strictly left of the square
+    assert (dust[left] == 0.0).sum() > (no_dust[left] == 0.0).sum()
+
+
+def test_full_breath_full_dissolve_erases_body():
+    img = _subject_square()
+    out = entry().func(img.copy(), (0, 10, 0, 0, 0, 100, 100), THR)
+    interior = out[24:40, 12:29]                 # deep inside the square
+    assert np.all(interior == 255.0)
+
+
+def test_partial_dissolve_erodes_partially():
+    img = _subject_square()
+    out = entry().func(img.copy(), (0, 10, 0, 0, 0, 50, 50), THR)
+    interior = out[24:40, 12:29]
+    frac = (interior == 0.0).mean()
+    assert 0.2 < frac < 0.9                      # eroded but present
+
+
+def test_each_native_control_changes_pixels(image):
+    e = entry()
+    base = e.func(image.copy(), DEFAULTS, THR)
+    alternatives = (12, 20, 20, 180, 80, 90, 100)
+    assert len(e.param_sliders) == 7
+    for index, value in enumerate(alternatives):
+        params = list(DEFAULTS)
+        params[index] = value
+        changed = e.func(image.copy(), tuple(params), THR)
+        assert np.any(changed != base), e.param_sliders[index]
