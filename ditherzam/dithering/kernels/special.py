@@ -230,6 +230,7 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
     dissolve_gate = b * dissolve / 100.0 * 2.0
     if dissolve_gate > 1.0:
         dissolve_gate = 1.0
+    phase_rad = phase * math.pi / 180.0
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
@@ -237,6 +238,20 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath)
             if img[y, x] < thr:
                 if _hash01(x, y, 101) >= dissolve_gate:
                     ink = True
+            if not ink and count > 0 and b > 0.0:
+                for n in range(1, count + 1):
+                    off = math.sin(y * 0.1 + phase_rad + n * 0.7) * wave
+                    sx = int(x - n * spacing - off)
+                    if sx < 0 or sx >= w:
+                        continue
+                    s0 = img[y, sx] < thr
+                    xr = sx + 2 if sx + 2 < w else w - 1
+                    yd = y + 2 if y + 2 < h else h - 1
+                    if s0 != (img[y, xr] < thr) or s0 != (img[yd, sx] < thr):
+                        decay = 1.0 - (n - 1.0) / count      # 1.0 .. 1/count
+                        if _hash01(x, y, 202 + n) < b * (0.35 + 0.65 * decay):
+                            ink = True
+                            break
             out[y, x] = 0.0 if ink else 255.0
     return out
 
