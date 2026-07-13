@@ -38,7 +38,7 @@ stills. The red-on-black color is out of scope — it is an ordinary
 | `echo_spacing_slider` | Echo Spacing | 2 | 40 | 10 | pixels between successive echoes |
 | `echo_wave_amount_slider` | Wave Amount | 0 | 32 | 8 | vertical wiggle amplitude of each echo |
 | `echo_wave_phase_slider` | Wave Phase | 0 | 360 | 0 | travels the echo lines along the smear axis (0→360 marches each line one spacing inward, seamless loop) and scrolls the wiggle |
-| `echo_streak_slider` | Streak Amount | 0 | 100 | 20 | density of 1-px drip streaks falling from the subject's lowest edge |
+| `echo_streak_slider` | Streak Amount | 0 | 100 | 20 | density of swaying drip trails falling from the subject's lowest edge |
 | `echo_dissolve_slider` | Dissolve Amount | 0 | 100 | 30 | how much of the subject body erodes into speckle dust |
 | `echo_breath_slider` | Breath | 0 | 100 | 50 | master cycle: 0 = fully solid subject, 100 = fully dissolved |
 | `echo_wave_frequency_slider` | Wave Frequency | 1 | 100 | 10 | wave frequency of the echo wiggle (value/100 rad per px; 10 = classic 0.1) |
@@ -73,10 +73,11 @@ subject). Two passes inside one kernel call:
      silhouette, on the smear side only; Breath sets the visible
      echo reach (`visible = b * count`) with only the outermost echo
      fading in stochastically (echoes vanish at Breath 0).
-   - **Streak** — selected columns (hash-gated, probability
-     `streak/100 * 0.12`) drip straight down from the column's lowest
-     subject pixel to the frame bottom; never above or through the
-     subject; independent of Breath.
+   - **Streak** — hash-selected columns draw swaying drip trails
+     downward from the subject's lowest edge — swayed by the shared
+     wave field (per-drip random phase, animated by Wave Phase,
+     straight at Wave Amount 0), 3px tapering to 1px, dissolving into
+     dots toward the frame bottom; independent of Breath.
    - **Dust** — hash-noise speckle with probability decaying with distance
      past the subject edge, scaled by `Dissolve × b`.
    Else background (255.0).

@@ -242,6 +242,31 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
                     drip_from[x] = y
                     break
 
+    # Wavy drip mask: each selected column draws a fading, swaying trail
+    # downward from the subject's lowest edge. Parallel writes all store the
+    # same value (1), so write races are benign.
+    drip_mask = np.zeros((h, w), dtype=np.uint8)
+    for x0 in prange(w):
+        y0 = drip_from[x0]
+        if y0 < 0:
+            continue
+        drop = h - 1 - y0
+        if drop <= 0:
+            continue
+        jitter = _hash01(x0, 0, 606) * 6.2831853
+        for y in range(y0 + 1, h):
+            prog = (y - y0) / drop
+            density = 1.0 - 0.85 * prog
+            if _hash01(x0, y, 707) >= density:
+                continue
+            sway = math.sin(y * freq + phase_rad + jitter) * wave * 0.75
+            xc = int(x0 + sway)
+            half = 1 if prog < 0.3 else 0
+            for dx in range(-half, half + 1):
+                xi = xc + dx
+                if 0 <= xi < w:
+                    drip_mask[y, xi] = 1
+
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
@@ -253,7 +278,7 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
                 local = dissolve_gate * (1.5 if near_edge else 0.75)
                 if _hash01(x, y, 101) >= local:
                     ink = True
-            if not ink and drip_from[x] >= 0 and y > drip_from[x]:
+            if not ink and drip_mask[y, x] == 1:
                 ink = True
             if not ink and count > 0 and b > 0.0:
                 visible = b * count
