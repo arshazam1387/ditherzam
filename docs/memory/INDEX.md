@@ -11,6 +11,7 @@
 - [progress|phase 8|done] Smart Mask planning artifacts approved — specification, 17-task TDD plan, and execution ledger agree (047-smart-mask-planning-handoff.md)
 - [progress|phase 8|in-progress] Smart Mask pre-asset checkpoint approved — SM-01..15 built, SM-16/17 fail-closed skeletons, ledger HEAD a0a09da; next=licensed assets/bakeoff/certification (048-smart-mask-sdd-execution.md)
 - [progress|phase 8|done] Classic dither defaults restored — 12 styles reverted, 5 audit looks kept, Topography Alt added; harness probes app defaults, goldens re-baked, 71-failure blocker resolved; uncommitted (049-classic-dither-defaults-restored.md)
+- [decision|phase 7|n/a] Video has NO live editing preview — never built; only post-export playback; "video preview broken" reports usually mean the animation preview (052-video-preview-scope.md)
 - [gotcha|phase 7|done] Video export + animation preview signal-drop fixed — QThreadPool autoDelete killed WorkerSignals before queued terminal delivery; VideoController and AnimationController now hold workers until terminal signal (051-video-export-signal-drop-fixed.md)
 
 - [constraint|phase -|n/a] Clean-room — no Studio AAA code/strings/binaries (001-clean-room.md)
