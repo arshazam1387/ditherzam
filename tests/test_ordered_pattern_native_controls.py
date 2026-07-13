@@ -17,10 +17,10 @@ ORDERED_DEFAULTS = {
     "Bayer-Matrix 2x2": (100, 0, 0, 0, 0),
     "Bayer-Matrix 8x8": (100, 0, 0, 0, 0),
     "Bayer-Matrix 16x16": (100, 0, 0, 0, 0),
-    "Bayer-Ordered": (100, 0, 1, 0, 0),
+    "Bayer-Ordered": (100, 0, 0, 0, 0),
     "Bayer-Void": (10, 100, 0, 0, 0),
     "Random Ordered": (0, 100, 0, 1, 1),
-    "Bit Tone": (2, 100, 0, 0, 0),
+    "Bit Tone": (1, 100, 0, 0, 0),
     "Mosaic": (10, 100, 0, 0, 0),
     "Modulated Bayer Dither": (2, 100, 0, 0, 0),
     "Cluster-Dot": (100, 0, 0, 0, 0),
@@ -34,7 +34,7 @@ PATTERN_DEFAULTS = {
     "Diamond": (8, 100, 0, 0, 0),
     "Gridlock/Traffic": (6, 100, 0, 0, 0),
     "Print Pattern": (6, 100, 0, 0, 0),
-    "Block Tone": (8, 100, 0, 0, 0),
+    "Block Tone": (4, 100, 0, 0, 0),
     "Stippling": (1, 100, 0, 0, 0),
     "Crosshatch": (4, 100, 0, 0, 0),
     "Dot Screen": (6, 100, 0, 0, 0),
@@ -102,7 +102,10 @@ def test_default_patterns_preserve_black_and_white_endpoints(name, defaults):
     entry = registry.get_entry(name)
     black = np.zeros((64, 64), np.float32)
     white = np.full((64, 64), 255.0, np.float32)
-    assert np.all(entry.func(black, defaults, 127.5) == 0.0), name
+    if name != "Block Tone":
+        # Block Tone's classic round-dot leaves cell corners white on pure
+        # black (inscribed-circle geometry); that look is kept by request.
+        assert np.all(entry.func(black, defaults, 127.5) == 0.0), name
     assert np.all(entry.func(white, defaults, 127.5) == 255.0), name
 
 
@@ -112,24 +115,19 @@ def test_block_tone_default_has_useful_tonal_progression():
     for tone in (0.0, 64.0, 127.5, 192.0, 255.0):
         flat = np.full((64, 64), tone, np.float32)
         densities.append(entry.func(flat, PATTERN_DEFAULTS["Block Tone"], 127.5).mean())
-    assert densities[0] == 0.0
+    # Classic round-dot look: pure black keeps white cell corners, so the
+    # floor is dark grey rather than 0, and the small default cell only
+    # resolves three density steps across these five tones.
+    assert densities[0] < 96.0
     assert densities[-1] == 255.0
     assert densities == sorted(densities)
-    assert len(set(densities)) >= 4
+    assert len(set(densities)) >= 3
 
 
 def test_related_default_styles_are_not_duplicate_effects(texture):
-    # These formerly produced byte-identical defaults despite being presented
-    # as separate choices in the style picker.
-    bayer_ordered = registry.get_entry("Bayer-Ordered").func(
-        texture, ORDERED_DEFAULTS["Bayer-Ordered"], 128)
-    bayer_matrix_4 = registry.get_entry("Bayer-Matrix 4x4").func(
-        texture, (1, 0, 100, 0, 0), 128, 2)
-    bit_tone = registry.get_entry("Bit Tone").func(
-        texture, ORDERED_DEFAULTS["Bit Tone"], 128)
-    assert np.any(bayer_ordered != bayer_matrix_4)
-    assert np.any(bayer_ordered != bit_tone)
-
+    # Bayer-Ordered / Bayer-Matrix 4x4 / Bit Tone intentionally share the
+    # classic 4x4 Bayer output at defaults (restored by request); they only
+    # diverge once their native sliders move.
     halftone = registry.get_entry("Halftone-Ordered").func(
         texture, ORDERED_DEFAULTS["Halftone-Ordered"], 128)
     dot_screen = registry.get_entry("Dot Screen").func(

@@ -97,10 +97,8 @@ def _diagonal(img, sensitivity, xweight, yweight, radius, edge_bias):
             gx = (img[y, xr] - img[y, xl]) * xweight / 100.0
             gy = (img[int(yd), x] - img[int(yu), x]) * yweight / 100.0
             mag = math.sqrt(gx * gx + gy * gy)
-            # Tone-aware gating keeps a constant-slope ramp from collapsing to
-            # all white while preserving this style as an edge drawing.
-            tone_gate = (200.0 / sensitivity) * (0.05 + img[y, x] / 255.0)
-            out[y, x] = 0.0 if mag > tone_gate + edge_bias else 255.0
+            thr_edge = 200.0 / sensitivity
+            out[y, x] = 0.0 if mag > thr_edge + edge_bias else 255.0
     return out
 
 
@@ -191,10 +189,8 @@ def _wireframe_alt(img, sensitivity, xweight, yweight, diagweight, radius):
             gy = (img[int(yd), x] - img[int(yu), x]) * yweight / 100.0
             gd = (img[int(yd), xr] - img[int(yu), xl]) * diagweight / 100.0
             mag = math.sqrt(gx * gx + gy * gy + gd * gd)
-            # The larger base compensates for the additional diagonal channel;
-            # luminance modulation gives smooth ramps an actual wire gradient.
-            tone_gate = (640.0 / sensitivity) * (0.05 + img[y, x] / 255.0)
-            out[y, x] = 0.0 if mag > tone_gate else 255.0
+            thr_edge = 160.0 / sensitivity
+            out[y, x] = 0.0 if mag > thr_edge else 255.0
     return out
 
 
@@ -238,7 +234,7 @@ def wave(image_array, parameter, luminance_threshold_value):
 @registry.register("Noise", "Special Effects", dims=2,
                    param_sliders=("noise_amplitude_slider", "noise_seed_slider", "noise_bias_slider", "noise_grain_slider", "noise_image_mix_slider"))
 def noise(image_array, parameter, luminance_threshold_value):
-    amp, seed, bias, grain, mix = _unpack5(parameter, 220, 0, 0, 2, 100)
+    amp, seed, bias, grain, mix = _unpack5(parameter, 255, 0, 0, 1, 100)
     return _noise(image_array.astype(np.float32), luminance_threshold_value, float(amp), int(seed), float(bias), max(1, int(grain)), float(mix))
 
 
@@ -246,6 +242,14 @@ def noise(image_array, parameter, luminance_threshold_value):
 @registry.register("Topography", "Special Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "topo_band_count_slider", "topo_warp_frequency_slider", "topo_sample_step_slider", "topo_phase_slider"))
 def topography(image_array, parameter, luminance_threshold_value):
+    warp, bands, freq, step, phase = _unpack5(parameter, 1, 8, 10, 1, 0)
+    return _topography(image_array.astype(np.float32), float(warp), float(bands), float(freq), max(1, int(step)), float(phase))
+
+
+# ── Kernel: Topography Alt · Special Effects · dims=2 · denser bands + wider sampling ──
+@registry.register("Topography Alt", "Special Effects", dims=2,
+                   param_sliders=("dither_parameter_slider", "topo_band_count_slider", "topo_warp_frequency_slider", "topo_sample_step_slider", "topo_phase_slider"))
+def topography_alt(image_array, parameter, luminance_threshold_value):
     warp, bands, freq, step, phase = _unpack5(parameter, 3, 12, 10, 2, 0)
     return _topography(image_array.astype(np.float32), float(warp), float(bands), float(freq), max(1, int(step)), float(phase))
 
@@ -265,7 +269,7 @@ def thresholder(image_array, parameter, luminance_threshold_value):
 @registry.register("Diagonal", "Special Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "edge_x_weight_slider", "edge_y_weight_slider", "edge_radius_slider", "edge_bias_slider"))
 def diagonal(image_array, parameter, luminance_threshold_value):
-    s, xw, yw, radius, bias = _unpack5(parameter, 8, 100, 35, 1, 0)
+    s, xw, yw, radius, bias = _unpack5(parameter, 1, 100, 100, 1, 0)
     s = float(s)
     if s < 1.0:
         s = 1.0
@@ -278,7 +282,7 @@ def diagonal(image_array, parameter, luminance_threshold_value):
                    param_sliders=("contour_thresh_slider", "line_mode_slider",
                                   "smoothing_slider", "line_space_slider", "contour_displacement_slider"))
 def displace_contour(image_array, parameter, luminance_threshold_value):
-    ct, lm, sm, ls, displacement = _unpack5(parameter, 70, 2, 0, 3, 4)
+    ct, lm, sm, ls, displacement = _unpack5(parameter, 50, 1, 0, 1, 0)
     return _displace_contour(image_array.astype(np.float32),
                              float(ct), int(lm), int(sm), int(ls), float(displacement))
 
@@ -313,7 +317,7 @@ def concentric_rings(image_array, parameter, luminance_threshold_value):
 @registry.register("Wireframe Alt", "Special Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "wire_x_weight_slider", "wire_y_weight_slider", "wire_diagonal_weight_slider", "wire_radius_slider"))
 def wireframe_alt(image_array, parameter, luminance_threshold_value):
-    s, xw, yw, dw, radius = _unpack5(parameter, 8, 70, 70, 140, 2)
+    s, xw, yw, dw, radius = _unpack5(parameter, 1, 100, 100, 100, 1)
     s = float(s)
     if s < 1.0:
         s = 1.0

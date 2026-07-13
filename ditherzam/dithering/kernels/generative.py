@@ -367,11 +367,8 @@ def spiral_engrave(image_array, parameter, luminance_threshold_value):
                                   "reaction_kill_slider", "chemical_diffusion_slider",
                                   "reaction_seed_density_slider"))
 def reaction_diffusion(image_array, parameter, luminance_threshold_value):
-    raw_iterations, feed, kill, diffusion, seeds = _parameters(parameter, (20, 100, 100, 100, 5))
-    # The UI value is an iteration count, so pass it through directly.  The
-    # former x3 conversion made the default 20 display as 60 actual steps and
-    # let the seeded chemical cover almost the entire image.
-    iterations = min(60, max(10, int(raw_iterations)))
+    raw_iterations, feed, kill, diffusion, seeds = _parameters(parameter, (20, 100, 100, 100, 9))
+    iterations = min(60, max(10, int(raw_iterations) * 3))
     return _reaction_diffusion(image_array.astype(np.float32),
                                np.float32(luminance_threshold_value), iterations,
                                np.float32(feed / 100.0), np.float32(kill / 100.0),

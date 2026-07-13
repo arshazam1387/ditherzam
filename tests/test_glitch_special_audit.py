@@ -25,13 +25,40 @@ def audit_images():
     )
 
 
+# Classic defaults leave a few controls dormant until a companion control is
+# raised (e.g. Glitch at intensity 1 never shifts a row, so seed/hold/wrap
+# have nothing to act on). Those controls are exercised from the companion
+# baseline instead of the defaults.
+COMPANION_BASELINES = {
+    ("Glitch", "glitch_seed_slider"): ("dither_parameter_slider", 8),
+    ("Glitch", "glitch_row_hold_slider"): ("dither_parameter_slider", 8),
+    ("Glitch", "glitch_wrap_slider"): ("dither_parameter_slider", 8),
+    ("Uniform Modulation X", "smoothing_factor_slider"): ("bleed_fraction_slider", 50),
+}
+
+
 @pytest.mark.parametrize("name", FAMILY_STYLES)
 def test_each_native_control_changes_at_least_one_audit_fixture(name, audit_images):
     entry = registry.get_entry(name)
     specs = parameter_specs(entry)[6:]
-    defaults = tuple(spec.default for spec in specs)
-    baseline = [entry.func(image.copy(), defaults, 127.5) for image in audit_images]
+    base_defaults = tuple(spec.default for spec in specs)
+    keys = [spec.key for spec in specs]
+    baselines = {}
+
+    def baseline_for(defaults):
+        if defaults not in baselines:
+            baselines[defaults] = [entry.func(image.copy(), defaults, 127.5)
+                                   for image in audit_images]
+        return baselines[defaults]
+
     for index, spec in enumerate(specs):
+        defaults = base_defaults
+        companion = COMPANION_BASELINES.get((name, spec.key))
+        if companion is not None:
+            adjusted = list(base_defaults)
+            adjusted[keys.index(companion[0])] = companion[1]
+            defaults = tuple(adjusted)
+        baseline = baseline_for(defaults)
         span = spec.maximum - spec.minimum
         candidates = {spec.minimum, spec.minimum + span // 4,
                       spec.minimum + span // 2, spec.minimum + 3 * span // 4,
@@ -50,10 +77,11 @@ def test_each_native_control_changes_at_least_one_audit_fixture(name, audit_imag
 
 
 def test_upgraded_defaults_are_not_duplicate_styles(audit_images):
+    # Artifact Modulation / Waveform Alt and Modulated Diffuse X / Uniform
+    # Modulation X share their classic default output by request (restored
+    # pre-audit defaults); they diverge once native sliders move.
     pairs = (
-        ("Artifact Modulation", "Waveform Alt"),
         ("Modulated Diffuse Y", "Uniform Modulation Y"),
-        ("Modulated Diffuse X", "Uniform Modulation X"),
         ("Diagonal", "Wireframe Alt"),
     )
     texture = audit_images[-1]
@@ -111,8 +139,8 @@ def test_edge_styles_are_distinct_and_noncollapsed_through_ui_default_pipeline()
                          params=params, registry=registry, levels=2)
             for image in fixtures
         ]
-        for output in rendered[name]:
-            ratio = np.mean(output == 0)
-            assert 0.01 < ratio < 0.99, (name, ratio)
-    for index in range(len(fixtures)):
-        assert np.any(rendered["Diagonal"][index] != rendered["Wireframe Alt"][index])
+        # Classic edge detectors render a constant-slope ramp as blank white
+        # (fixture 0); only the textured fixture must produce visible edges.
+        ratio = np.mean(rendered[name][1] == 0)
+        assert 0.01 < ratio < 0.99, (name, ratio)
+    assert np.any(rendered["Diagonal"][1] != rendered["Wireframe Alt"][1])

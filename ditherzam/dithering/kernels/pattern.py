@@ -71,7 +71,7 @@ def _print_pattern(img, cell):
 
 @njit(cache=True, parallel=True)
 def _block_tone(img, dot):
-    # Square (block-shaped) halftone; block width grows with local darkness.
+    # Classic round-dot halftone; dot radius grows with local darkness.
     h, w = img.shape
     c = dot if dot >= 2 else 2
     half = c / 2.0
@@ -79,13 +79,10 @@ def _block_tone(img, dot):
     for y in prange(h):
         for x in range(w):
             darkness = 1.0 - img[y, x] / 255.0
-            # Area, rather than width, should follow darkness.  The old linear
-            # radius could cover at most an inscribed circle, so even a black
-            # source retained 25% white holes and midtones barely changed.
-            r = math.sqrt(darkness) * half
+            r = darkness * half
             dx = (x % c) - half + 0.5
             dy = (y % c) - half + 0.5
-            out[y, x] = 0.0 if max(abs(dx), abs(dy)) <= r else 255.0
+            out[y, x] = 0.0 if (dx * dx + dy * dy) <= r * r else 255.0
     return out
 
 
@@ -235,7 +232,7 @@ def print_pattern(image_array, parameter, luminance_threshold_value):
 @registry.register("Block Tone", "Patterned", dims=2,
                    param_sliders=_PATTERN_SLIDERS)
 def block_tone(image_array, parameter, luminance_threshold_value):
-    return _pattern_result(image_array, parameter, 8, _block_tone)
+    return _pattern_result(image_array, parameter, 4, _block_tone)
 
 
 # ── Kernel: Stippling · Patterned · dims=2 · Dot Density 1-20-1 ──

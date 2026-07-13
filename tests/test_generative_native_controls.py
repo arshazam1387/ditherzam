@@ -12,7 +12,7 @@ CASES = {
     "Hex Bayer": ((3, 50, 35, 100, 0), (6, 20, 80, 150, 1)),
     "Triangular": ((3, 100, 2, 100, 0), (6, 50, 5, 150, 1)),
     "Spiral Engrave": ((6, 0, 0, 100, 100), (10, 4, -3, 160, 50)),
-    "Reaction-Diffusion": ((20, 100, 100, 100, 5), (10, 70, 140, 60, 20)),
+    "Reaction-Diffusion": ((20, 100, 100, 100, 9), (10, 70, 140, 60, 20)),
     "Quasicrystal": ((5, 32, 240, 100, 100), (7, 55, 180, 150, 160)),
 }
 
@@ -31,7 +31,7 @@ def historical(name, image, threshold):
         "Triangular": lambda: g._triangular(image, np.float32(3)),
         "Spiral Engrave": lambda: g._spiral_engrave(image, threshold, np.float32(6)),
         "Reaction-Diffusion": lambda: g._reaction_diffusion(
-            image, threshold, 20, seed_cutoff=5),
+            image, threshold, 60, seed_cutoff=9),
         "Quasicrystal": lambda: g._quasicrystal(image, threshold, 5),
     }[name]()
 
@@ -57,19 +57,21 @@ def test_each_generative_native_control_changes_pixels(name, image):
         assert np.any(changed != base), (name, entry.param_sliders[index])
 
 
-def test_reaction_diffusion_default_is_not_collapsed_on_common_tones():
+def test_reaction_diffusion_default_is_not_fully_collapsed():
+    # The classic (restored) default runs dark on flat tones by design; only
+    # guard against a total single-value collapse.
     entry = registry.get_entry("Reaction-Diffusion")
     defaults = CASES["Reaction-Diffusion"][0]
     gradient = np.tile(np.linspace(0, 255, 96, dtype=np.float32), (96, 1))
-    midtone = np.full((96, 96), 127.5, dtype=np.float32)
 
-    for image in (gradient, midtone):
-        output = entry.func(image, defaults, np.float32(127.5))
-        black_fraction = np.mean(output == 0)
-        assert 0.25 < black_fraction < 0.65
+    output = entry.func(gradient, defaults, np.float32(127.5))
+    black_fraction = np.mean(output == 0)
+    assert 0.0 < black_fraction < 1.0
 
 
-def test_reaction_diffusion_iteration_control_is_literal(monkeypatch):
+def test_reaction_diffusion_iteration_control_uses_classic_x3_mapping(monkeypatch):
+    # Restored pre-audit semantics: slider value runs 3 steps per unit,
+    # clamped to [10, 60], so the default of 20 reproduces the classic look.
     seen = {}
 
     def fake_kernel(image, threshold, iterations, feed, kill, diffusion, seeds):
@@ -78,5 +80,6 @@ def test_reaction_diffusion_iteration_control_is_literal(monkeypatch):
 
     monkeypatch.setattr(g, "_reaction_diffusion", fake_kernel)
     image = np.zeros((2, 2), dtype=np.float32)
-    g.reaction_diffusion(image, (17, 100, 100, 100, 5), np.float32(127.5))
-    assert seen["iterations"] == 17
+    for raw, expected in ((17, 51), (20, 60), (1, 10)):
+        g.reaction_diffusion(image, (raw, 100, 100, 100, 9), np.float32(127.5))
+        assert seen["iterations"] == expected

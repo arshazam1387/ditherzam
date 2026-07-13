@@ -277,11 +277,7 @@ def bayer_16(image_array, parameter, luminance_threshold_value, levels=2):
 @registry.register("Bayer-Ordered", "Ordered Dither", dims=2, supports_levels=True,
                    param_sliders=_ORDERED_SLIDERS)
 def bayer_ordered(image_array, parameter, luminance_threshold_value, levels=2):
-    # Keep this useful beside the canonical Bayer-Matrix 4x4 style by giving
-    # the generic ordered variant a quarter-turn default orientation.
-    contrast, bias, rotation, ox, oy = _unpack(parameter, (100, 0, 1, 0, 0))
-    return _ordered(image_array.astype(np.float32), _BAYER4, levels,
-                    float(contrast), float(bias), int(rotation), int(ox), int(oy))
+    return _ordered_entry(image_array, parameter, _BAYER4, levels)
 
 
 # ── Kernel: Bayer-Void · Ordered Dither · dims=2 · Warp Intensity 1-50-10 ──
@@ -307,7 +303,7 @@ def random_ordered(image_array, parameter, luminance_threshold_value):
 @registry.register("Bit Tone", "Ordered Dither", dims=2,
                    param_sliders=_PRIMARY_ORDERED_SLIDERS)
 def bit_tone(image_array, parameter, luminance_threshold_value):
-    img, dot, ox, oy = _input_controls(image_array, parameter, 2)
+    img, dot, ox, oy = _input_controls(image_array, parameter, 1)
     return _unphase(_bit_tone(img, int(dot), _BAYER4), ox, oy)
 
 

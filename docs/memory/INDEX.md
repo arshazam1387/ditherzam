@@ -10,6 +10,8 @@
 - [progress|phase 8|done] Source-faithful From Image colors — RGB palette quantization preserves hue positions; palette count controls simplification (046-source-faithful-color-mode.md)
 - [progress|phase 8|done] Smart Mask planning artifacts approved — specification, 17-task TDD plan, and execution ledger agree (047-smart-mask-planning-handoff.md)
 - [progress|phase 8|in-progress] Smart Mask pre-asset checkpoint approved — SM-01..15 built, SM-16/17 fail-closed skeletons, ledger HEAD a0a09da; next=licensed assets/bakeoff/certification (048-smart-mask-sdd-execution.md)
+- [progress|phase 8|done] Classic dither defaults restored — 12 styles reverted, 5 audit looks kept, Topography Alt added; harness probes app defaults, goldens re-baked, 71-failure blocker resolved; uncommitted (049-classic-dither-defaults-restored.md)
+- [progress|phase 8|blocked] HANDOFF: video rendering totally broken — no output, fake ~30fps progress, crashes on heavy inputs; agent must read then DELETE this entry when resolved (050-video-debug-handoff.md)
 
 - [constraint|phase -|n/a] Clean-room — no Studio AAA code/strings/binaries (001-clean-room.md)
 - [constraint|phase -|n/a] Core is Qt-free; only ui/app/video-workers import PySide6 (002-qt-free-core.md)
