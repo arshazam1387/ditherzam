@@ -214,6 +214,33 @@ def _crosshatch_alt(img, s, vertical_gate, horizontal_gate, diagonal_gate, steep
     return out
 
 
+@njit(cache=True)
+def _hash01(x, y, salt):
+    # Same integer-hash family as pipeline jitter; pure function of (x, y, salt),
+    # identical under JIT on/off because it is plain masked int arithmetic.
+    h = (x * 374761393 + y * 668265263 + salt * 2246822519) & 0xFFFFFFFF
+    h = ((h ^ (h >> 13)) * 1274126177) & 0xFFFFFFFF
+    return ((h >> 8) & 0xFFFF) / 65535.0
+
+
+@njit(cache=True, parallel=True)
+def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath):
+    h, w = img.shape
+    b = breath / 100.0
+    dissolve_gate = b * dissolve / 100.0 * 2.0
+    if dissolve_gate > 1.0:
+        dissolve_gate = 1.0
+    out = np.empty_like(img)
+    for y in prange(h):
+        for x in range(w):
+            ink = False
+            if img[y, x] < thr:
+                if _hash01(x, y, 101) >= dissolve_gate:
+                    ink = True
+            out[y, x] = 0.0 if ink else 255.0
+    return out
+
+
 # ── Kernel: Radial Burst · Special Effects · dims=2 · no sliders ──
 @registry.register("Radial Burst", "Special Effects", dims=2,
                    param_sliders=("ray_count_slider", "ray_phase_slider", "center_x_slider", "center_y_slider", "threshold_span_slider"))
@@ -335,6 +362,23 @@ def crosshatch_alt(image_array, parameter, luminance_threshold_value):
     return _crosshatch_alt(image_array.astype(np.float32), s, float(vg), float(hg), float(dg), float(sg))
 
 
+# ── Kernel: Echo Smear · Special Effects · dims=2 ──
+#    sliders (Echo Count 0-16-6, Echo Spacing 2-40-10, Wave Amount 0-32-8,
+#             Wave Phase 0-360-0, Streak 0-100-20, Dissolve 0-100-30, Breath 0-100-50)
+@registry.register("Echo Smear", "Special Effects", dims=2,
+                   param_sliders=("echo_count_slider", "echo_spacing_slider",
+                                  "echo_wave_amount_slider", "echo_wave_phase_slider",
+                                  "echo_streak_slider", "echo_dissolve_slider",
+                                  "echo_breath_slider"))
+def echo_smear(image_array, parameter, luminance_threshold_value):
+    count, spacing, wave, phase, streak, dissolve, breath = _unpack7(
+        parameter, 6, 10, 8, 0, 20, 30, 50)
+    return _echo_smear(image_array.astype(np.float32),
+                       float(luminance_threshold_value), max(0, int(count)),
+                       float(spacing), float(wave), float(phase),
+                       float(streak), float(dissolve), float(breath))
+
+
 # ── Tuple-unpack helpers (plain Python) ──
 def _unpack4(parameter, d0, d1, d2, d3):
     if isinstance(parameter, (tuple, list)):
@@ -363,6 +407,13 @@ def _unpack6(parameter, d0, d1, d2, d3, d4, d5):
         defaults = (d0, d1, d2, d3, d4, d5)
         return tuple(parameter[i] if i < len(parameter) else defaults[i] for i in range(6))
     return (parameter if parameter not in (None, 0) else d0), d1, d2, d3, d4, d5
+
+
+def _unpack7(parameter, d0, d1, d2, d3, d4, d5, d6):
+    if isinstance(parameter, (tuple, list)):
+        defaults = (d0, d1, d2, d3, d4, d5, d6)
+        return tuple(parameter[i] if i < len(parameter) else defaults[i] for i in range(7))
+    return (parameter if parameter not in (None, 0) else d0), d1, d2, d3, d4, d5, d6
 
 
 def _half_span(value):
