@@ -37,5 +37,5 @@ smooth ramps as blank white. All diverge once sliders move.
 
 **Gotcha:** `test_mask_editor_lifecycle.py::test_blocking_inference_pool_...`
 is flaky under full-suite CPU load only; passes in isolation. Full suite
-2026-07-12: 1642 passed / 310 asset-gated skips / that 1 flake. Uncommitted on
-`feat/smart-subject-masking` as of this entry.
+2026-07-12: 1642 passed / 310 asset-gated skips / that 1 flake. Committed on
+`feat/smart-subject-masking` as `ab31e76`.
