@@ -342,33 +342,45 @@ def _feedback_smear(img, thr, k_iters, drift, namount, nscale, decay, time_v, er
             ink = False
             subject = img[y, x] < thr
             if subject:
-                field = _vnoise(x * s * 2.0 + tshift, y * s * 2.0, 0, 909)
-                gate = erode / 100.0 * (0.35 + 0.65 * field)
-                if _hash01(x, y, 111) >= gate:
+                # Coherent eaten patches: the smooth field itself is the gate,
+                # so erosion carves holes instead of per-pixel static. Bites
+                # concentrate near the silhouette edges; the core stays solid.
+                xl = x - 4 if x >= 4 else 0
+                xr4 = x + 4 if x + 4 < w else w - 1
+                near_edge = img[y, xl] >= thr or img[y, xr4] >= thr
+                cut = erode / 100.0 * (1.3 if near_edge else 0.55)
+                field = _vnoise(x * s * 3.0 + tshift, y * s * 3.0, 0, 909)
+                if field >= cut:
                     ink = True
             if not ink and dgain > 0.0:
                 surv = 1.0
                 px = float(x)
                 py = float(y)
-                prev_in = subject
                 for k in range(1, k_iters + 1):
                     surv *= surv_rate
                     if surv * dgain < 0.02:
                         break
-                    nx = _vnoise(x * s + tshift + k * 0.618, y * s, k, 606)
-                    ny = _vnoise(x * s + tshift + k * 0.618, y * s, k, 707)
-                    px -= drift + (nx - 0.5) * 2.0 * namount
-                    py -= (ny - 0.5) * 2.0 * namount * 0.6
+                    # Sample the field at the WALKED position with a slow
+                    # per-iteration slide: paths bend through the spatial field
+                    # like real feedback history — coherent onion-skin lines,
+                    # not per-pixel random walks or straight sprayed rays.
+                    kk = k * 0.08
+                    nx = _vnoise(px * s + tshift + kk, py * s, 0, 606)
+                    ny = _vnoise(px * s + tshift + kk, py * s, 0, 707)
+                    px -= drift + (nx - 0.5) * 2.0 * namount * 0.4
+                    py -= (ny - 0.5) * 2.0 * namount * 0.24
                     xi = int(px)
                     yi = int(py)
                     if xi < 0 or xi >= w or yi < 0 or yi >= h:
                         break
-                    cur_in = img[yi, xi] < thr
-                    if cur_in and not prev_in:
-                        if _hash01(x, y, 202 + k) < surv * dgain:
+                    # The k-th displaced copy contributes only its trailing
+                    # edge: thin bent lines with black gaps (spacing = drift),
+                    # solid near the subject, dissolving into dots with decay.
+                    xr = xi + 2 if xi + 2 < w else w - 1
+                    if img[yi, xi] < thr and img[yi, xr] >= thr:
+                        if _hash01(x, y, 202 + k) < surv * dgain * 1.5:
                             ink = True
                             break
-                    prev_in = cur_in
             out[y, x] = 0.0 if ink else 255.0
     return out
 
