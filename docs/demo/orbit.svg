@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="900" viewBox="0 0 1200 900">
+  <defs>
+    <radialGradient id="sky" cx="50%" cy="38%" r="75%">
+      <stop offset="0%" stop-color="#f4f1ea"/>
+      <stop offset="35%" stop-color="#b9b4a8"/>
+      <stop offset="70%" stop-color="#5d5a52"/>
+      <stop offset="100%" stop-color="#1c1b18"/>
+    </radialGradient>
+    <radialGradient id="planet" cx="38%" cy="32%" r="80%">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="45%" stop-color="#c8c2b4"/>
+      <stop offset="80%" stop-color="#6f6a5e"/>
+      <stop offset="100%" stop-color="#2e2c26"/>
+    </radialGradient>
+    <linearGradient id="ridgeA" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#54514a"/>
+      <stop offset="100%" stop-color="#23221e"/>
+    </linearGradient>
+    <linearGradient id="ridgeB" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#33312b"/>
+      <stop offset="100%" stop-color="#12110f"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="900" fill="url(#sky)"/>
+
+  <circle cx="380" cy="180" r="6" fill="#efece4" opacity="0.9"/>
+  <circle cx="950" cy="120" r="4" fill="#efece4" opacity="0.8"/>
+  <circle cx="1080" cy="300" r="5" fill="#efece4" opacity="0.7"/>
+  <circle cx="150" cy="330" r="4" fill="#efece4" opacity="0.6"/>
+  <circle cx="720" cy="90" r="3" fill="#efece4" opacity="0.8"/>
+  <circle cx="240" cy="120" r="3" fill="#efece4" opacity="0.7"/>
+
+  <ellipse cx="600" cy="340" rx="340" ry="88" fill="none" stroke="#8d887c" stroke-width="10" opacity="0.55"/>
+  <circle cx="600" cy="340" r="185" fill="url(#planet)"/>
+  <ellipse cx="600" cy="340" rx="340" ry="88" fill="none" stroke="#d8d3c6" stroke-width="7" opacity="0.5"
+           stroke-dasharray="2 0" transform="rotate(-8 600 340)"/>
+  <circle cx="527" cy="272" r="34" fill="#efece4" opacity="0.35"/>
+
+  <polygon points="0,640 190,470 320,600 460,480 620,660 760,520 900,640 1040,500 1200,620 1200,900 0,900"
+           fill="url(#ridgeA)"/>
+  <polygon points="0,760 160,640 340,740 520,630 700,770 880,660 1050,760 1200,690 1200,900 0,900"
+           fill="url(#ridgeB)"/>
+</svg>

@@ -1,0 +1,38 @@
+# Smart Mask fixture provenance manifest -- schema/example only. NOT a real
+# fixture. Every value below is a placeholder.
+#
+# One entry like this documents one source-image + ground-truth-mask pair.
+# Nothing in ditherzam or benchmarks parses this file yet; it fixes the
+# required shape ahead of any real fixture being added, per
+# tests/fixtures/smart_mask/README.md's provenance policy.
+
+# Fixture identity --------------------------------------------------------------
+fixture_id: "REPLACE_WITH_STABLE_FIXTURE_ID"   # stable slug, referenced by benchmark reports
+category: "portrait"                            # portrait | product | animal | full_body |
+                                                 # multiple_people | busy_background |
+                                                 # low_contrast | transparent | thin_structures |
+                                                 # no_subject
+
+# Source image provenance ---------------------------------------------------------
+source_url: "REPLACE_WITH_EXACT_SOURCE_LOCATION"     # exact URL/DOI the image was obtained from
+author: "REPLACE_WITH_ORIGINAL_AUTHOR_OR_CREATOR"
+license: "REPLACE_WITH_EXACT_LICENSE"                # e.g. "CC-BY-4.0"; must permit redistribution
+                                                       # here, not merely "royalty-free"
+source_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+image_relative_path: "REPLACE_WITH_RELATIVE_PATH"    # relative to this directory
+
+# Applied transformations ----------------------------------------------------------
+transformations:
+  - "REPLACE_WITH_EACH_STEP_APPLIED (e.g. resized to 1024px longest edge)"
+
+# Ground-truth mask provenance -----------------------------------------------------
+ground_truth_relative_path: "REPLACE_WITH_RELATIVE_PATH"
+ground_truth_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+ground_truth_method: "REPLACE_WITH_METHOD"       # e.g. "manual annotation, tool X vY"
+ground_truth_annotator: "REPLACE_WITH_ANNOTATOR"
+ground_truth_review_status: "REPLACE_WITH_STATUS" # e.g. "reviewed", "unreviewed"
+ground_truth_license: "REPLACE_WITH_LICENSE_IF_DISTINCT_FROM_SOURCE"
+
+# Measured pixel geometry (informational; not authoritative for tests) --------------
+width: 0
+height: 0

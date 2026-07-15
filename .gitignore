@@ -1,0 +1,45 @@
+# build artifacts
+*.exe
+_internal/
+__pycache__/
+*.pyc
+
+# local build environment / caches
+.venv/
+.venv-release/
+.build-cache/
+assets/ffmpeg/
+build/
+dist/
+release/
+Output/
+.pytest_cache/
+*.egg-info/
+.numba_cache/
+
+# local demo renders (not committed)
+demo_output/
+
+# Smart Mask model weights/binaries: never committed. Staged locally by
+# tools/stage_smart_mask_model.py and verified by ditherzam/masking, per the
+# provenance policy in assets/models/smart_mask/README.md.
+assets/models/smart_mask/*.onnx
+assets/models/smart_mask/*.pt
+assets/models/smart_mask/*.pth
+assets/models/smart_mask/*.bin
+assets/models/smart_mask/*.ckpt
+assets/models/smart_mask/*.safetensors
+assets/models/smart_mask/_staging/
+# Local dev manifest for a bring-your-own / unverified staged model — never pushed.
+# The tracked release manifest (when one exists) will use a different, explicit name.
+assets/models/smart_mask/manifest.yaml
+
+# Smart Mask quality fixtures: never committed until provenance/license/
+# checksum policy is approved per tests/fixtures/smart_mask/README.md.
+tests/fixtures/smart_mask/*.png
+tests/fixtures/smart_mask/*.jpg
+tests/fixtures/smart_mask/*.jpeg
+tests/fixtures/smart_mask/*.bmp
+tests/fixtures/smart_mask/*.tif
+tests/fixtures/smart_mask/*.tiff
+tests/fixtures/smart_mask/*.webp

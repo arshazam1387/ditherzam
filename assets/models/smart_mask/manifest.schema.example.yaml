@@ -1,0 +1,52 @@
+# Smart Mask model manifest — schema/example only. NOT a real staged asset.
+#
+# Every value below is a placeholder. `ditherzam.masking.model_assets.load_manifest`
+# parses this exact shape and fails closed if a required field is missing, an
+# ID/commit/tensor contract is unapproved, or a hash is malformed. Field docs
+# mirror ModelManifest in ditherzam/masking/model_assets.py.
+
+# Logical model identity ------------------------------------------------------
+model_id: "u2netp"                 # one of the release's approved model IDs
+model_version: "2020-05-06"        # upstream release/checkpoint label
+
+# Upstream provenance ----------------------------------------------------------
+upstream_repository: "U-2-Net"                                   # repository name
+upstream_commit: "ac7e1c817ecab7c7dff5ce6b1abba61cd213ff29"       # pinned commit, all approved models
+upstream_source_url: "REPLACE_WITH_APPROVED_ASSET_LOCATION"       # exact source asset location
+upstream_source_sha256: "0000000000000000000000000000000000000000000000000000000000000000"
+
+# License / attribution ---------------------------------------------------------
+license: "Apache-2.0"              # upstream repository license
+attribution: "U-2-Net authors (Qin et al.), see THIRD_PARTY_NOTICES.md"
+
+# Reproducible conversion ---------------------------------------------------------
+conversion_revision: "REPLACE_WITH_CONVERSION_SCRIPT_REVISION"
+conversion_opset: 12
+conversion_tool_versions:
+  pytorch: "REPLACE_WITH_PINNED_VERSION"
+  onnx: "REPLACE_WITH_PINNED_VERSION"
+  onnxruntime: "1.22.1"
+
+# Converted asset identity ---------------------------------------------------------
+onnx_sha256: "1111111111111111111111111111111111111111111111111111111111111111"
+onnx_byte_count: 0                 # exact byte count of the staged .onnx file
+relative_path: "u2netp.onnx"       # relative to this directory; no absolute/.. paths
+
+# Tensor contract (must match EXPECTED_INPUT_TENSOR / EXPECTED_OUTPUT_TENSOR) -----
+input_tensor:
+  name: "input.1"
+  shape: [1, 3, 320, 320]
+  dtype: "float32"
+output_tensor:
+  name: "1959"
+  shape: [1, 1, 320, 320]
+  dtype: "float32"
+# Filled only from inspection of the approved converted graph. Order is
+# authoritative and is validated exactly by the live adapter. Do not guess
+# exporter-generated names in this schema template.
+output_names: null
+
+# Behavior contract ---------------------------------------------------------------
+preprocessing: "resize to 320x320, RGB, scale to [0, 1], normalize by documented mean/std"
+output_semantics: "single-channel foreground probability in [0, 1] at model resolution"
+algorithm_version: "1"             # bumps whenever adapter/geometry semantics change
