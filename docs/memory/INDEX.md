@@ -13,7 +13,7 @@
 - [progress|phase 8|done] Classic dither defaults restored — 12 styles reverted, 5 audit looks kept, Topography Alt added; harness probes app defaults, goldens re-baked, 71-failure blocker resolved; uncommitted (049-classic-dither-defaults-restored.md)
 - [decision|phase 7|n/a] Video has NO live editing preview — never built; only post-export playback; "video preview broken" reports usually mean the animation preview (052-video-preview-scope.md)
 - [gotcha|phase 7|done] Video export + animation preview signal-drop fixed — QThreadPool autoDelete killed WorkerSignals before queued terminal delivery; VideoController and AnimationController now hold workers until terminal signal (051-video-export-signal-drop-fixed.md)
-- [progress|phase 8|in-progress] Feedback Smear rebuild — Echo Smear judged not reference-exact (parametric vs feedback loop); new style simulates K-iteration feedback walk; user A/B is ship gate; spec+plan+handoff committed (053-feedback-smear-rebuild.md)
+- [progress|phase 8|in-progress] Feedback Smear rebuild — iteration 2 (c2b27be) silhouette-warped traveling lines APPROVED by user 2026-07-15; next=Task 5 final branch review (053-feedback-smear-rebuild.md)
 
 - [constraint|phase -|n/a] Clean-room — no Studio AAA code/strings/binaries (001-clean-room.md)
 - [constraint|phase -|n/a] Core is Qt-free; only ui/app/video-workers import PySide6 (002-qt-free-core.md)
