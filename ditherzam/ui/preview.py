@@ -114,18 +114,22 @@ def render_preview(pipeline, base_gray, settings, max_side: int,
     factor = proxy_factor(h, w, max_side)
     target_shape = (h, w) if factor <= 1 else preview_target_size(h, w, max_side)
 
-    def render_complete_branch() -> np.ndarray:
+    def render_complete_branch(bake=None) -> np.ndarray:
+        # A baked base is a fresh array each call, so the staged cache's
+        # "mask-proxy" key (which does not encode the bake) must not be used:
+        # render uncached instead. render_with_mask caches the baked result.
+        base = base_gray if bake is None else bake(base_gray)
         if factor <= 1:
-            if mask_context is not None and temporal_field is None:
+            if mask_context is not None and temporal_field is None and bake is None:
                 return pipeline.render_cached(
-                    base_gray, settings, is_cancelled=is_cancelled,
+                    base, settings, is_cancelled=is_cancelled,
                     cache_key=("mask-proxy", rendered_identity, target_shape))
-            return pipeline.render(base_gray, settings, temporal_field=temporal_field,
+            return pipeline.render(base, settings, temporal_field=temporal_field,
                                    is_cancelled=is_cancelled)
         target_h, target_w = target_shape
-        small = nearest_upscale_to(base_gray, (target_w, target_h))
+        small = nearest_upscale_to(base, (target_w, target_h))
         psettings = replace(settings, scale=proxy_scale(settings.scale, factor))
-        if mask_context is not None and temporal_field is None:
+        if mask_context is not None and temporal_field is None and bake is None:
             rgb_small = pipeline.render_cached(
                 small, psettings, is_cancelled=is_cancelled,
                 cache_key=("mask-proxy", rendered_identity, target_shape))

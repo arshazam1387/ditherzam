@@ -174,6 +174,27 @@ def composite_masked(
     return _composite_u8(rendered, source, coverage, _MODE_CODES[outside_mode], 3 if opaque else 4)
 
 
+def bake_outside_base(base_gray_f32: np.ndarray, mask: np.ndarray,
+                      fill_value: float) -> np.ndarray:
+    """Blend the outside of ``mask`` toward ``fill_value`` on a grayscale base.
+
+    Runs BEFORE the render pipeline so dither/effects texture the fill.
+    Feathered (fractional) coverage blends softly; inside pixels (coverage 1)
+    are untouched. The input base is never mutated.
+    """
+    base = np.asarray(base_gray_f32, dtype=np.float32)
+    if not isinstance(mask, np.ndarray) or mask.ndim != 2:
+        raise MaskCompositeError("mask must be a 2-D ndarray")
+    if base.ndim != 2:
+        raise MaskCompositeError(f"base must be 2-D grayscale, got shape {base.shape}")
+    if mask.shape != base.shape:
+        raise MaskCompositeError(
+            f"mask shape {mask.shape} does not match base shape {base.shape}")
+    coverage = np.asarray(mask, dtype=np.float32)
+    fill = np.float32(fill_value)
+    return base * coverage + fill * (np.float32(1.0) - coverage)
+
+
 def flatten_rgba_white(rgba: np.ndarray) -> np.ndarray:
     """Flatten canonical straight RGBA onto opaque white with byte-exact math."""
     source = _validate_source(rgba)

@@ -13,9 +13,10 @@ from PIL import Image
 
 from ditherzam.render import RenderCancelled
 from .cache import CompositeIdentity, MaskCaches
-from .composite import composite_masked
+from .composite import bake_outside_base, composite_masked
 from .contracts import MaskIdentity
 from .geometry import FEATHER_ALGORITHM_VERSION, derive_master_mask, resize_mask_area
+from .settings import OutsideMode
 
 ALPHA_ALGORITHM_VERSION = "straight-u8-v1"
 
@@ -47,13 +48,61 @@ def _resize_source_rgba(source: np.ndarray, shape: tuple[int, int]) -> np.ndarra
     )
 
 
-def render_with_mask(renderer: Callable[[], np.ndarray], mask_context=None, *,
+def bake_fill_active(settings) -> bool:
+    """True when the White/Black outside fill should be baked pre-dither."""
+    return bool(settings.bake_fill) and settings.outside in (
+        OutsideMode.WHITE, OutsideMode.BLACK)
+
+
+def _render_baked(renderer, settings, master, mask_identity, mask_context,
+                  caches, rendered_identity, is_cancelled, target_shape,
+                  derived_new) -> np.ndarray:
+    """Bake the outside fill into the renderer's base and skip compositing.
+
+    The renderer receives one ``bake(base) -> baked_base`` callable it must
+    apply to its pipeline input BEFORE any proxy downscale, so the fill is
+    dithered as part of the image instead of stamped over the result.
+    """
+    fill = 255.0 if settings.outside is OutsideMode.WHITE else 0.0
+    composite_identity = None
+    if caches is not None and rendered_identity is not None and target_shape is not None:
+        composite_identity = CompositeIdentity(
+            (rendered_identity, tuple(target_shape)), mask_identity, settings.outside,
+            mask_context.source, ALPHA_ALGORITHM_VERSION, baked=True)
+        cached = caches.get_composite(composite_identity)
+        if cached is not None:
+            _cancel(is_cancelled)
+            if derived_new:
+                caches.put_derived(mask_identity, master)
+            return cached
+
+    def bake(base: np.ndarray) -> np.ndarray:
+        base = np.asarray(base, dtype=np.float32)
+        mask = master if master.shape == base.shape else resize_mask_area(master, base.shape)
+        return bake_outside_base(base, mask, fill)
+
+    rendered = renderer(bake)
+    _cancel(is_cancelled)
+    if caches is not None:
+        if derived_new:
+            caches.put_derived(mask_identity, master)
+        if composite_identity is not None:
+            caches.put_composite(composite_identity, rendered)
+    return rendered
+
+
+def render_with_mask(renderer: Callable[..., np.ndarray], mask_context=None, *,
                      caches: MaskCaches | None = None, rendered_identity=None,
                      is_cancelled=None, target_shape=None) -> np.ndarray:
     """Render one complete branch and optionally outer-composite its mask.
 
     ``mask_context is None`` is the explicit historical bypass: no source hash,
     mask derivation, resizing, compositing, or mask allocation occurs.
+
+    When the settings ask for a baked White/Black fill, ``renderer`` is called
+    with one positional ``bake`` callable to apply to its base image and the
+    outer composite is skipped; otherwise ``renderer`` is called with no
+    arguments exactly as before.
     """
     if mask_context is None:
         return renderer()
@@ -76,6 +125,10 @@ def render_with_mask(renderer: Callable[[], np.ndarray], mask_context=None, *,
         )
         _cancel(is_cancelled)
     _cancel(is_cancelled)
+    if bake_fill_active(settings):
+        return _render_baked(renderer, settings, master, mask_identity, mask_context,
+                             caches, rendered_identity, is_cancelled, target_shape,
+                             derived_new)
     rendered = None
     if target_shape is None:
         rendered = renderer()
