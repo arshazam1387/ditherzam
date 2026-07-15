@@ -182,6 +182,8 @@ _KEY_SPECS = {
     "fs_time_slider": ("Time", 0, 360, 0),
     "fs_erode_slider": ("Erode", 0, 100, 30),
     "fs_density_slider": ("Density", 0, 200, 100),
+    "fs_lines_slider": ("Lines", 0, 100, 60),
+    "fs_line_spacing_slider": ("Line Spacing", 8, 160, 48),
 }
 
 _STYLE_PARAMETERS = {

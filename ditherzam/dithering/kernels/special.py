@@ -330,12 +330,42 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
 
 
 @njit(cache=True, parallel=True)
-def _feedback_smear(img, thr, k_iters, drift, namount, nscale, decay, time_v, erode, density):
+def _feedback_smear(img, thr, k_iters, drift, namount, nscale, decay, time_v,
+                    erode, density, lines, lspacing):
     h, w = img.shape
     s = nscale / 1000.0
     tshift = time_v / 360.0 * 37.0
+    t_frac = (time_v % 360.0) / 360.0
     dgain = density / 100.0
     surv_rate = decay / 100.0
+    lgain = lines / 100.0
+    falloff = lspacing * 2.0
+
+    # Silhouette profile: rightmost subject pixel per row, box-smoothed
+    # vertically with a presence weight so the profile feathers out above
+    # and below the subject instead of snapping between bent and straight.
+    edge = np.full(h, -1.0, dtype=np.float32)
+    for y in prange(h):
+        for x in range(w - 1, -1, -1):
+            if img[y, x] < thr:
+                edge[y] = float(x)
+                break
+    edge_s = np.empty(h, dtype=np.float32)
+    pres = np.empty(h, dtype=np.float32)
+    for y in prange(h):
+        acc = 0.0
+        cnt = 0.0
+        tot = 0.0
+        lo = y - 8 if y >= 8 else 0
+        hi = y + 8 if y + 8 < h else h - 1
+        for yy in range(lo, hi + 1):
+            tot += 1.0
+            if edge[yy] >= 0.0:
+                acc += edge[yy]
+                cnt += 1.0
+        edge_s[y] = acc / cnt if cnt > 0.0 else -1.0
+        pres[y] = cnt / tot
+
     out = np.empty_like(img)
     for y in prange(h):
         for x in range(w):
@@ -352,9 +382,40 @@ def _feedback_smear(img, thr, k_iters, drift, namount, nscale, decay, time_v, er
                 field = _vnoise(x * s * 3.0 + tshift, y * s * 3.0, 0, 909)
                 if field >= cut:
                     ink = True
+            if not ink and not subject and lgain > 0.0:
+                # Feedback lines: a lattice of long continuous vertical lines
+                # right of the silhouette. The warped coordinate q blends from
+                # screen-x (straight verticals far away) to distance-from-
+                # silhouette (contour-hugging waves up close); the warp
+                # gradient piles lines into nested waves at the edge, and
+                # Time marches the whole lattice INTO the subject, one
+                # spacing per full sweep.
+                e = edge_s[y]
+                if e < 0.0 or float(x) > e:
+                    wgt = 0.0
+                    dqdx = 1.0
+                    if e >= 0.0:
+                        wgt = pres[y] * math.exp(-(float(x) - e) / falloff)
+                        dqdx = 1.0 + wgt * e / falloff
+                        if dqdx > 6.0:
+                            dqdx = 6.0
+                    q = float(x) - wgt * e
+                    wob = (_vnoise(x * s * 0.5 + tshift, y * s * 1.6, 0, 808)
+                           - 0.5) * 2.0 * namount * (0.3 + 1.7 * wgt)
+                    v = (q + wob) / lspacing + t_frac
+                    fv = v - math.floor(v)
+                    # width x dqdx keeps lines ~1.6px on screen where the
+                    # warp compresses the lattice near the silhouette
+                    if fv * lspacing < 1.6 * dqdx:
+                        idx = int(math.floor(v))
+                        if lgain >= 1.0 or _hash01(idx, 0, 111) < lgain:
+                            ink = True
             if not ink and dgain > 0.0:
-                surv = 1.0
-                px = float(x)
+                # Fractional feedback age: Time gives the walk a partial
+                # first step, so every trail mark marches away from the
+                # subject as it ages and wraps seamlessly each full sweep.
+                surv = surv_rate ** t_frac
+                px = float(x) - drift * t_frac
                 py = float(y)
                 for k in range(1, k_iters + 1):
                     surv *= surv_rate
@@ -364,7 +425,7 @@ def _feedback_smear(img, thr, k_iters, drift, namount, nscale, decay, time_v, er
                     # per-iteration slide: paths bend through the spatial field
                     # like real feedback history — coherent onion-skin lines,
                     # not per-pixel random walks or straight sprayed rays.
-                    kk = k * 0.08
+                    kk = (k + t_frac) * 0.08
                     nx = _vnoise(px * s + tshift + kk, py * s, 0, 606)
                     ny = _vnoise(px * s + tshift + kk, py * s, 0, 707)
                     px -= drift + (nx - 0.5) * 2.0 * namount * 0.4
@@ -526,20 +587,23 @@ def echo_smear(image_array, parameter, luminance_threshold_value):
 
 # ── Kernel: Feedback Smear · Special Effects · dims=2 ──
 #    sliders (Trail Length 4-64-32, Drift 1-8-2, Noise Amount 0-24-6, Noise Scale 1-100-20,
-#             Decay 50-100-88, Time 0-360-0, Erode 0-100-30, Density 0-200-100)
+#             Decay 50-100-88, Time 0-360-0, Erode 0-100-30, Density 0-200-100,
+#             Lines 0-100-60, Line Spacing 8-160-48)
 @registry.register("Feedback Smear", "Special Effects", dims=2,
                    param_sliders=("fs_length_slider", "fs_drift_slider",
                                   "fs_noise_amount_slider", "fs_noise_scale_slider",
                                   "fs_decay_slider", "fs_time_slider",
-                                  "fs_erode_slider", "fs_density_slider"))
+                                  "fs_erode_slider", "fs_density_slider",
+                                  "fs_lines_slider", "fs_line_spacing_slider"))
 def feedback_smear(image_array, parameter, luminance_threshold_value):
-    k_iters, drift, namount, nscale, decay, time_v, erode, density = _unpack8(
-        parameter, 32, 2, 6, 20, 88, 0, 30, 100)
+    k_iters, drift, namount, nscale, decay, time_v, erode, density, lines, lspacing = _unpack10(
+        parameter, 32, 2, 6, 20, 88, 0, 30, 100, 60, 48)
     return _feedback_smear(image_array.astype(np.float32),
                            float(luminance_threshold_value),
                            max(1, int(k_iters)), float(drift), float(namount),
                            max(1.0, float(nscale)), float(decay), float(time_v),
-                           float(erode), float(density))
+                           float(erode), float(density), float(lines),
+                           max(4.0, float(lspacing)))
 
 
 # ── Tuple-unpack helpers (plain Python) ──
@@ -584,6 +648,13 @@ def _unpack8(parameter, d0, d1, d2, d3, d4, d5, d6, d7):
         defaults = (d0, d1, d2, d3, d4, d5, d6, d7)
         return tuple(parameter[i] if i < len(parameter) else defaults[i] for i in range(8))
     return (parameter if parameter not in (None, 0) else d0), d1, d2, d3, d4, d5, d6, d7
+
+
+def _unpack10(parameter, d0, d1, d2, d3, d4, d5, d6, d7, d8, d9):
+    if isinstance(parameter, (tuple, list)):
+        defaults = (d0, d1, d2, d3, d4, d5, d6, d7, d8, d9)
+        return tuple(parameter[i] if i < len(parameter) else defaults[i] for i in range(10))
+    return (parameter if parameter not in (None, 0) else d0), d1, d2, d3, d4, d5, d6, d7, d8, d9
 
 
 def _half_span(value):
