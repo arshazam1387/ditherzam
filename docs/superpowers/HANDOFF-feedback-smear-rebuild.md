@@ -6,7 +6,14 @@
 Two styles now exist on this branch. **Echo Smear** (parametric line effect, 8 sliders, complete, all reviews clean) — user keeps it but it is NOT the target look. **Feedback Smear** (new, simulates a TouchDesigner feedback loop by per-pixel backward walk through a value-noise field) — user verdict after A/B iteration 1: *"this is better, the effect is good, BUT there are still no lines smearing into the object — no line going and turning into it."* That missing element is the whole remaining job.
 
 ## What "lines smearing into the object" means (the acceptance target)
-In the reference video (frames in the old session's scratchpad are gone — RE-EXTRACT from `C:\Users\arsha\Downloads\Phone Link\Will definitely try to modulate everything at least once.mp4` with `ffmpeg -vf fps=1`), the tower has a handful of LONG, CONTINUOUS, individually-readable wavy vertical lines to its right that (a) hug the silhouette profile, (b) visibly TRAVEL toward and merge INTO the subject as time advances, and (c) coexist with the dense dissolving speckle Feedback Smear already produces. We have the speckle fan; we lack the distinct traveling lines.
+**FIRST ACTION: study the reference video yourself.** It is at
+`C:\Users\arsha\Downloads\Phone Link\Will definitely try to modulate everything at least once.mp4`
+(9s, 720x1280, 30fps — a phone capture of a TouchDesigner session; crop the app chrome, top ~95px and bottom ~320px).
+Extract and LOOK at (Read tool renders PNGs):
+1. `ffmpeg -vf fps=1` over the whole clip — overall look per second;
+2. a dense burst, e.g. `ffmpeg -ss 3 -t 2 -vf fps=10` — consecutive frames are the ONLY way to see how the lines travel; diff neighboring frames mentally: which lines moved where, how fast, what merges into the tower.
+
+What you must reproduce: the tower has a handful of LONG, CONTINUOUS, individually-readable wavy vertical lines to its right that (a) hug the silhouette profile, (b) visibly TRAVEL toward and merge INTO the subject as time advances, and (c) coexist with the dense dissolving speckle Feedback Smear already produces. We have the speckle fan; we lack the distinct traveling lines. Judge every iteration by rendering a Time-sweep GIF and comparing it against the dense-burst frames — not against a single still.
 
 ## Technical leads for the next iteration (in priority order)
 1. **Time must advance the feedback age, not just slide the field.** Currently `fs_time_slider` only shifts noise coordinates (`tshift`) — the trail pattern wobbles but nothing marches inward. Add fractional-iteration travel exactly like Echo Smear's Wave Phase fix (commit `fbeaaeb`, reviewed clean): continuous echo index `e = k - t_frac`, first step partial, so copies march INTO the subject and a new one fades in at the far end. That fix's derivation lives in `.superpowers/sdd/echo-fix-4-brief.md`.
