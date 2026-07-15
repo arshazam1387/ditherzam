@@ -223,6 +223,23 @@ def _hash01(x, y, salt):
     return ((h >> 8) & 0xFFFF) / 65535.0
 
 
+@njit(cache=True)
+def _vnoise(x, y, k, salt):
+    # Smooth 2D value noise on an integer hash lattice; iteration index k is
+    # folded into the lattice so every feedback step gets its own field.
+    xi = int(math.floor(x)) + k * 8191
+    yi = int(math.floor(y))
+    fx = x - math.floor(x)
+    fy = y - math.floor(y)
+    ux = fx * fx * (3.0 - 2.0 * fx)
+    uy = fy * fy * (3.0 - 2.0 * fy)
+    n00 = _hash01(xi, yi, salt)
+    n10 = _hash01(xi + 1, yi, salt)
+    n01 = _hash01(xi, yi + 1, salt)
+    n11 = _hash01(xi + 1, yi + 1, salt)
+    return (n00 * (1.0 - ux) + n10 * ux) * (1.0 - uy) + (n01 * (1.0 - ux) + n11 * ux) * uy
+
+
 @njit(cache=True, parallel=True)
 def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath, wave_freq):
     h, w = img.shape
