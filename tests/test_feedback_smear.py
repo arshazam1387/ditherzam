@@ -90,3 +90,32 @@ def test_erode_eats_subject_organically():
     eaten = entry().func(img.copy(), (32, 2, 6, 20, 88, 0, 70, 100), THR)
     body = slice(20, 118), slice(58, 70)
     assert (eaten[body] == 255.0).sum() > (solid[body] == 255.0).sum()
+
+
+def test_default_output_not_collapsed():
+    gradient = np.tile(np.linspace(0, 255, 96, dtype=np.float32), (96, 1))
+    out = entry().func(gradient.copy(), DEFAULTS, THR)
+    ink = (out == 0.0).mean()
+    assert 0.02 < ink < 0.98
+
+
+def test_not_a_duplicate_of_echo_smear():
+    from tests.golden_harness import default_param
+    img = _pylon()
+    ours = entry().func(img.copy(), DEFAULTS, THR)
+    other = registry.get_entry("Echo Smear")
+    theirs = other.func(img.copy(), default_param(other), THR)
+    assert np.any(ours != theirs)
+
+
+def test_each_native_control_changes_pixels():
+    img = _pylon()
+    e = entry()
+    base = e.func(img.copy(), DEFAULTS, THR)
+    alternatives = (8, 6, 18, 70, 65, 180, 80, 30)
+    assert len(e.param_sliders) == 8
+    for index, value in enumerate(alternatives):
+        params = list(DEFAULTS)
+        params[index] = value
+        changed = e.func(img.copy(), tuple(params), THR)
+        assert np.any(changed != base), e.param_sliders[index]
