@@ -3,14 +3,14 @@ from ditherzam.presets import preset_to_settings, settings_to_preset
 from ditherzam.render import RenderSettings
 
 
-def test_exactly_seven_reusable_mask_settings_round_trip():
+def test_exactly_eight_reusable_mask_settings_round_trip():
     mask = SmartMaskSettings(True, MaskTarget.BACKGROUND, 73, 19, -7, True,
-                             OutsideMode.WHITE)
+                             OutsideMode.WHITE, True)
     preset = settings_to_preset(RenderSettings(), smart_mask=mask)
     assert preset["smart_mask"] == {
         "enabled": True, "target": "background", "sensitivity": 73,
         "feather_px": 19, "expansion_px": -7, "invert": True,
-        "outside": "white",
+        "outside": "white", "bake_fill": True,
     }
     assert preset_to_settings(preset).smart_mask == mask
 

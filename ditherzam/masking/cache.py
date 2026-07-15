@@ -70,6 +70,7 @@ class CompositeIdentity:
     outside_mode: OutsideMode
     source: SourceIdentity
     alpha_algorithm_version: str
+    baked: bool = False
 
     def __post_init__(self) -> None:
         try:
@@ -84,6 +85,8 @@ class CompositeIdentity:
             raise TypeError("source must be a SourceIdentity")
         if not isinstance(self.alpha_algorithm_version, str) or not self.alpha_algorithm_version.strip():
             raise ValueError("alpha_algorithm_version must be non-empty")
+        if not isinstance(self.baked, bool):
+            raise TypeError("baked must be a bool")
 
 
 class MaskCaches:

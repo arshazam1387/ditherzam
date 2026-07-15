@@ -50,6 +50,7 @@ DEFAULT_FEATHER_PX = 8
 DEFAULT_EXPANSION_PX = 0
 DEFAULT_INVERT = False
 DEFAULT_OUTSIDE = OutsideMode.ORIGINAL
+DEFAULT_BAKE_FILL = False
 
 
 def _validate_bool(value: object, name: str) -> None:
@@ -87,6 +88,9 @@ class SmartMaskSettings:
     expansion_px: int = DEFAULT_EXPANSION_PX
     invert: bool = DEFAULT_INVERT
     outside: OutsideMode = DEFAULT_OUTSIDE
+    # Bake the White/Black outside fill into the pipeline input so dither and
+    # effects render across it; ignored for Original/Transparent outsides.
+    bake_fill: bool = DEFAULT_BAKE_FILL
 
     def __post_init__(self) -> None:
         _validate_bool(self.enabled, "enabled")
@@ -98,3 +102,4 @@ class SmartMaskSettings:
         _validate_bool(self.invert, "invert")
         if not isinstance(self.outside, OutsideMode):
             raise MaskSettingsError(f"outside must be an OutsideMode, got {self.outside!r}")
+        _validate_bool(self.bake_fill, "bake_fill")

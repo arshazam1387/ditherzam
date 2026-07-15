@@ -104,9 +104,14 @@ class SmartMaskPanel(QGroupBox):
                              ("Transparent", OutsideMode.TRANSPARENT),
                              ("White", OutsideMode.WHITE), ("Black", OutsideMode.BLACK)):
             self.outside_combo.addItem(label, value)
+        self.bake_check = QCheckBox("Bake fill into dither")
+        self.bake_check.setToolTip(
+            "Paint the White/Black outside fill into the image before dithering "
+            "so dither and effects render across the background too.")
         self.overlay_check = QCheckBox("Show mask overlay")
         layout.addWidget(self.invert_check)
         layout.addWidget(self._labeled("Outside region", self.outside_combo))
+        layout.addWidget(self.bake_check)
         layout.addWidget(self.overlay_check)
 
         buttons = QHBoxLayout()
@@ -132,6 +137,7 @@ class SmartMaskPanel(QGroupBox):
             slider.valueChanged.connect(self._settings_edited)
         self.invert_check.toggled.connect(self._settings_edited)
         self.outside_combo.currentIndexChanged.connect(self._settings_edited)
+        self.bake_check.toggled.connect(self._settings_edited)
         self.overlay_check.toggled.connect(self.overlay_changed)
         self.redetect_button.clicked.connect(self.redetect_requested)
         self.cancel_button.clicked.connect(self.cancel_requested)
@@ -185,7 +191,8 @@ class SmartMaskPanel(QGroupBox):
         chain = (self.disclosure_button, self.enabled_check, self.target_combo,
                  self.sensitivity_slider, self.feather_slider,
                  self.expansion_slider, self.invert_check, self.outside_combo,
-                 self.overlay_check, self.redetect_button, self.cancel_button)
+                 self.bake_check, self.overlay_check, self.redetect_button,
+                 self.cancel_button)
         for first, second in zip(chain, chain[1:]):
             QWidget.setTabOrder(first, second)
 
@@ -198,6 +205,7 @@ class SmartMaskPanel(QGroupBox):
             expansion_px=self.expansion_slider.value(),
             invert=self.invert_check.isChecked(),
             outside=self.outside_combo.currentData(),
+            bake_fill=self.bake_check.isChecked(),
         )
         if not self._settings.enabled:
             self._status = MaskPanelStatus.DISABLED
@@ -226,7 +234,7 @@ class SmartMaskPanel(QGroupBox):
     def _sync_controls_from_settings(self) -> None:
         controls = (self.enabled_check, self.target_combo, self.sensitivity_slider,
                     self.feather_slider, self.expansion_slider, self.invert_check,
-                    self.outside_combo)
+                    self.outside_combo, self.bake_check)
         for control in controls:
             control.blockSignals(True)
         self.enabled_check.setChecked(self._settings.enabled)
@@ -236,6 +244,7 @@ class SmartMaskPanel(QGroupBox):
         self.expansion_slider.setValue(self._settings.expansion_px)
         self.invert_check.setChecked(self._settings.invert)
         self.outside_combo.setCurrentIndex(self.outside_combo.findData(self._settings.outside))
+        self.bake_check.setChecked(self._settings.bake_fill)
         for control in controls:
             control.blockSignals(False)
         self.sensitivity_spin.setValue(self._settings.sensitivity)
@@ -287,6 +296,8 @@ class SmartMaskPanel(QGroupBox):
                         self.invert_check, self.overlay_check):
             control.setEnabled(boundary)
         self.outside_combo.setEnabled(enabled and not whole)
+        self.bake_check.setEnabled(
+            boundary and self._settings.outside in (OutsideMode.WHITE, OutsideMode.BLACK))
         self.redetect_button.setEnabled(
             boundary and self._source_available and self._model_available and not detecting)
         self.cancel_button.setEnabled(boundary and detecting)

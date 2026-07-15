@@ -82,6 +82,7 @@ def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
             "expansion_px": smart_mask.expansion_px,
             "invert": smart_mask.invert,
             "outside": smart_mask.outside.value,
+            "bake_fill": smart_mask.bake_fill,
         }
     return preset
 
@@ -174,6 +175,7 @@ def preset_to_settings(preset: dict) -> PresetContents:
                                 mask_defaults.expansion_px),
         invert=_safe_bool(mask.get("invert"), mask_defaults.invert),
         outside=_enum_value(OutsideMode, mask.get("outside"), mask_defaults.outside),
+        bake_fill=_safe_bool(mask.get("bake_fill"), mask_defaults.bake_fill),
     )
     return PresetContents(settings, palette, effects, smart_mask)
 

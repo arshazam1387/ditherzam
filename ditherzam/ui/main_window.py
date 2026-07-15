@@ -113,8 +113,14 @@ class _RenderWorker(QRunnable):
                         mask_caches=self._mask_caches,
                         rendered_identity=self._request.rendered_identity)
             else:
-                render = lambda: pipeline.render_cached(
-                    source, self._request.settings, is_cancelled=self._is_cancelled)
+                # A baked base is call-fresh, so it renders uncached; the
+                # baked result is cached by render_with_mask instead.
+                render = lambda bake=None: (
+                    pipeline.render_cached(
+                        source, self._request.settings, is_cancelled=self._is_cancelled)
+                    if bake is None else
+                    pipeline.render(bake(source), self._request.settings,
+                                    is_cancelled=self._is_cancelled))
                 if self._request.mask_context is None:
                     result = render()
                 else:
@@ -713,7 +719,9 @@ class ImageEditor(QMainWindow):
             "exact-export-v1",
         )
         return render_with_mask(
-            lambda: pipeline.render(source_gray, settings), context,
+            lambda bake=None: pipeline.render(
+                source_gray if bake is None else bake(source_gray), settings),
+            context,
             caches=self._mask_caches, rendered_identity=rendered_identity,
             target_shape=source_gray.shape[:2])
 
@@ -983,7 +991,10 @@ class ImageEditor(QMainWindow):
             RenderKind.FULL, target_max_side=max(self._reference_size()))
         pipeline = self.pipeline.snapshot_context(
             request.color_engine, request.effect_stack)
-        renderer = lambda: pipeline.render_cached(request.source_gray, request.settings)
+        renderer = lambda bake=None: (
+            pipeline.render_cached(request.source_gray, request.settings)
+            if bake is None else
+            pipeline.render(bake(request.source_gray), request.settings))
         if request.mask_context is None:
             result = renderer()
         else:
