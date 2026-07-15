@@ -174,6 +174,14 @@ _KEY_SPECS = {
     "echo_dissolve_slider": ("Dissolve Amount", 0, 100, 30),
     "echo_breath_slider": ("Breath", 0, 100, 50),
     "echo_wave_frequency_slider": ("Wave Frequency", 1, 100, 10),
+    "fs_length_slider": ("Trail Length", 4, 64, 32),
+    "fs_drift_slider": ("Drift", 1, 8, 2),
+    "fs_noise_amount_slider": ("Noise Amount", 0, 24, 6),
+    "fs_noise_scale_slider": ("Noise Scale", 1, 100, 20),
+    "fs_decay_slider": ("Decay", 50, 100, 88),
+    "fs_time_slider": ("Time", 0, 360, 0),
+    "fs_erode_slider": ("Erode", 0, 100, 30),
+    "fs_density_slider": ("Density", 0, 200, 100),
 }
 
 _STYLE_PARAMETERS = {

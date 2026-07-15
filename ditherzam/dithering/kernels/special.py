@@ -329,6 +329,50 @@ def _echo_smear(img, thr, count, spacing, wave, phase, streak, dissolve, breath,
     return out
 
 
+@njit(cache=True, parallel=True)
+def _feedback_smear(img, thr, k_iters, drift, namount, nscale, decay, time_v, erode, density):
+    h, w = img.shape
+    s = nscale / 1000.0
+    tshift = time_v / 360.0 * 37.0
+    dgain = density / 100.0
+    surv_rate = decay / 100.0
+    out = np.empty_like(img)
+    for y in prange(h):
+        for x in range(w):
+            ink = False
+            subject = img[y, x] < thr
+            if subject:
+                field = _vnoise(x * s * 2.0 + tshift, y * s * 2.0, 0, 909)
+                gate = erode / 100.0 * (0.35 + 0.65 * field)
+                if _hash01(x, y, 111) >= gate:
+                    ink = True
+            if not ink and dgain > 0.0:
+                surv = 1.0
+                px = float(x)
+                py = float(y)
+                prev_in = subject
+                for k in range(1, k_iters + 1):
+                    surv *= surv_rate
+                    if surv * dgain < 0.02:
+                        break
+                    nx = _vnoise(x * s + tshift + k * 0.618, y * s, k, 606)
+                    ny = _vnoise(x * s + tshift + k * 0.618, y * s, k, 707)
+                    px -= drift + (nx - 0.5) * 2.0 * namount
+                    py -= (ny - 0.5) * 2.0 * namount * 0.6
+                    xi = int(px)
+                    yi = int(py)
+                    if xi < 0 or xi >= w or yi < 0 or yi >= h:
+                        break
+                    cur_in = img[yi, xi] < thr
+                    if cur_in and not prev_in:
+                        if _hash01(x, y, 202 + k) < surv * dgain:
+                            ink = True
+                            break
+                    prev_in = cur_in
+            out[y, x] = 0.0 if ink else 255.0
+    return out
+
+
 # ── Kernel: Radial Burst · Special Effects · dims=2 · no sliders ──
 @registry.register("Radial Burst", "Special Effects", dims=2,
                    param_sliders=("ray_count_slider", "ray_phase_slider", "center_x_slider", "center_y_slider", "threshold_span_slider"))
@@ -466,6 +510,24 @@ def echo_smear(image_array, parameter, luminance_threshold_value):
                        float(luminance_threshold_value), max(0, int(count)),
                        float(spacing), float(wave), float(phase),
                        float(streak), float(dissolve), float(breath), float(wfreq))
+
+
+# ── Kernel: Feedback Smear · Special Effects · dims=2 ──
+#    sliders (Trail Length 4-64-32, Drift 1-8-2, Noise Amount 0-24-6, Noise Scale 1-100-20,
+#             Decay 50-100-88, Time 0-360-0, Erode 0-100-30, Density 0-200-100)
+@registry.register("Feedback Smear", "Special Effects", dims=2,
+                   param_sliders=("fs_length_slider", "fs_drift_slider",
+                                  "fs_noise_amount_slider", "fs_noise_scale_slider",
+                                  "fs_decay_slider", "fs_time_slider",
+                                  "fs_erode_slider", "fs_density_slider"))
+def feedback_smear(image_array, parameter, luminance_threshold_value):
+    k_iters, drift, namount, nscale, decay, time_v, erode, density = _unpack8(
+        parameter, 32, 2, 6, 20, 88, 0, 30, 100)
+    return _feedback_smear(image_array.astype(np.float32),
+                           float(luminance_threshold_value),
+                           max(1, int(k_iters)), float(drift), float(namount),
+                           max(1.0, float(nscale)), float(decay), float(time_v),
+                           float(erode), float(density))
 
 
 # ── Tuple-unpack helpers (plain Python) ──
