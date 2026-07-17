@@ -164,8 +164,13 @@ def _waveform(img, thr, density, base_freq, y_phase, amplitude, phase, spacing):
     out = np.empty_like(img)
     for y in range(h):
         for x in range(w):
-            freq = (base_freq / 100.0 + (1.0 - img[y, x] / 255.0) * density * 0.05) / (spacing / 100.0)
-            v = 127.5 + math.sin(x * freq + y * y_phase / 100.0 + phase * math.pi / 180.0) * amplitude
+            sp = spacing / 100.0
+            freq = (base_freq / 100.0 + (1.0 - img[y, x] / 255.0) * density * 0.05) / sp
+            s = math.sin(x * freq + y * y_phase / 100.0 + phase * math.pi / 180.0)
+            s = 1.0 - (1.0 - s) * sp * sp
+            if s < -1.0:
+                s = -1.0
+            v = 127.5 + s * amplitude
             out[y, x] = 255.0 if img[y, x] >= v else 0.0
     return out
 
@@ -179,8 +184,13 @@ def _waveform_alt(img, thr, blend, base_freq, tone_freq, amplitude, phase, spaci
             gx = 0.0
             if 0 < x < w - 1:
                 gx = (img[y, x + 1] - img[y, x - 1]) / 255.0
-            p = x * (base_freq / 100.0 + (1.0 - img[y, x] / 255.0) * tone_freq / 100.0) / (spacing / 100.0) + gx * blend + phase * math.pi / 180.0
-            v = 127.5 + math.sin(p) * amplitude
+            sp = spacing / 100.0
+            p = x * (base_freq / 100.0 + (1.0 - img[y, x] / 255.0) * tone_freq / 100.0) / sp + gx * blend + phase * math.pi / 180.0
+            s = math.sin(p)
+            s = 1.0 - (1.0 - s) * sp * sp
+            if s < -1.0:
+                s = -1.0
+            v = 127.5 + s * amplitude
             out[y, x] = 255.0 if img[y, x] >= v else 0.0
     return out
 
@@ -193,8 +203,12 @@ def _ordered_modulation(img, thr, param, base, frequency, amplitude, xweight, ph
     for y in range(h):
         for x in range(w):
             coord = x * xweight / 100.0 + y * (1.0 - xweight / 100.0)
-            wob = math.sin(coord * frequency / 100.0 * param / (spacing / 100.0) + phase * math.pi / 180.0) * amplitude
-            t = base[y % mh, x % mw] + wob
+            sp = spacing / 100.0
+            s = math.sin(coord * frequency / 100.0 * param / sp + phase * math.pi / 180.0)
+            s = 1.0 - (1.0 - s) * sp * sp
+            if s < -1.0:
+                s = -1.0
+            t = base[y % mh, x % mw] + s * amplitude
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
