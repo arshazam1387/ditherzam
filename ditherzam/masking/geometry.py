@@ -166,6 +166,66 @@ def derive_master_mask(
     return feather(shaped, feather_px)
 
 
+def _valid_shape(shape: object, name: str) -> tuple[int, int]:
+    if (
+        not isinstance(shape, tuple)
+        or len(shape) != 2
+        or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in shape)
+    ):
+        raise MaskGeometryError(f"{name} must be a positive (height, width) tuple")
+    return shape
+
+
+def _scale_radius(pixels: int, ratio: float, *, minimum: int, maximum: int | None) -> int:
+    """Scale a source-pixel radius to preview pixels, clamped to its range.
+
+    ``int(round(...))`` keeps the mapping honest: a radius that rounds to 0 stays
+    0 (an 8 px feather at 37.5 MP is sub-pixel at 480p).
+    """
+    scaled = int(round(pixels * ratio))
+    if scaled < minimum:
+        scaled = minimum
+    if maximum is not None and scaled > maximum:
+        scaled = maximum
+    return scaled
+
+
+def derive_preview_mask(
+    probability: ProbabilityMap | np.ndarray | None,
+    *,
+    sensitivity: int,
+    target: MaskTarget,
+    invert: bool = False,
+    expansion_px: int = 0,
+    feather_px: int = 0,
+    source_shape: tuple[int, int],
+    target_shape: tuple[int, int],
+) -> np.ndarray:
+    """Derive the master mask at a capped preview resolution.
+
+    Identical threshold/target/invert/operation-order semantics to
+    :func:`derive_master_mask` (which it reuses), but the probability values are
+    resampled to ``target_shape`` and the geometry radii are scaled by
+    ``max(target_shape) / max(source_shape)`` so a capped preview never pays the
+    full-resolution morphology/feather cost. Full-resolution derivation stays in
+    :func:`derive_master_mask`; callers use this only when the preview shape
+    differs from the source shape.
+    """
+    _valid_shape(source_shape, "source_shape")
+    _valid_shape(target_shape, "target_shape")
+    ratio = max(target_shape) / max(source_shape)
+    return derive_master_mask(
+        probability,
+        sensitivity=sensitivity,
+        target=target,
+        invert=invert,
+        expansion_px=_scale_radius(
+            expansion_px, ratio, minimum=EXPANSION_MIN_PX, maximum=EXPANSION_MAX_PX),
+        feather_px=_scale_radius(feather_px, ratio, minimum=0, maximum=None),
+        source_shape=target_shape,
+    )
+
+
 def resize_mask_area(mask: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
     """Resize a master mask to preview shape using deterministic area sampling."""
     source = _mask(mask)

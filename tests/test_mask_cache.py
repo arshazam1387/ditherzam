@@ -42,6 +42,24 @@ def test_partitions_use_complete_identities_and_publish_readonly_arrays():
     assert caches.get_inference(_ids(preprocessing="pp2")[1]) is None
 
 
+def test_derived_cache_separates_preview_from_source_resolution():
+    caches = MaskCaches(10_000)
+    _, _, mask_id = _ids()
+    source_mask = np.full((2, 3), .25, np.float32)
+    preview_mask = np.full((1, 2), .75, np.float32)
+    assert caches.put_derived(mask_id, source_mask, (2, 3))
+    assert caches.put_derived(mask_id, preview_mask, (1, 2))
+    # Same MaskIdentity, different derivation shape -> two distinct entries.
+    assert np.all(caches.get_derived(mask_id, (2, 3)) == .25)
+    assert np.all(caches.get_derived(mask_id, (1, 2)) == .75)
+    assert caches.metrics["derived_entries"] == 2
+    assert caches.get_derived(mask_id, (4, 4)) is None
+    # Default (no shape) keeps its own slot and does not collide.
+    assert caches.put_derived(mask_id, np.full((2, 3), .5, np.float32))
+    assert np.all(caches.get_derived(mask_id) == .5)
+    assert caches.metrics["derived_entries"] == 3
+
+
 def test_atomic_lru_oversized_and_metrics_are_bounded():
     caches = MaskCaches(30)
     _, inf1, mask1 = _ids(1)
@@ -128,7 +146,7 @@ def test_clear_source_and_fifty_source_soak():
         assert caches.retained_bytes <= 80
     caches.clear_source(first)
     assert all(key.source != first for key in caches._stores["inference"])
-    assert all(key.inference.source != first for key in caches._stores["derived"])
+    assert all(key[0].inference.source != first for key in caches._stores["derived"])
 
 
 def test_fifty_probability_sources_stay_within_retained_budget():

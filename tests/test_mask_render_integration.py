@@ -72,6 +72,70 @@ def test_derived_and_composite_products_reuse_bounded_mask_cache(monkeypatch):
     assert caches.metrics["composite_entries"] == 1
 
 
+def test_capped_preview_derives_mask_at_preview_shape_only(monkeypatch):
+    from ditherzam.masking import render as module
+    context = _context(np.ones((4, 6), np.float32))  # source 4x6
+    seen = {"master": [], "preview": []}
+    real_master, real_preview = module.derive_master_mask, module.derive_preview_mask
+
+    def spy_master(*args, **kwargs):
+        seen["master"].append(kwargs.get("source_shape"))
+        return real_master(*args, **kwargs)
+
+    def spy_preview(*args, **kwargs):
+        seen["preview"].append((kwargs.get("source_shape"), kwargs.get("target_shape")))
+        return real_preview(*args, **kwargs)
+
+    monkeypatch.setattr(module, "derive_master_mask", spy_master)
+    monkeypatch.setattr(module, "derive_preview_mask", spy_preview)
+    out = render_with_mask(lambda: np.full((2, 3, 3), 77, np.uint8), context,
+                           target_shape=(2, 3))
+    assert out.shape == (2, 3, 3)
+    assert seen["master"] == []  # never derived at source resolution
+    assert seen["preview"] == [((4, 6), (2, 3))]
+
+
+def test_full_render_keeps_source_resolution_derivation(monkeypatch):
+    from ditherzam.masking import render as module
+    context = _context(np.ones((4, 6), np.float32))
+    seen = {"master": 0, "preview": 0}
+    real_master, real_preview = module.derive_master_mask, module.derive_preview_mask
+    monkeypatch.setattr(module, "derive_master_mask",
+                        lambda *a, **k: (seen.__setitem__("master", seen["master"] + 1),
+                                         real_master(*a, **k))[1])
+    monkeypatch.setattr(module, "derive_preview_mask",
+                        lambda *a, **k: (seen.__setitem__("preview", seen["preview"] + 1),
+                                         real_preview(*a, **k))[1])
+    # target_shape equals the source -> full-res derivation, byte-exact export path.
+    render_with_mask(lambda: np.full((4, 6, 3), 5, np.uint8), context,
+                     target_shape=(4, 6))
+    assert seen == {"master": 1, "preview": 0}
+
+
+def test_preview_and_source_masks_cache_without_collision(monkeypatch):
+    from ditherzam.masking import render as module
+    context = _context(np.ones((8, 8), np.float32))  # source 8x8
+    caches = MaskCaches(1024 * 1024)
+    real_master, real_preview = module.derive_master_mask, module.derive_preview_mask
+    calls = {"master": 0, "preview": 0}
+    monkeypatch.setattr(module, "derive_master_mask",
+                        lambda *a, **k: (calls.__setitem__("master", calls["master"] + 1),
+                                         real_master(*a, **k))[1])
+    monkeypatch.setattr(module, "derive_preview_mask",
+                        lambda *a, **k: (calls.__setitem__("preview", calls["preview"] + 1),
+                                         real_preview(*a, **k))[1])
+    # Two capped previews then a full render: each resolution derives once and
+    # is reused from its own derived-cache slot.
+    render_with_mask(lambda: np.full((4, 4, 3), 9, np.uint8), context,
+                     caches=caches, rendered_identity="b", target_shape=(4, 4))
+    render_with_mask(lambda: np.full((4, 4, 3), 9, np.uint8), context,
+                     caches=caches, rendered_identity="b", target_shape=(4, 4))
+    render_with_mask(lambda: np.full((8, 8, 3), 9, np.uint8), context,
+                     caches=caches, rendered_identity="b", target_shape=(8, 8))
+    assert calls == {"master": 1, "preview": 1}
+    assert caches.metrics["derived_entries"] == 2
+
+
 def test_cancellation_during_derivation_publishes_no_partial_cache(monkeypatch):
     context = _context([[1, 0], [0, 1]], outside=OutsideMode.BLACK)
     caches = MaskCaches(1024 * 1024)
@@ -133,6 +197,41 @@ def test_full_worker_uses_request_context_with_shared_bounded_stage_cache(
     assert observed["cache"] is live._cache
     assert observed["lock"] is live._cache_lock
     assert observed["source"] is request.source_gray
+
+
+def test_worker_overlay_reuses_preview_derivation_never_source_res(
+        qapp_fixture, monkeypatch):
+    from ditherzam.dithering import registry
+    from ditherzam.masking import render as module
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.main_window import _RenderWorker
+    from ditherzam.ui.render_request import RenderKind, RenderRequest
+
+    context = _context(np.ones((4, 4), np.float32))  # source 4x4
+    calls = {"master": 0, "preview": 0}
+    real_master, real_preview = module.derive_master_mask, module.derive_preview_mask
+    monkeypatch.setattr(module, "derive_master_mask",
+                        lambda *a, **k: (calls.__setitem__("master", calls["master"] + 1),
+                                         real_master(*a, **k))[1])
+    monkeypatch.setattr(module, "derive_preview_mask",
+                        lambda *a, **k: (calls.__setitem__("preview", calls["preview"] + 1),
+                                         real_preview(*a, **k))[1])
+
+    base = np.zeros((4, 4), np.float32)
+    request = RenderRequest(
+        1, RenderKind.DRAG, RenderSettings(style="None", scale=1),
+        1, 2, (4, 4), mask_context=context, source_gray=base,
+        show_mask_overlay=True)
+    worker = _RenderWorker(RenderPipeline(registry), base, request,
+                           mask_caches=MaskCaches(1024 * 1024))
+    finished = []
+    worker.signals.finished.connect(lambda img, req: finished.append(img))
+    worker.signals.failed.connect(lambda req: finished.append(None))
+    worker.run()
+
+    assert finished and finished[0] is not None
+    assert calls["master"] == 0  # overlay + render both stay at preview resolution
+    assert calls["preview"] >= 1
 
 
 def test_proxy_complete_branch_runs_once_across_mask_only_edits(monkeypatch):
