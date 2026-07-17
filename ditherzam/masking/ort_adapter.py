@@ -9,7 +9,7 @@ import numpy as np
 from PIL import Image
 
 from ditherzam.masking.adapter import InferenceCancelled, InferenceResult, NoClearSubject
-from ditherzam.masking.contracts import InferenceIdentity, ModelIdentity, ProbabilityMap, source_identity, validate_rgba_u8
+from ditherzam.masking.contracts import InferenceIdentity, ModelIdentity, ProbabilityMap, capped_probability_shape, source_identity, validate_rgba_u8
 from ditherzam.masking.model_assets import EXPECTED_INPUT_TENSOR, EXPECTED_OUTPUT_TENSOR, ModelAssetError, ModelManifest, default_asset_root, load_manifest, verify_model_asset
 from ditherzam.masking.session import LazySession
 
@@ -38,7 +38,12 @@ def preprocess_u2net(rgba_u8: np.ndarray) -> np.ndarray:
 
 
 def postprocess_probability(output: object, source_shape: tuple[int, int]) -> np.ndarray:
-    """Normalize primary output and deterministically resize to source resolution."""
+    """Normalize primary output and deterministically resize to the capped source resolution.
+
+    The retained map is bounded by :func:`capped_probability_shape` so one
+    inference payload always fits the mask cache budget; sources at or below
+    the cap keep their exact source resolution.
+    """
     raw = np.asarray(output)
     if raw.dtype != np.float32 or raw.shape != (1, 1, INPUT_SIZE, INPUT_SIZE):
         raise RuntimeError(f"incompatible model output: expected float32 (1, 1, 320, 320), got {raw.dtype} {raw.shape}")
@@ -50,6 +55,7 @@ def postprocess_probability(output: object, source_shape: tuple[int, int]) -> np
     height, width = source_shape
     if any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in (height, width)):
         raise ValueError("source_shape must contain positive integer height and width")
+    height, width = capped_probability_shape(height, width)
     normalized = np.ascontiguousarray((raw[0, 0] - lo) / (hi - lo), dtype=np.float32)
     resized = Image.fromarray(normalized, mode="F").resize((width, height), Image.Resampling.BILINEAR)
     return np.ascontiguousarray(np.clip(np.asarray(resized, dtype=np.float32), 0.0, 1.0))

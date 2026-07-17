@@ -133,6 +133,36 @@ def test_area_resize_is_deterministic_immutable_and_preserves_thin_coverage() ->
     assert not first.flags.writeable
 
 
+def test_derive_upsamples_capped_probability_to_source_shape() -> None:
+    # A capped probability map (bounded retained resolution for very large
+    # sources) must derive a master mask at full source resolution, identical
+    # to deriving from the explicitly bilinear-upsampled probability.
+    rng = np.random.default_rng(20260716)
+    capped = rng.random((9, 12)).astype(np.float32)
+    mask = derive_master_mask(
+        capped, sensitivity=50, target=MaskTarget.SUBJECT, source_shape=(27, 36)
+    )
+    assert mask.shape == (27, 36)
+    assert not mask.flags.writeable
+
+    from PIL import Image
+
+    upsampled = np.asarray(
+        Image.fromarray(capped, mode="F").resize((36, 27), Image.Resampling.BILINEAR),
+        dtype=np.float32,
+    )
+    expected = derive_master_mask(
+        np.clip(upsampled, 0.0, 1.0), sensitivity=50, target=MaskTarget.SUBJECT
+    )
+    assert np.array_equal(mask, expected)
+
+    # Exact-shape probability is untouched: no resample, byte-identical path.
+    exact = derive_master_mask(
+        capped, sensitivity=50, target=MaskTarget.SUBJECT, source_shape=(9, 12)
+    )
+    assert np.array_equal(exact, derive_master_mask(capped, sensitivity=50, target=MaskTarget.SUBJECT))
+
+
 @pytest.mark.parametrize("call", [
     lambda: sensitivity_threshold(True),
     lambda: sensitivity_threshold(-1),

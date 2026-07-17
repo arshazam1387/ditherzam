@@ -100,6 +100,19 @@ def feather(mask: np.ndarray, pixels: int) -> np.ndarray:
     return _immutable(np.clip(blurred / 255.0, 0.0, 1.0))
 
 
+def _resize_probability(values: np.ndarray, source_shape: object) -> np.ndarray:
+    """Bilinear-resample a capped probability map to full source resolution."""
+    if (
+        not isinstance(source_shape, tuple)
+        or len(source_shape) != 2
+        or any(not isinstance(v, int) or isinstance(v, bool) or v <= 0 for v in source_shape)
+    ):
+        raise MaskGeometryError("source_shape must be a positive (height, width) tuple")
+    height, width = source_shape
+    resized = Image.fromarray(values, mode="F").resize((width, height), Image.Resampling.BILINEAR)
+    return np.clip(np.asarray(resized, dtype=np.float32), 0.0, 1.0)
+
+
 def derive_master_mask(
     probability: ProbabilityMap | np.ndarray | None,
     *,
@@ -124,7 +137,12 @@ def derive_master_mask(
         values = _mask(values, "probability")
         shape = values.shape
         if source_shape is not None and tuple(source_shape) != shape:
-            raise MaskGeometryError("source_shape does not match probability shape")
+            # Very large sources retain a capped-resolution probability map
+            # (contracts.capped_probability_shape); derive at full source
+            # resolution by deterministic bilinear upsample, matching the
+            # adapter's own model-to-source resampling.
+            values = _resize_probability(values, source_shape)
+            shape = values.shape
     else:
         if target is not MaskTarget.WHOLE_IMAGE:
             raise MaskGeometryError("probability is required unless target is Whole Image")

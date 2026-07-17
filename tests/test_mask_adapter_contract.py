@@ -77,6 +77,20 @@ def test_degenerate_output_is_explicit_no_subject():
         postprocess_probability(np.ones((1, 1, 320, 320), np.float32), (2, 2))
 
 
+def test_postprocess_caps_oversized_source_resolution():
+    from ditherzam.masking.contracts import PROBABILITY_CAP_PIXELS, capped_probability_shape
+
+    output = np.linspace(0, 1, 320 * 320, dtype=np.float32).reshape(1, 1, 320, 320)
+    capped = postprocess_probability(output, (4592, 8160))
+    expected = capped_probability_shape(4592, 8160)
+    assert capped.shape == expected
+    assert capped.shape[0] * capped.shape[1] <= PROBABILITY_CAP_PIXELS
+    assert capped.dtype == np.float32
+    assert 0.0 <= float(capped.min()) and float(capped.max()) <= 1.0
+    # At or below the cap the source resolution is exact and unchanged.
+    assert postprocess_probability(output, (7, 11)).shape == (7, 11)
+
+
 def test_safe_boundary_cancellation_avoids_session_creation(tmp_path):
     adapter, fake, creates = _adapter(tmp_path)
     with pytest.raises(InferenceCancelled):

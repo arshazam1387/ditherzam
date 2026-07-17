@@ -12,12 +12,14 @@ import numpy as np
 import pytest
 
 from ditherzam.masking.contracts import (
+    PROBABILITY_CAP_PIXELS,
     InferenceIdentity,
     MaskContractError,
     MaskIdentity,
     ModelIdentity,
     ProbabilityMap,
     SourceIdentity,
+    capped_probability_shape,
     source_identity,
     validate_confidence_array,
     validate_rgba_u8,
@@ -386,6 +388,53 @@ def test_probability_map_rejects_shape_mismatch_with_source():
 def test_probability_map_rejects_wrong_identity_type():
     with pytest.raises(MaskContractError):
         ProbabilityMap(identity="not-an-identity", values=_confidence())  # type: ignore[arg-type]
+
+
+# -- capped_probability_shape: bounded retained probability resolution ---------
+
+
+def test_capped_probability_shape_is_identity_at_or_below_cap():
+    assert capped_probability_shape(4, 6) == (4, 6)
+    assert capped_probability_shape(2160, 3840) == (2160, 3840)  # 4K UHD stays exact
+    assert 3840 * 2160 <= PROBABILITY_CAP_PIXELS
+
+
+def test_capped_probability_shape_caps_area_and_preserves_aspect():
+    height, width = capped_probability_shape(4592, 8160)  # 37.5 MP phone photo
+    assert height * width <= PROBABILITY_CAP_PIXELS
+    assert (height, width) == (2172, 3860)  # deterministic exact result
+    assert width / height == pytest.approx(8160 / 4592, rel=1e-3)
+    # float32 payload must fit well inside the 64 MiB mask cache budget.
+    assert height * width * 4 <= 32 * 1024 * 1024
+
+
+def test_capped_probability_shape_degenerate_aspect_stays_capped_and_positive():
+    height, width = capped_probability_shape(1, PROBABILITY_CAP_PIXELS * 4)
+    assert height >= 1 and width >= 1
+    assert height * width <= PROBABILITY_CAP_PIXELS
+    height, width = capped_probability_shape(PROBABILITY_CAP_PIXELS * 4, 1)
+    assert height >= 1 and width >= 1
+    assert height * width <= PROBABILITY_CAP_PIXELS
+
+
+def test_capped_probability_shape_rejects_invalid_dimensions():
+    for call in (
+        lambda: capped_probability_shape(0, 6),
+        lambda: capped_probability_shape(4, 0),
+        lambda: capped_probability_shape(True, 6),
+    ):
+        with pytest.raises(MaskContractError):
+            call()
+
+
+def test_probability_map_oversized_source_requires_capped_shape():
+    src = SourceIdentity(content_hash=VALID_SHA256, width=8160, height=4592, has_alpha=False)
+    ident = _inference_identity(src)
+    capped = capped_probability_shape(4592, 8160)
+    pmap = ProbabilityMap(identity=ident, values=_confidence(height=capped[0], width=capped[1]))
+    assert pmap.values.shape == capped
+    with pytest.raises(MaskContractError):
+        ProbabilityMap(identity=ident, values=_confidence(height=4592, width=8160))
 
 
 def test_validate_confidence_array_rejects_wrong_dtype():
