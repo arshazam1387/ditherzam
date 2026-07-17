@@ -8,80 +8,39 @@ from ditherzam.dithering.kernels.ordered import _BAYER4
 
 
 @njit(cache=True)
-def _band_reduce(img, horizontal, spacing):
-    """Average each N-wide band of rows (or columns) into one line's signal,
-    so a spaced line represents its whole band instead of one leftover slice."""
-    h, w = img.shape
-    if horizontal:
-        hb = (h + spacing - 1) // spacing
-        red = np.empty((hb, w), np.float32)
-        for b in range(hb):
-            y0 = b * spacing
-            y1 = min(y0 + spacing, h)
-            for x in range(w):
-                acc = 0.0
-                for y in range(y0, y1):
-                    acc += img[y, x]
-                red[b, x] = acc / (y1 - y0)
-        return red
-    wb = (w + spacing - 1) // spacing
-    red = np.empty((h, wb), np.float32)
-    for b in range(wb):
-        x0 = b * spacing
-        x1 = min(x0 + spacing, w)
-        for y in range(h):
-            acc = 0.0
-            for x in range(x0, x1):
-                acc += img[y, x]
-            red[y, b] = acc / (x1 - x0)
-    return red
-
-
-@njit(cache=True)
-def _scatter_lines(dith, h, w, horizontal, spacing):
-    """Place each dithered band line at its band origin, white in between."""
-    out = np.full((h, w), 255.0, np.float32)
-    if horizontal:
-        for b in range(dith.shape[0]):
-            out[b * spacing, :] = dith[b]
-    else:
-        for b in range(dith.shape[1]):
-            out[:, b * spacing] = dith[:, b]
-    return out
-
-
-@njit(cache=True)
 def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase, clamp_error, line_spacing):
-    """1-D error diffusion producing banded line patterns; density ~ brightness."""
+    """1-D error diffusion producing banded line patterns; density ~ brightness.
+
+    line_spacing divides the ink debt each pixel deposits, so the diffusion's
+    oscillation marks — the emergent lines — land spacing× farther apart along
+    the scan while keeping their 1px weight. spacing=1 is the identity.
+    """
     h, w = img.shape
     spacing = max(1, int(line_spacing))
-    src = _band_reduce(img, horizontal, spacing) if spacing > 1 else img
-    hs, ws = src.shape
-    out = src.copy()
+    inv = 1.0 / spacing
+    out = img.copy()
     s = line_scale if line_scale >= 1 else 1
     if horizontal:
-        for y in range(hs):
+        for y in range(h):
             carry = row_phase if y % 2 else 0.0
-            for x in range(ws):
-                old = out[y, x] + carry
+            for x in range(w):
+                old = 255.0 - (255.0 - out[y, x]) * inv + carry
                 new = 255.0 if old >= thr else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain + carry * decay
                 if clamp_error > 0:
                     carry = max(-clamp_error, min(clamp_error, carry))
     else:
-        for x in range(ws):
+        for x in range(w):
             carry = row_phase if x % 2 else 0.0
-            for y in range(hs):
-                old = out[y, x] + carry
+            for y in range(h):
+                old = 255.0 - (255.0 - out[y, x]) * inv + carry
                 new = 255.0 if old >= thr else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain + carry * decay
                 if clamp_error > 0:
                     carry = max(-clamp_error, min(clamp_error, carry))
-    if spacing == 1:
-        return out
-    return _scatter_lines(out, h, w, horizontal, spacing)
+    return out
 
 
 @njit(cache=True)
@@ -281,38 +240,42 @@ def _atkinson_line_modulation(img, thr, strength, hbias, divisor, far_weight, ve
 
 @njit(cache=True)
 def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_center, error_gain, radius, line_spacing):
-    """1-D diffusion whose threshold warps with local contrast."""
+    """1-D diffusion whose threshold warps with local contrast.
+
+    line_spacing divides the ink debt (not the contrast response), so the
+    contour ripple lines the style produces land spacing× farther apart while
+    edges still fire at full strength. spacing=1 is the identity.
+    """
     h, w = img.shape
     spacing = max(1, int(line_spacing))
-    src = _band_reduce(img, horizontal, spacing) if spacing > 1 else img
-    hs, ws = src.shape
-    out = src.copy()
+    inv = 1.0 / spacing
+    out = img.copy()
     s = line_scale if line_scale >= 1 else 1
     if horizontal:
-        for y in range(hs):
+        for y in range(h):
             carry = 0.0
-            for x in range(ws):
-                lo = src[y, x - radius] if x >= radius else src[y, x]
-                hi = src[y, x + radius] if x + radius < ws else src[y, x]
+            for x in range(w):
+                lo = img[y, x - radius] if x >= radius else img[y, x]
+                hi = img[y, x + radius] if x + radius < w else img[y, x]
                 local = abs(hi - lo)
                 t = thr + (local - contrast_center) * contrast_gain
-                old = out[y, x] + carry
+                old = 255.0 - (255.0 - out[y, x]) * inv + carry
                 new = 255.0 if old >= t else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain
     else:
-        for x in range(ws):
+        for x in range(w):
             carry = 0.0
-            for y in range(hs):
-                lo = src[y - radius, x] if y >= radius else src[y, x]
-                hi = src[y + radius, x] if y + radius < hs else src[y, x]
+            for y in range(h):
+                lo = img[y - radius, x] if y >= radius else img[y, x]
+                hi = img[y + radius, x] if y + radius < h else img[y, x]
                 local = abs(hi - lo)
                 t = thr + (local - contrast_center) * contrast_gain
-                old = out[y, x] + carry
+                old = 255.0 - (255.0 - out[y, x]) * inv + carry
                 new = 255.0 if old >= t else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain
-    return _scatter_lines(out, h, w, horizontal, spacing) if spacing > 1 else out
+    return out
 
 
 # ── Kernel: Artifact Modulation · Glitch · dims=2 · Dither Param 1-20-1 ──

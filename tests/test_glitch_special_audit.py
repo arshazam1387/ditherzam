@@ -93,18 +93,21 @@ def test_upgraded_defaults_are_not_duplicate_styles(audit_images):
         assert np.any(le.func(texture.copy(), lp, 127.5) != re.func(texture.copy(), rp, 127.5))
 
 
-def test_geometric_spacing_creates_literal_blank_scanlines(audit_images):
+def test_geometric_spacing_spreads_marks(audit_images):
+    """Line Spacing divides the ink debt so the emergent lines land farther
+    apart: coverage falls monotonically with spacing but never vanishes."""
     image = audit_images[-1]
-    for name, blank_axis in (("Modulated Diffuse Y", 1), ("Contrast Aware Y", 1),
-                             ("Modulated Diffuse X", 0), ("Contrast Aware X", 0)):
+    for name in ("Modulated Diffuse Y", "Contrast Aware Y",
+                 "Modulated Diffuse X", "Contrast Aware X"):
         entry = registry.get_entry(name)
         params = [s.default for s in parameter_specs(entry)[6:]]
-        params[-1] = 4
-        out = entry.func(image.copy(), tuple(params), 127.5)
-        if blank_axis == 1:
-            assert np.all(out[1::4, :] == 255) and np.all(out[2::4, :] == 255)
-        else:
-            assert np.all(out[:, 1::4] == 255) and np.all(out[:, 2::4] == 255)
+        inks = []
+        for spacing in (1, 4, 8):
+            params[-1] = spacing
+            out = entry.func(image.copy(), tuple(params), 127.5)
+            inks.append(int(np.count_nonzero(out == 0)))
+        assert inks[0] > inks[1] > inks[2]
+        assert inks[2] > 0
 
 
 def test_contour_metadata_does_not_call_density_line_spacing():
