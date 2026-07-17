@@ -12,7 +12,7 @@ from dataclasses import replace
 import numpy as np
 
 from ..imaging import nearest_upscale_to
-from ..masking.render import render_with_mask
+from ..masking.render import _mask_identity, render_with_mask
 from .preview_preferences import PREVIEW_RESOLUTIONS, normalize_preview_resolution
 
 
@@ -114,22 +114,42 @@ def render_preview(pipeline, base_gray, settings, max_side: int,
     factor = proxy_factor(h, w, max_side)
     target_shape = (h, w) if factor <= 1 else preview_target_size(h, w, max_side)
 
+    def baked_cache_key():
+        # Every input that changes the baked base: source + render settings via
+        # rendered_identity, mask geometry via the mask identity, fill colour via
+        # outside. A stale key here would serve baked pixels from a prior state.
+        return ("mask-proxy-baked", rendered_identity, target_shape,
+                _mask_identity(mask_context), mask_context.settings.outside)
+
     def render_complete_branch(bake=None) -> np.ndarray:
-        # A baked base is a fresh array each call, so the staged cache's
-        # "mask-proxy" key (which does not encode the bake) must not be used:
-        # render uncached instead. render_with_mask caches the baked result.
-        base = base_gray if bake is None else bake(base_gray)
         if factor <= 1:
-            if mask_context is not None and temporal_field is None and bake is None:
+            # No proxy downscale: a baked base is dithered at full resolution
+            # (byte-identical to the pre-change order) and is cache-eligible via
+            # a bake-encoding key -- a temporal frame stays uncached.
+            base = base_gray if bake is None else bake(base_gray)
+            if mask_context is not None and temporal_field is None:
+                key = baked_cache_key() if bake is not None else (
+                    "mask-proxy", rendered_identity, target_shape)
                 return pipeline.render_cached(
-                    base, settings, is_cancelled=is_cancelled,
-                    cache_key=("mask-proxy", rendered_identity, target_shape))
+                    base, settings, is_cancelled=is_cancelled, cache_key=key)
             return pipeline.render(base, settings, temporal_field=temporal_field,
                                    is_cancelled=is_cancelled)
         target_h, target_w = target_shape
-        small = nearest_upscale_to(base, (target_w, target_h))
+        small = nearest_upscale_to(base_gray, (target_w, target_h))
         psettings = replace(settings, scale=proxy_scale(settings.scale, factor))
-        if mask_context is not None and temporal_field is None and bake is None:
+        if bake is not None and temporal_field is None:
+            # Bake the outside fill at PREVIEW resolution: downscale first, then
+            # bake the small base with the preview-res master. Cache-eligible.
+            rgb_small = pipeline.render_cached(
+                bake(small), psettings, is_cancelled=is_cancelled,
+                cache_key=baked_cache_key())
+        elif bake is not None:
+            # Temporal + bake: keep the historical full-res bake then downscale so
+            # animation frames stay byte-identical (the anim path sets no mask).
+            rgb_small = pipeline.render(
+                nearest_upscale_to(bake(base_gray), (target_w, target_h)),
+                psettings, temporal_field=temporal_field, is_cancelled=is_cancelled)
+        elif mask_context is not None and temporal_field is None:
             rgb_small = pipeline.render_cached(
                 small, psettings, is_cancelled=is_cancelled,
                 cache_key=("mask-proxy", rendered_identity, target_shape))

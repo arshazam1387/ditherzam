@@ -162,11 +162,12 @@ def render_with_mask(renderer: Callable[..., np.ndarray], mask_context=None, *,
     source_shape = source.shape[:2]
     resolved_target = tuple(target_shape) if target_shape is not None else None
     baked = bake_fill_active(settings)
-    # A capped preview derives the master at the preview shape. The baked fill is
-    # dithered into the full-resolution base before any proxy downscale, so it
-    # keeps full-resolution derivation (a follow-up task reworks that path). An
-    # unknown target (None) also stays full-res, matching the historical path.
-    preview = (not baked) and resolved_target is not None and resolved_target != source_shape
+    # A capped preview (target smaller than the source) derives the master at the
+    # preview shape -- including the baked path, whose fill is now dithered into
+    # the proxy-downscaled base at that same shape (preview.py bakes after the
+    # downscale). An unknown target (None) or a source-equal target stays
+    # full-res, matching exports and the historical path.
+    preview = resolved_target is not None and resolved_target != source_shape
     derive_shape = resolved_target if preview else source_shape
     master, mask_identity, derived_new = _derive_cached_master(
         mask_context, derive_shape, source_shape, caches=caches, is_cancelled=is_cancelled)
