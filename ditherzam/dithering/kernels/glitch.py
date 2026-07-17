@@ -8,53 +8,45 @@ from ditherzam.dithering.kernels.ordered import _BAYER4
 
 
 @njit(cache=True)
-def _line_screen(out, horizontal, line_spacing):
-    """Restructure a binary dither into a width-modulated line screen.
-
-    Each N-wide band keeps exactly the ink the dither laid down, redrawn as
-    a line growing outward from the band centre — thick in shadows, thin in
-    highlights — so mean tone matches spacing=1 instead of washing out.
-    """
-    spacing = int(line_spacing)
-    if spacing <= 1:
-        return out
-    h, w = out.shape
+def _band_reduce(img, horizontal, spacing):
+    """Average each N-wide band of rows (or columns) into one line's signal,
+    so a spaced line represents its whole band instead of one leftover slice."""
+    h, w = img.shape
     if horizontal:
-        for y0 in range(0, h, spacing):
+        hb = (h + spacing - 1) // spacing
+        red = np.empty((hb, w), np.float32)
+        for b in range(hb):
+            y0 = b * spacing
             y1 = min(y0 + spacing, h)
-            c = y0 + (y1 - y0) // 2
             for x in range(w):
-                k = 0
+                acc = 0.0
                 for y in range(y0, y1):
-                    if out[y, x] < 128.0:
-                        k += 1
-                    out[y, x] = 255.0
-                painted = 0
-                step = 0
-                while painted < k:
-                    y = c + step // 2 if step % 2 == 0 else c - (step + 2) // 2
-                    step += 1
-                    if y0 <= y < y1:
-                        out[y, x] = 0.0
-                        painted += 1
+                    acc += img[y, x]
+                red[b, x] = acc / (y1 - y0)
+        return red
+    wb = (w + spacing - 1) // spacing
+    red = np.empty((h, wb), np.float32)
+    for b in range(wb):
+        x0 = b * spacing
+        x1 = min(x0 + spacing, w)
+        for y in range(h):
+            acc = 0.0
+            for x in range(x0, x1):
+                acc += img[y, x]
+            red[y, b] = acc / (x1 - x0)
+    return red
+
+
+@njit(cache=True)
+def _scatter_lines(dith, h, w, horizontal, spacing):
+    """Place each dithered band line at its band origin, white in between."""
+    out = np.full((h, w), 255.0, np.float32)
+    if horizontal:
+        for b in range(dith.shape[0]):
+            out[b * spacing, :] = dith[b]
     else:
-        for x0 in range(0, w, spacing):
-            x1 = min(x0 + spacing, w)
-            c = x0 + (x1 - x0) // 2
-            for y in range(h):
-                k = 0
-                for x in range(x0, x1):
-                    if out[y, x] < 128.0:
-                        k += 1
-                    out[y, x] = 255.0
-                painted = 0
-                step = 0
-                while painted < k:
-                    x = c + step // 2 if step % 2 == 0 else c - (step + 2) // 2
-                    step += 1
-                    if x0 <= x < x1:
-                        out[y, x] = 0.0
-                        painted += 1
+        for b in range(dith.shape[1]):
+            out[:, b * spacing] = dith[:, b]
     return out
 
 
@@ -62,12 +54,15 @@ def _line_screen(out, horizontal, line_spacing):
 def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase, clamp_error, line_spacing):
     """1-D error diffusion producing banded line patterns; density ~ brightness."""
     h, w = img.shape
-    out = img.copy()
+    spacing = max(1, int(line_spacing))
+    src = _band_reduce(img, horizontal, spacing) if spacing > 1 else img
+    hs, ws = src.shape
+    out = src.copy()
     s = line_scale if line_scale >= 1 else 1
     if horizontal:
-        for y in range(h):
+        for y in range(hs):
             carry = row_phase if y % 2 else 0.0
-            for x in range(w):
+            for x in range(ws):
                 old = out[y, x] + carry
                 new = 255.0 if old >= thr else 0.0
                 out[y, x] = new
@@ -75,16 +70,18 @@ def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase
                 if clamp_error > 0:
                     carry = max(-clamp_error, min(clamp_error, carry))
     else:
-        for x in range(w):
+        for x in range(ws):
             carry = row_phase if x % 2 else 0.0
-            for y in range(h):
+            for y in range(hs):
                 old = out[y, x] + carry
                 new = 255.0 if old >= thr else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain + carry * decay
                 if clamp_error > 0:
                     carry = max(-clamp_error, min(clamp_error, carry))
-    return _line_screen(out, horizontal, line_spacing)
+    if spacing == 1:
+        return out
+    return _scatter_lines(out, h, w, horizontal, spacing)
 
 
 @njit(cache=True)
@@ -272,14 +269,17 @@ def _atkinson_line_modulation(img, thr, strength, hbias, divisor, far_weight, ve
 def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_center, error_gain, radius, line_spacing):
     """1-D diffusion whose threshold warps with local contrast."""
     h, w = img.shape
-    out = img.copy()
+    spacing = max(1, int(line_spacing))
+    src = _band_reduce(img, horizontal, spacing) if spacing > 1 else img
+    hs, ws = src.shape
+    out = src.copy()
     s = line_scale if line_scale >= 1 else 1
     if horizontal:
-        for y in range(h):
+        for y in range(hs):
             carry = 0.0
-            for x in range(w):
-                lo = img[y, x - radius] if x >= radius else img[y, x]
-                hi = img[y, x + radius] if x + radius < w else img[y, x]
+            for x in range(ws):
+                lo = src[y, x - radius] if x >= radius else src[y, x]
+                hi = src[y, x + radius] if x + radius < ws else src[y, x]
                 local = abs(hi - lo)
                 t = thr + (local - contrast_center) * contrast_gain
                 old = out[y, x] + carry
@@ -287,18 +287,18 @@ def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_ce
                 out[y, x] = new
                 carry = (old - new) / s * error_gain
     else:
-        for x in range(w):
+        for x in range(ws):
             carry = 0.0
-            for y in range(h):
-                lo = img[y - radius, x] if y >= radius else img[y, x]
-                hi = img[y + radius, x] if y + radius < h else img[y, x]
+            for y in range(hs):
+                lo = src[y - radius, x] if y >= radius else src[y, x]
+                hi = src[y + radius, x] if y + radius < hs else src[y, x]
                 local = abs(hi - lo)
                 t = thr + (local - contrast_center) * contrast_gain
                 old = out[y, x] + carry
                 new = 255.0 if old >= t else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain
-    return _line_screen(out, horizontal, line_spacing)
+    return _scatter_lines(out, h, w, horizontal, spacing) if spacing > 1 else out
 
 
 # ── Kernel: Artifact Modulation · Glitch · dims=2 · Dither Param 1-20-1 ──
