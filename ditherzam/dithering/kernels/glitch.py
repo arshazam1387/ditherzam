@@ -8,6 +8,57 @@ from ditherzam.dithering.kernels.ordered import _BAYER4
 
 
 @njit(cache=True)
+def _line_screen(out, horizontal, line_spacing):
+    """Restructure a binary dither into a width-modulated line screen.
+
+    Each N-wide band keeps exactly the ink the dither laid down, redrawn as
+    a line growing outward from the band centre — thick in shadows, thin in
+    highlights — so mean tone matches spacing=1 instead of washing out.
+    """
+    spacing = int(line_spacing)
+    if spacing <= 1:
+        return out
+    h, w = out.shape
+    if horizontal:
+        for y0 in range(0, h, spacing):
+            y1 = min(y0 + spacing, h)
+            c = y0 + (y1 - y0) // 2
+            for x in range(w):
+                k = 0
+                for y in range(y0, y1):
+                    if out[y, x] < 128.0:
+                        k += 1
+                    out[y, x] = 255.0
+                painted = 0
+                step = 0
+                while painted < k:
+                    y = c + step // 2 if step % 2 == 0 else c - (step + 2) // 2
+                    step += 1
+                    if y0 <= y < y1:
+                        out[y, x] = 0.0
+                        painted += 1
+    else:
+        for x0 in range(0, w, spacing):
+            x1 = min(x0 + spacing, w)
+            c = x0 + (x1 - x0) // 2
+            for y in range(h):
+                k = 0
+                for x in range(x0, x1):
+                    if out[y, x] < 128.0:
+                        k += 1
+                    out[y, x] = 255.0
+                painted = 0
+                step = 0
+                while painted < k:
+                    x = c + step // 2 if step % 2 == 0 else c - (step + 2) // 2
+                    step += 1
+                    if x0 <= x < x1:
+                        out[y, x] = 0.0
+                        painted += 1
+    return out
+
+
+@njit(cache=True)
 def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase, clamp_error, line_spacing):
     """1-D error diffusion producing banded line patterns; density ~ brightness."""
     h, w = img.shape
@@ -33,17 +84,7 @@ def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase
                 carry = (old - new) / s * error_gain + carry * decay
                 if clamp_error > 0:
                     carry = max(-clamp_error, min(clamp_error, carry))
-    spacing = max(1, int(line_spacing))
-    if spacing > 1:
-        if horizontal:
-            for y in range(h):
-                if y % spacing != 0:
-                    out[y, :] = 255.0
-        else:
-            for x in range(w):
-                if x % spacing != 0:
-                    out[:, x] = 255.0
-    return out
+    return _line_screen(out, horizontal, line_spacing)
 
 
 @njit(cache=True)
@@ -257,17 +298,7 @@ def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_ce
                 new = 255.0 if old >= t else 0.0
                 out[y, x] = new
                 carry = (old - new) / s * error_gain
-    spacing = max(1, int(line_spacing))
-    if spacing > 1:
-        if horizontal:
-            for y in range(h):
-                if y % spacing != 0:
-                    out[y, :] = 255.0
-        else:
-            for x in range(w):
-                if x % spacing != 0:
-                    out[:, x] = 255.0
-    return out
+    return _line_screen(out, horizontal, line_spacing)
 
 
 # ── Kernel: Artifact Modulation · Glitch · dims=2 · Dither Param 1-20-1 ──
