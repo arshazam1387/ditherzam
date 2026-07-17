@@ -92,6 +92,21 @@ def test_inference_payload_is_charged_and_oversized_probability_not_retained():
     assert caches.retained_bytes == 0
 
 
+def test_capped_probability_for_huge_source_fits_default_budget():
+    # Regression: a 37.5 MP phone photo produced a 143 MiB source-resolution
+    # probability map, which the 64 MiB budget rejected -- Smart Mask reported
+    # ERROR despite a successful inference. The retained map is now capped.
+    from ditherzam.masking.contracts import SourceIdentity, capped_probability_shape
+
+    source = SourceIdentity(content_hash="c" * 64, width=8160, height=4592, has_alpha=False)
+    inference = InferenceIdentity(source, ModelIdentity("u2", "1", "a" * 64), "pp1", "primary")
+    shape = capped_probability_shape(4592, 8160)
+    probability = ProbabilityMap(inference, np.full(shape, .5, np.float32))
+    caches = MaskCaches(DEFAULT_MASK_CACHE_BUDGET_BYTES)
+    assert caches.put_inference(probability)
+    assert caches.get_inference(inference) is probability
+
+
 def test_probability_alias_replacement_is_not_double_charged():
     _, inference, _ = _ids()
     probability = _probability(inference)
