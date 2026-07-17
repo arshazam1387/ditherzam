@@ -201,12 +201,16 @@ class MaskCaches:
         if not isinstance(probability, ProbabilityMap): raise TypeError("probability must be a ProbabilityMap")
         return self._put("inference", probability.identity, probability)
 
-    def get_derived(self, identity: MaskIdentity) -> np.ndarray | None:
-        return self._get("derived", identity)
-
-    def put_derived(self, identity: MaskIdentity, mask: np.ndarray) -> bool:
+    def get_derived(self, identity: MaskIdentity, shape=None) -> np.ndarray | None:
         if not isinstance(identity, MaskIdentity): raise TypeError("identity must be a MaskIdentity")
-        return self._put("derived", identity, self._readonly_owned(mask, confidence=True))
+        return self._get("derived", (identity, shape))
+
+    def put_derived(self, identity: MaskIdentity, mask: np.ndarray, shape=None) -> bool:
+        # A capped preview derives the mask at its own resolution; folding the
+        # derivation shape into the key keeps preview masks from colliding with
+        # (and evicting the far larger) source-resolution master for one identity.
+        if not isinstance(identity, MaskIdentity): raise TypeError("identity must be a MaskIdentity")
+        return self._put("derived", (identity, shape), self._readonly_owned(mask, confidence=True))
 
     def get_composite(self, identity: CompositeIdentity) -> np.ndarray | None:
         return self._get("composite", identity)
@@ -224,7 +228,7 @@ class MaskCaches:
             for key in tuple(self._stores["inference"]):
                 if key.source == source: self._remove("inference", key)
             for key in tuple(self._stores["derived"]):
-                if key.inference.source == source: self._remove("derived", key)
+                if key[0].inference.source == source: self._remove("derived", key)
             for key in tuple(self._stores["composite"]):
                 if key.source == source or key.mask.inference.source == source:
                     self._remove("composite", key)

@@ -24,8 +24,7 @@ from ditherzam.masking.inference_scheduler import InferenceScheduler
 from ditherzam.masking.ort_adapter import PREPROCESSING_VERSION
 from ditherzam.masking.model_assets import ModelAssetError
 from ditherzam.masking.settings import MaskTarget, SmartMaskSettings
-from ditherzam.masking.render import render_with_mask
-from ditherzam.masking.geometry import derive_master_mask, resize_mask_area
+from ditherzam.masking.render import derive_render_mask, render_with_mask
 
 from .controls import ControlPanel
 from .convert import numpy_to_qimage
@@ -134,15 +133,11 @@ class _RenderWorker(QRunnable):
                 if self._is_cancelled is not None and self._is_cancelled():
                     raise RenderCancelled
                 context = self._request.mask_context
-                s = context.settings
-                mask = derive_master_mask(
-                    context.probability, sensitivity=s.sensitivity, target=s.target,
-                    invert=s.invert, expansion_px=s.expansion_px,
-                    feather_px=s.feather_px, source_shape=context.source_rgba.shape[:2])
-                if self._is_cancelled is not None and self._is_cancelled():
-                    raise RenderCancelled
-                if mask.shape != result.shape[:2]:
-                    mask = resize_mask_area(mask, result.shape[:2])
+                # Reuse the render's preview-resolution derivation + derived cache
+                # so a capped overlay never re-derives the master at source res.
+                mask = derive_render_mask(
+                    context, result.shape[:2], caches=self._mask_caches,
+                    is_cancelled=self._is_cancelled)
                 if self._is_cancelled is not None and self._is_cancelled():
                     raise RenderCancelled
                 result = apply_mask_overlay(result, mask)
@@ -1003,12 +998,8 @@ class ImageEditor(QMainWindow):
                 rendered_identity=request.rendered_identity,
                 target_shape=request.source_gray.shape[:2])
         if request.show_mask_overlay and request.mask_context is not None:
-            context = request.mask_context
-            s = context.settings
-            mask = derive_master_mask(
-                context.probability, sensitivity=s.sensitivity, target=s.target,
-                invert=s.invert, expansion_px=s.expansion_px,
-                feather_px=s.feather_px, source_shape=context.source_rgba.shape[:2])
+            mask = derive_render_mask(
+                request.mask_context, result.shape[:2], caches=self._mask_caches)
             result = apply_mask_overlay(result, mask)
         qimg = numpy_to_qimage(result)
         self.last_qimage = qimg
