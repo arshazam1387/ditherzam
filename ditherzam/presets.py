@@ -37,7 +37,9 @@ def _clamp_int(value, lo: int, hi: int, default: int | None = None) -> int:
 
 def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
                        effect_stack=None, color_mode: str = "off",
-                       smart_mask: SmartMaskSettings | None = None) -> dict:
+                       smart_mask: SmartMaskSettings | None = None,
+                       source_dither: int = 100,
+                       source_dither_brighten: bool = False) -> dict:
     """Serialize a RenderSettings (+ optional palette/effect stack) to a preset dict."""
     preset: dict = {
         "adjustments": {
@@ -58,16 +60,25 @@ def settings_to_preset(settings: RenderSettings, palette: Palette | None = None,
             "params": dict(settings.params),
         },
     }
-    if palette is not None:
-        preset["color"] = {
+    if (
+        palette is not None
+        or str(color_mode) != "off"
+        or int(source_dither) != 100
+        or bool(source_dither_brighten)
+    ):
+        color = {
             "mode": str(color_mode),
-            "palette": {
+            "source_dither": _clamp_int(source_dither, 0, 100, 100),
+            "source_dither_brighten": bool(source_dither_brighten),
+        }
+        if palette is not None:
+            color["palette"] = {
                 "name": str(palette.name),
                 "category": str(getattr(palette, "category", "") or ""),
                 "colors": np.asarray(palette.colors, dtype=np.float32)
                             .round().astype(int).reshape(-1, 3).tolist(),
-            },
-        }
+            }
+        preset["color"] = color
     if effect_stack is not None:
         preset["effects"] = [
             {"name": str(name), "params": dict(params)}
@@ -93,6 +104,9 @@ class PresetContents:
     palette: Palette | None
     effects: list[tuple[str, dict]]
     smart_mask: SmartMaskSettings
+    color_mode: str = "off"
+    source_dither: int = 100
+    source_dither_brighten: bool = False
 
     def __iter__(self):
         """Keep the historic three-value unpacking API source-compatible."""
@@ -145,6 +159,7 @@ def preset_to_settings(preset: dict) -> PresetContents:
 
     palette: Palette | None = None
     color = preset.get("color")
+    color_data = color if isinstance(color, dict) else {}
     if isinstance(color, dict) and isinstance(color.get("palette"), dict):
         pdata = color["palette"]
         colors = np.asarray(pdata.get("colors", []), dtype=np.float32)
@@ -177,7 +192,20 @@ def preset_to_settings(preset: dict) -> PresetContents:
         outside=_enum_value(OutsideMode, mask.get("outside"), mask_defaults.outside),
         bake_fill=_safe_bool(mask.get("bake_fill"), mask_defaults.bake_fill),
     )
-    return PresetContents(settings, palette, effects, smart_mask)
+    color_mode = str(color_data.get("mode", "off"))
+    source_dither = _clamp_int(
+        color_data.get("source_dither", 100), 0, 100, 100)
+    source_dither_brighten = _safe_bool(
+        color_data.get("source_dither_brighten"), False)
+    return PresetContents(
+        settings,
+        palette,
+        effects,
+        smart_mask,
+        color_mode,
+        source_dither,
+        source_dither_brighten,
+    )
 
 
 class PresetManager:

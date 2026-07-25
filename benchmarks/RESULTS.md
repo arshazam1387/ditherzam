@@ -90,9 +90,9 @@ upstream-control change the cache can't help, so the proxy carries it):
 | highlights | 8         |
 | blur       | 0 (identity) |
 
-## Findings that reorder the handoff's priorities
+## Findings that reorder the optimization priorities
 
-The handoff assumed **effects** dominate. Measurement disagrees:
+The working assumption was that **effects** dominate. Measurement disagrees:
 
 1. **`ColorEngine.map` (nearest) is the #1 cost — 370 ms even for a 4-color palette.**
    `nearest_indices` builds a `(H, W, K, 3)` broadcast temp (~100 MB at 1080p) then

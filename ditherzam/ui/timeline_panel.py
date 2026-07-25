@@ -132,7 +132,7 @@ class _AnimRenderSignals(QObject):
 
 class _AnimRenderWorker(QRunnable):
     """Runs one capped animation frame render off the GUI thread (mirrors
-    ``_RenderWorker`` in main_window.py, memory 022 discipline: exactly one
+    ``_RenderWorker`` in main_window.py: exactly one
     terminal signal per run, even on exception)."""
 
     def __init__(self, pipeline, base_gray, request: _AnimRequest, is_cancelled=None):
@@ -197,7 +197,7 @@ class AnimationController:
     def render_frame(self, frame_index: int) -> None:
         """Schedule a capped, async screen render of ``frame_index``. Never
         blocks; a render already in flight coalesces this into the latest
-        pending trailing request (memory 022 latest-wins)."""
+        pending trailing request (latest-wins)."""
         base = self.provide_base()
         if base is None:
             return

@@ -165,7 +165,7 @@ _KEY_SPECS = {
     "interference_contrast_slider": ("Interference Contrast", 25, 200, 100),
     "bayer_cell_size_slider": ("Bayer Cell Size", 1, 16, 1),
     "wave_line_spacing_slider": ("Line Spacing", 25, 400, 100),
-    "diffusion_line_spacing_slider": ("Line Spacing", 1, 20, 1),
+    "diffusion_line_spacing_slider": ("Line Spacing", 100, 2000, 100),
     "echo_count_slider": ("Echo Count", 0, 16, 6),
     "echo_spacing_slider": ("Echo Spacing", 2, 40, 10),
     "echo_wave_amount_slider": ("Wave Amount", 0, 32, 8),
