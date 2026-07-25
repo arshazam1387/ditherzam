@@ -116,3 +116,387 @@ def test_pixmap_filtering_is_smooth_only_while_downscaled(qapp_fixture):
     view.resetTransform()
     view._update_pixmap_filtering()
     assert not (view.renderHints() & QPainter.RenderHint.SmoothPixmapTransform)
+
+
+def test_left_drag_inside_active_layer_emits_document_delta(qapp_fixture):
+    from PySide6.QtCore import QPoint, QRectF, Qt
+    from PySide6.QtTest import QTest
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView(enable_inertia=False)
+    view.resize(240, 240)
+    view.show()
+    view.set_pixmap(_pixmap(100, 100), logical_size=(100, 100))
+    view.set_layer_drag_target(QRectF(10, 10, 30, 20))
+    qapp_fixture.processEvents()
+    start = view.mapFromScene(20, 20)
+    end = view.mapFromScene(27, 25)
+    deltas = []
+    view.layer_dragged.connect(lambda x, y: deltas.append((x, y)))
+    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view.viewport(), end)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+    assert deltas
+    assert deltas[-1][0] == pytest.approx(7.0, abs=0.75)
+    assert deltas[-1][1] == pytest.approx(5.0, abs=0.75)
+
+
+def test_middle_drag_pans_when_active_layer_covers_canvas(qapp_fixture):
+    from PySide6.QtCore import QPoint, QRectF, Qt
+    from PySide6.QtTest import QTest
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView(enable_inertia=False)
+    view.resize(180, 180)
+    view.show()
+    view.set_pixmap(_pixmap(400, 400), logical_size=(400, 400))
+    view.set_layer_drag_target(QRectF(0, 0, 400, 400))
+    qapp_fixture.processEvents()
+    view.horizontalScrollBar().setValue(100)
+    start = view.viewport().rect().center()
+    end = start + QPoint(20, 0)
+    QTest.mousePress(view.viewport(), Qt.MouseButton.MiddleButton, pos=start)
+    QTest.mouseMove(view.viewport(), end)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.MiddleButton, pos=end)
+    assert view.horizontalScrollBar().value() < 100
+
+
+def test_corner_drag_emits_document_resize_delta(qapp_fixture):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtTest import QTest
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView(enable_inertia=False)
+    view.resize(240, 240)
+    view.show()
+    view.set_pixmap(_pixmap(100, 100), logical_size=(100, 100))
+    view.set_layer_drag_target(QRectF(20, 20, 40, 30))
+    qapp_fixture.processEvents()
+    start = view.mapFromScene(60, 50)
+    end = view.mapFromScene(68, 56)
+    resized = []
+    view.layer_resized.connect(
+        lambda corner, dx, dy: resized.append((corner, dx, dy)))
+    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view.viewport(), end)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+    assert resized
+    assert resized[-1][0] == "se"
+    assert resized[-1][1] == pytest.approx(8.0, abs=0.75)
+    assert resized[-1][2] == pytest.approx(6.0, abs=0.75)
+
+
+def _transform_view(qapp_fixture):
+    from PySide6.QtCore import QRectF
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView(enable_inertia=False)
+    view.resize(320, 260)
+    view.show()
+    view.set_pixmap(_pixmap(100, 100), logical_size=(100, 100))
+    view.set_layer_drag_target(QRectF(20, 25, 60, 50))
+    qapp_fixture.processEvents()
+    return view
+
+
+def test_transform_exposes_eight_device_stable_handle_targets(qapp_fixture):
+    view = _transform_view(qapp_fixture)
+
+    handles = view._layer_handle_rects()
+
+    assert set(handles) == {"nw", "n", "ne", "e", "se", "s", "sw", "w"}
+    dpr = view.viewport().devicePixelRatioF()
+    for handle in handles.values():
+        screen_rect = view.mapFromScene(handle).boundingRect()
+        assert screen_rect.width() * dpr >= 16
+        assert screen_rect.height() * dpr >= 16
+
+    view.scale(3.0, 3.0)
+    zoomed = view._layer_handle_rects()
+    for handle in zoomed.values():
+        screen_rect = view.mapFromScene(handle).boundingRect()
+        assert screen_rect.width() * dpr >= 16
+        assert screen_rect.height() * dpr >= 16
+
+
+@pytest.mark.parametrize(
+    ("handle", "cursor"),
+    [
+        ("nw", "SizeFDiagCursor"),
+        ("n", "SizeVerCursor"),
+        ("ne", "SizeBDiagCursor"),
+        ("e", "SizeHorCursor"),
+        ("se", "SizeFDiagCursor"),
+        ("s", "SizeVerCursor"),
+        ("sw", "SizeBDiagCursor"),
+        ("w", "SizeHorCursor"),
+    ],
+)
+def test_transform_handle_cursor_changes_before_press(
+    qapp_fixture, handle, cursor
+):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = _transform_view(qapp_fixture)
+    point = view.mapFromScene(view._layer_handle_rects()[handle].center())
+
+    QTest.mouseMove(view.viewport(), point)
+
+    assert view.cursor().shape() == getattr(Qt.CursorShape, cursor)
+
+
+def test_transform_selection_uses_contrast_halo_pens(qapp_fixture):
+    view = _transform_view(qapp_fixture)
+
+    pens = view._selection_outline_pens()
+
+    assert [pen.color().name() for pen in pens] == [
+        "#000000",
+        "#ffffff",
+        "#2f80ff",
+    ]
+    assert [pen.width() for pen in pens] == [6, 4, 2]
+    assert all(pen.isCosmetic() for pen in pens)
+
+
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        ("Key_Left", (-1, 0)),
+        ("Key_Right", (1, 0)),
+        ("Key_Up", (0, -1)),
+        ("Key_Down", (0, 1)),
+    ],
+)
+def test_transform_arrow_keys_request_one_pixel_nudge(
+    qapp_fixture, key, expected
+):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = _transform_view(qapp_fixture)
+    nudges = []
+    view.layer_nudge_requested.connect(lambda dx, dy: nudges.append((dx, dy)))
+
+    QTest.keyClick(view.viewport(), getattr(Qt.Key, key))
+
+    assert nudges == [expected]
+
+
+def test_transform_shift_arrow_requests_ten_pixel_nudge(qapp_fixture):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = _transform_view(qapp_fixture)
+    nudges = []
+    view.layer_nudge_requested.connect(lambda dx, dy: nudges.append((dx, dy)))
+
+    QTest.keyClick(
+        view.viewport(),
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.ShiftModifier,
+    )
+
+    assert nudges == [(10, 0)]
+
+
+@pytest.mark.parametrize("key", ["Key_Return", "Key_Enter"])
+def test_transform_enter_keys_request_confirm(qapp_fixture, key):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = _transform_view(qapp_fixture)
+    confirmations = []
+    view.layer_transform_confirm_requested.connect(
+        lambda: confirmations.append(True)
+    )
+
+    QTest.keyClick(view.viewport(), getattr(Qt.Key, key))
+
+    assert confirmations == [True]
+
+
+def test_transform_escape_requests_cancel(qapp_fixture):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = _transform_view(qapp_fixture)
+    cancellations = []
+    view.layer_transform_cancel_requested.connect(
+        lambda: cancellations.append(True)
+    )
+
+    QTest.keyClick(view.viewport(), Qt.Key.Key_Escape)
+
+    assert cancellations == [True]
+
+
+def test_edge_handle_drag_emits_direction_and_document_delta(qapp_fixture):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    view = _transform_view(qapp_fixture)
+    start = view.mapFromScene(view._layer_handle_rects()["e"].center())
+    end = view.mapFromScene(
+        view._layer_handle_rects()["e"].center().x() + 7,
+        view._layer_handle_rects()["e"].center().y(),
+    )
+    resized = []
+    view.layer_resized.connect(
+        lambda handle, dx, dy: resized.append((handle, dx, dy))
+    )
+
+    QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+    QTest.mouseMove(view.viewport(), end)
+    QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+
+    assert resized
+    assert resized[-1][0] == "e"
+    assert resized[-1][1] == pytest.approx(7.0, abs=0.75)
+    assert resized[-1][2] == pytest.approx(0.0, abs=0.75)
+
+
+def test_transform_shortcuts_are_inactive_without_target(qapp_fixture):
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView(enable_inertia=False)
+    view.resize(200, 200)
+    view.show()
+    nudges = []
+    confirmations = []
+    view.layer_nudge_requested.connect(lambda dx, dy: nudges.append((dx, dy)))
+    view.layer_transform_confirm_requested.connect(
+        lambda: confirmations.append(True)
+    )
+
+    QTest.keyClick(view.viewport(), Qt.Key.Key_Left)
+    QTest.keyClick(view.viewport(), Qt.Key.Key_Return)
+
+    assert nudges == []
+    assert confirmations == []
+
+
+def test_transform_shortcuts_do_not_hijack_active_numeric_editor(qapp_fixture):
+    from PySide6.QtCore import QEvent, Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QSpinBox
+
+    view = _transform_view(qapp_fixture)
+    editor = QSpinBox()
+    editor.show()
+    editor.setFocus()
+    qapp_fixture.processEvents()
+    nudges = []
+    view.layer_nudge_requested.connect(lambda dx, dy: nudges.append((dx, dy)))
+
+    event = QKeyEvent(
+        QEvent.Type.KeyPress,
+        Qt.Key.Key_Right,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    view.keyPressEvent(event)
+
+    assert nudges == []
+
+
+def test_transform_proxy_installs_without_replacing_authoritative_pixmap(
+    qapp_fixture,
+):
+    from PySide6.QtCore import QRectF
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView()
+    authoritative = _pixmap(100, 80)
+    background = _pixmap(50, 40)
+    layer = _pixmap(20, 10)
+    view.set_pixmap(authoritative, logical_size=(100, 80))
+
+    view.install_transform_proxy(
+        background,
+        layer,
+        QRectF(10, 15, 40, 20),
+    )
+
+    assert view._pix_item.pixmap().cacheKey() == authoritative.cacheKey()
+    assert view._transform_proxy_root is not None
+    assert view._transform_proxy_background.sceneBoundingRect() == QRectF(
+        0, 0, 100, 80
+    )
+    assert view._transform_proxy_layer.sceneBoundingRect() == QRectF(
+        10, 15, 40, 20
+    )
+    assert view.sceneRect() == QRectF(0, 0, 100, 80)
+
+
+def test_transform_proxy_geometry_updates_synchronously_and_tracks_handles(
+    qapp_fixture,
+):
+    from PySide6.QtCore import QRectF
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView()
+    view.set_pixmap(_pixmap(100, 80), logical_size=(100, 80))
+    view.set_layer_drag_target(QRectF(10, 15, 40, 20))
+    view.install_transform_proxy(
+        _pixmap(100, 80),
+        _pixmap(20, 10),
+        QRectF(10, 15, 40, 20),
+    )
+
+    updated = QRectF(-10, 25, 60, 30)
+    view.update_transform_proxy_geometry(updated)
+
+    assert view._transform_proxy_layer.sceneBoundingRect() == updated
+    assert view._layer_drag_rect == updated
+    assert view.sceneRect() == QRectF(0, 0, 100, 80)
+
+
+def test_transform_proxy_is_clipped_to_document_canvas(qapp_fixture):
+    from PySide6.QtCore import QRectF
+    from PySide6.QtWidgets import QGraphicsItem
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView()
+    view.set_pixmap(_pixmap(100, 80), logical_size=(100, 80))
+    view.install_transform_proxy(
+        _pixmap(100, 80),
+        _pixmap(20, 10),
+        QRectF(-10, -5, 40, 20),
+    )
+
+    assert (
+        view._transform_proxy_root.flags()
+        & QGraphicsItem.GraphicsItemFlag.ItemClipsChildrenToShape
+    )
+    assert view._transform_proxy_root.rect() == QRectF(0, 0, 100, 80)
+
+
+def test_clear_transform_proxy_restores_base_and_preserves_view_state(
+    qapp_fixture,
+):
+    from PySide6.QtCore import QRectF
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView()
+    view.resize(300, 240)
+    view.set_pixmap(_pixmap(100, 80), logical_size=(100, 80))
+    view.zoom_in()
+    before_transform = view.transform()
+    before_scene = view.sceneRect()
+    view.install_transform_proxy(
+        _pixmap(100, 80),
+        _pixmap(20, 10),
+        QRectF(10, 15, 40, 20),
+    )
+
+    view.clear_transform_proxy()
+
+    assert view._transform_proxy_root is None
+    assert view._transform_proxy_background is None
+    assert view._transform_proxy_layer is None
+    assert view._pix_item.isVisible()
+    assert view.transform() == before_transform
+    assert view.sceneRect() == before_scene

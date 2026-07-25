@@ -1,7 +1,5 @@
-# never commit the proprietary app, its installer, or the patcher
+# build artifacts
 *.exe
-Dither-Boy-*/
-DBPatcher/
 _internal/
 __pycache__/
 *.pyc

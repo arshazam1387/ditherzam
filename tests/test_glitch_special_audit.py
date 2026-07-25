@@ -102,7 +102,7 @@ def test_geometric_spacing_spreads_marks(audit_images):
         entry = registry.get_entry(name)
         params = [s.default for s in parameter_specs(entry)[6:]]
         inks = []
-        for spacing in (1, 4, 8):
+        for spacing in (100, 400, 800):
             params[-1] = spacing
             out = entry.func(image.copy(), tuple(params), 127.5)
             inks.append(int(np.count_nonzero(out == 0)))

@@ -7,8 +7,7 @@ worker is mid-render. render()/render_cached() read each attribute *several*
 times per call (``is not None`` check, then dereference), so a reassignment to
 ``None`` between two reads raises ``AttributeError`` on the render thread
 (``'NoneType' object has no attribute 'map'`` / ``'apply'``). Pre-fix that
-exception wedged the render coalescer permanently; see
-docs/memory/022-render-worker-wedge-fix.md.
+exception wedged the render coalescer permanently.
 
 Reading each attribute once into a local makes the read atomic under the GIL, so
 a concurrent reassignment can never split a single render. These tests pin that

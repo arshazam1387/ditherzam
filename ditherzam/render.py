@@ -168,7 +168,7 @@ class RenderPipeline:
 
         # 1-4: tonal adjustments (grayscale float32, 0..255). Contrast/midtones/
         # highlights share ONE private buffer (proven byte-identical to three
-        # separate allocations, memory 032/a9a80c9) instead of each allocating;
+        # separate allocations) instead of each allocating;
         # a true single-pass fusion changes pixel values, so three passes remain.
         buf = np.empty_like(g)
         g = _tonal_stage(apply_contrast, g, settings.contrast, buf)

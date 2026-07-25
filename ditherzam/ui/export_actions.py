@@ -17,6 +17,7 @@ MENU_SPEC: list[tuple[str, str, str | None]] = [
     ("export_preset", "Export Preset...", None),
     ("export_png",    "Export PNG...",    "Ctrl+Shift+S"),
     ("export_jpg",    "Export JPG (Transparency on White)...", None),
+    ("export_preview", "Export Preview (As Displayed)...", None),
     ("export_svg",    "Export as Vector (SVG)...", None),
     ("batch_folder",  "Batch — Select Folder...", None),
 ]

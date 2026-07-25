@@ -16,7 +16,7 @@ def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase
     the scan while keeping their 1px weight. spacing=1 is the identity.
     """
     h, w = img.shape
-    spacing = max(1, int(line_spacing))
+    spacing = line_spacing if line_spacing > 1.0 else 1.0
     inv = 1.0 / spacing
     out = img.copy()
     s = line_scale if line_scale >= 1 else 1
@@ -44,9 +44,15 @@ def _line_diffuse(img, thr, line_scale, horizontal, error_gain, decay, row_phase
 
 
 @njit(cache=True)
-def _uniform_modulation(img, thr, line_scale, smoothing, bleed, horizontal, error_gain, decay):
-    """Row/column diffusion with EMA-smoothed vertical bleed."""
+def _uniform_modulation(img, thr, line_scale, smoothing, bleed, horizontal, error_gain, decay, line_spacing):
+    """Row/column diffusion with EMA-smoothed vertical bleed.
+
+    line_spacing divides the ink debt each pixel deposits, spreading the
+    emergent modulation lines spacing× apart; spacing=1 is the identity.
+    """
     h, w = img.shape
+    spacing = line_spacing if line_spacing > 1.0 else 1.0
+    inv = 1.0 / spacing
     out = img.copy()
     s = line_scale if line_scale >= 1 else 1
     if horizontal:
@@ -54,7 +60,7 @@ def _uniform_modulation(img, thr, line_scale, smoothing, bleed, horizontal, erro
         for y in range(h):
             carry = 0.0
             for x in range(w):
-                base = out[y, x] + carry + prev_err[x] * bleed
+                base = 255.0 - (255.0 - out[y, x]) * inv + carry + prev_err[x] * bleed
                 new = 255.0 if base >= thr else 0.0
                 out[y, x] = new
                 err = (base - new)
@@ -65,7 +71,7 @@ def _uniform_modulation(img, thr, line_scale, smoothing, bleed, horizontal, erro
         for x in range(w):
             carry = 0.0
             for y in range(h):
-                base = out[y, x] + carry + prev_err[y] * bleed
+                base = 255.0 - (255.0 - out[y, x]) * inv + carry + prev_err[y] * bleed
                 new = 255.0 if base >= thr else 0.0
                 out[y, x] = new
                 err = (base - new)
@@ -247,7 +253,7 @@ def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_ce
     edges still fire at full strength. spacing=1 is the identity.
     """
     h, w = img.shape
-    spacing = max(1, int(line_spacing))
+    spacing = line_spacing if line_spacing > 1.0 else 1.0
     inv = 1.0 / spacing
     out = img.copy()
     s = line_scale if line_scale >= 1 else 1
@@ -309,18 +315,18 @@ def glitch(image_array, parameter, luminance_threshold_value):
 @registry.register("Modulated Diffuse Y", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "diffusion_error_gain_slider", "diffusion_decay_slider", "diffusion_row_phase_slider", "diffusion_error_clamp_slider", "diffusion_line_spacing_slider"))
 def modulated_diffuse_y(image_array, parameter, luminance_threshold_value):
-    ls, gain, decay, phase, clamp, spacing = _unpack6(parameter, 1, 100, 0, 0, 0, 1)
+    ls, gain, decay, phase, clamp, spacing = _unpack6(parameter, 1, 100, 0, 0, 0, 100)
     return _line_diffuse(image_array.astype(np.float32),
-                         luminance_threshold_value, int(ls), True, float(gain) / 100.0, float(decay) / 100.0, float(phase), float(clamp), int(spacing))
+                         luminance_threshold_value, int(ls), True, float(gain) / 100.0, float(decay) / 100.0, float(phase), float(clamp), float(spacing) / 100.0)
 
 
 # ── Kernel: Modulated Diffuse X · Glitch · dims=2 · Line Scale 1-20-1 ──
 @registry.register("Modulated Diffuse X", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "diffusion_error_gain_slider", "diffusion_decay_slider", "diffusion_row_phase_slider", "diffusion_error_clamp_slider", "diffusion_line_spacing_slider"))
 def modulated_diffuse_x(image_array, parameter, luminance_threshold_value):
-    ls, gain, decay, phase, clamp, spacing = _unpack6(parameter, 1, 100, 0, 0, 0, 1)
+    ls, gain, decay, phase, clamp, spacing = _unpack6(parameter, 1, 100, 0, 0, 0, 100)
     return _line_diffuse(image_array.astype(np.float32),
-                         luminance_threshold_value, int(ls), False, float(gain) / 100.0, float(decay) / 100.0, float(phase), float(clamp), int(spacing))
+                         luminance_threshold_value, int(ls), False, float(gain) / 100.0, float(decay) / 100.0, float(phase), float(clamp), float(spacing) / 100.0)
 
 
 # ── Kernel: Uniform Modulation Y · Glitch · dims=2 ──
@@ -328,24 +334,26 @@ def modulated_diffuse_x(image_array, parameter, luminance_threshold_value):
 @registry.register("Uniform Modulation Y", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider",
                                   "smoothing_factor_slider",
-                                  "bleed_fraction_slider", "diffusion_error_gain_slider", "diffusion_decay_slider"))
+                                  "bleed_fraction_slider", "diffusion_error_gain_slider", "diffusion_decay_slider",
+                                  "diffusion_line_spacing_slider"))
 def uniform_modulation_y(image_array, parameter, luminance_threshold_value):
-    ls, smooth, bleed, gain, decay = _unpack5(parameter, 2, 50, 25, 100, 10)
+    ls, smooth, bleed, gain, decay, spacing = _unpack6(parameter, 2, 50, 25, 100, 10, 100)
     return _uniform_modulation(image_array.astype(np.float32),
                                luminance_threshold_value,
-                               int(ls), float(smooth) / 100.0, float(bleed) / 100.0, True, float(gain) / 100.0, float(decay) / 100.0)
+                               int(ls), float(smooth) / 100.0, float(bleed) / 100.0, True, float(gain) / 100.0, float(decay) / 100.0, float(spacing) / 100.0)
 
 
 # ── Kernel: Uniform Modulation X · Glitch · dims=2 (same three sliders) ──
 @registry.register("Uniform Modulation X", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider",
                                   "smoothing_factor_slider",
-                                  "bleed_fraction_slider", "diffusion_error_gain_slider", "diffusion_decay_slider"))
+                                  "bleed_fraction_slider", "diffusion_error_gain_slider", "diffusion_decay_slider",
+                                  "diffusion_line_spacing_slider"))
 def uniform_modulation_x(image_array, parameter, luminance_threshold_value):
-    ls, smooth, bleed, gain, decay = _unpack5(parameter, 1, 0, 0, 100, 0)
+    ls, smooth, bleed, gain, decay, spacing = _unpack6(parameter, 1, 0, 0, 100, 0, 100)
     return _uniform_modulation(image_array.astype(np.float32),
                                luminance_threshold_value,
-                               int(ls), float(smooth) / 100.0, float(bleed) / 100.0, False, float(gain) / 100.0, float(decay) / 100.0)
+                               int(ls), float(smooth) / 100.0, float(bleed) / 100.0, False, float(gain) / 100.0, float(decay) / 100.0, float(spacing) / 100.0)
 
 
 # ── Kernel: Waveform · Glitch · dims=2 · Wave Density 1-20-1 ──
@@ -409,18 +417,18 @@ def atkinson_line_modulation(image_array, parameter, luminance_threshold_value):
 @registry.register("Contrast Aware Y", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "contrast_gain_slider", "contrast_center_slider", "diffusion_error_gain_slider", "contrast_radius_slider", "diffusion_line_spacing_slider"))
 def contrast_aware_y(image_array, parameter, luminance_threshold_value):
-    ls, gain, center, error_gain, radius, spacing = _unpack6(parameter, 1, 25, 64, 100, 1, 1)
+    ls, gain, center, error_gain, radius, spacing = _unpack6(parameter, 1, 25, 64, 100, 1, 100)
     return _contrast_aware(image_array.astype(np.float32),
-                           luminance_threshold_value, int(ls), True, float(gain) / 100.0, float(center), float(error_gain) / 100.0, max(1, int(radius)), int(spacing))
+                           luminance_threshold_value, int(ls), True, float(gain) / 100.0, float(center), float(error_gain) / 100.0, max(1, int(radius)), float(spacing) / 100.0)
 
 
 # ── Kernel: Contrast Aware X · Glitch · dims=2 · Line Scale 1-20-1 ──
 @registry.register("Contrast Aware X", "Glitch Effects", dims=2,
                    param_sliders=("dither_parameter_slider", "contrast_gain_slider", "contrast_center_slider", "diffusion_error_gain_slider", "contrast_radius_slider", "diffusion_line_spacing_slider"))
 def contrast_aware_x(image_array, parameter, luminance_threshold_value):
-    ls, gain, center, error_gain, radius, spacing = _unpack6(parameter, 1, 25, 64, 100, 1, 1)
+    ls, gain, center, error_gain, radius, spacing = _unpack6(parameter, 1, 25, 64, 100, 1, 100)
     return _contrast_aware(image_array.astype(np.float32),
-                           luminance_threshold_value, int(ls), False, float(gain) / 100.0, float(center), float(error_gain) / 100.0, max(1, int(radius)), int(spacing))
+                           luminance_threshold_value, int(ls), False, float(gain) / 100.0, float(center), float(error_gain) / 100.0, max(1, int(radius)), float(spacing) / 100.0)
 
 
 # ── Tuple-unpack helpers (plain Python; run outside njit) ──

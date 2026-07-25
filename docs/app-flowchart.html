@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ditherzam — interactive application flow</title>
+  <style>
+    :root{--bg:#0b0c0f;--panel:#15171c;--panel2:#1b1e25;--ink:#f3f0e8;--muted:#aaa9a5;--line:#4a4f5b;--pink:#ff5da2;--cyan:#64dce7;--lime:#c4ef6f;--gold:#ffc857;--violet:#a98bff;--red:#ff7b72}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 50% -20%,#24202f 0,#0b0c0f 42%);color:var(--ink);font:15px/1.5 Inter,Segoe UI,system-ui,sans-serif}
+    header{max-width:1180px;margin:auto;padding:54px 24px 24px}.eyebrow{color:var(--pink);font:700 12px/1 monospace;letter-spacing:.18em;text-transform:uppercase}h1{margin:.35rem 0;font-size:clamp(2.2rem,7vw,5.2rem);line-height:.95;letter-spacing:-.055em}header p{max-width:760px;color:var(--muted);font-size:1.08rem}.toolbar{position:sticky;top:0;z-index:10;display:flex;gap:8px;align-items:center;padding:10px max(24px,calc((100vw - 1132px)/2));background:#0b0c0fe8;border-block:1px solid #292c33;backdrop-filter:blur(12px)}button{border:1px solid #4b505c;background:#1b1e25;color:var(--ink);padding:7px 11px;border-radius:7px;cursor:pointer}button:hover{border-color:var(--cyan)}.hint{margin-left:auto;color:var(--muted);font-size:12px}
+    main{max-width:1180px;margin:auto;padding:24px}.flow{display:flex;flex-direction:column;align-items:stretch}.arrow{height:42px;position:relative}.arrow:before{content:"";position:absolute;left:50%;top:0;bottom:9px;border-left:2px solid var(--line)}.arrow:after{content:"";position:absolute;left:calc(50% - 5px);bottom:5px;width:8px;height:8px;border-right:2px solid var(--line);border-bottom:2px solid var(--line);transform:rotate(45deg)}
+    details.node{border:1px solid #3b3f49;border-left:5px solid var(--accent,var(--cyan));border-radius:12px;background:linear-gradient(135deg,var(--panel),#111318);box-shadow:0 12px 34px #0005;overflow:hidden}details.node[open]{background:linear-gradient(135deg,var(--panel2),#111318);box-shadow:0 15px 45px #0008}summary{list-style:none;cursor:pointer;padding:18px 20px;display:grid;grid-template-columns:auto 1fr auto;gap:14px;align-items:center}summary::-webkit-details-marker{display:none}.num{font:800 12px/1 monospace;color:#0b0c0f;background:var(--accent,var(--cyan));border-radius:5px;padding:6px 7px}.title{font-weight:800;font-size:1.15rem;letter-spacing:-.01em}.teaser{display:block;color:var(--muted);font-size:.86rem;font-weight:400}.chev{color:var(--accent,var(--cyan));font-size:1.25rem;transition:.2s}details[open]>summary .chev{transform:rotate(45deg)}.inside{border-top:1px solid #343842;padding:18px 20px 22px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:10px}.block{background:#0e1014;border:1px solid #30343d;border-radius:9px;padding:13px}.block h3{font-size:.86rem;margin:0 0 6px;color:var(--accent,var(--cyan));text-transform:uppercase;letter-spacing:.07em}.block p{margin:0;color:#cfcdc7;font-size:.9rem}.mini-flow{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:0 0 14px}.pill{border:1px solid #454a55;background:#11141a;padding:6px 9px;border-radius:7px;font:12px/1.25 ui-monospace,monospace}.mini-arrow{color:var(--accent,var(--cyan))}.note{margin-top:12px;padding:10px 12px;border-left:3px solid var(--accent,var(--cyan));background:#101218;color:var(--muted);font-size:.88rem}.branches{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px}.branches .node{height:max-content}.branches summary{padding:15px}.branches .inside{padding:15px}.legend{display:flex;flex-wrap:wrap;gap:9px;margin-top:14px}.legend span{font-size:12px;color:var(--muted)}.dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px}.pink{--accent:var(--pink)}.cyan{--accent:var(--cyan)}.lime{--accent:var(--lime)}.gold{--accent:var(--gold)}.violet{--accent:var(--violet)}.red{--accent:var(--red)}footer{max-width:1180px;margin:20px auto 60px;padding:20px 24px;color:var(--muted);border-top:1px solid #282b32;font-size:.84rem}@media(max-width:600px){header{padding-top:34px}.hint{display:none}main{padding:16px}summary{padding:15px 14px}.inside{padding:15px 14px}.teaser{font-size:.8rem}}
+  </style>
+</head>
+<body>
+<header>
+  <div class="eyebrow">Architecture map · verified against current code</div>
+  <h1>How ditherzam<br>turns input into output.</h1>
+  <p>Follow the center line for the main interactive path. Open any block to reveal its internal decisions, data transformations, background work, and failure behavior. The final block expands into every output path.</p>
+  <div class="legend"><span><i class="dot" style="background:var(--pink)"></i>UI / input</span><span><i class="dot" style="background:var(--cyan)"></i>scheduling</span><span><i class="dot" style="background:var(--lime)"></i>image processing</span><span><i class="dot" style="background:var(--violet)"></i>Smart Mask</span><span><i class="dot" style="background:var(--gold)"></i>output</span></div>
+</header>
+<div class="toolbar"><button id="expand">Expand all</button><button id="collapse">Collapse all</button><button id="mainpath">Main path only</button><span class="hint">Tip: click a numbered block</span></div>
+<main><section class="flow">
+
+<details class="node pink" data-level="main">
+ <summary><span class="num">01</span><span class="title">Launch & establish the runtime<span class="teaser">Qt shell, theme, optional offline model, thread budget, JIT warm-up</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="mini-flow"><span class="pill">python -m ditherzam.app</span><b class="mini-arrow">→</b><span class="pill">QApplication + Fusion</span><b class="mini-arrow">→</b><span class="pill">ImageEditor</span><b class="mini-arrow">→</b><span class="pill">event loop</span></div><div class="grid">
+  <div class="block"><h3>Theme</h3><p>Find <code>themes/default/theme.yaml</code>; if present, parse it and apply its stylesheet to the application.</p></div>
+  <div class="block"><h3>Smart Mask startup</h3><p>Look only for a locally staged ONNX model. If validation/loading fails or no asset exists, return <code>None</code> and keep Smart Mask disabled. There is no network fetch.</p></div>
+  <div class="block"><h3>Editor construction</h3><p>Create the registry-backed render pipeline, bounded render/mask caches, viewport, Editor and Glow tabs, menus, timers, render scheduler, mask inference scheduler, and worker pools.</p></div>
+  <div class="block"><h3>Performance setup</h3><p>Install the measured interactive Numba thread budget, then warm common JIT kernels on a background thread so the GUI can remain responsive.</p></div>
+ </div><div class="note">Special CLI branch: <code>--offline-smoke</code> bypasses the GUI and verifies a frozen Smart Mask release lock.</div></div>
+</details><div class="arrow"></div>
+
+<details class="node pink" data-level="main">
+ <summary><span class="num">02</span><span class="title">Acquire & normalize source media<span class="teaser">Still image or decoded video frames become validated NumPy source authority</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="grid">
+  <div class="block"><h3>Still image</h3><p>Drag/drop or load a file. A decode worker produces grayscale <code>float32 H×W</code>, RGB <code>uint8 H×W×3</code>, and immutable RGBA <code>uint8 H×W×4</code>.</p></div>
+  <div class="block"><h3>Validation</h3><p>Reject wrong types, dimensions, non-finite gray values, out-of-range values, shape mismatches, or RGBA whose RGB channels disagree with the RGB source.</p></div>
+  <div class="block"><h3>Atomic replacement</h3><p>Validate everything first; then invalidate old mask inference, clear old source mask/render caches, publish all source arrays together, reset mask UI, and mark the next paint to fit the viewport.</p></div>
+  <div class="block"><h3>Video import</h3><p>Probe FPS/duration/audio, enforce ordinary 60 fps / 60 s limits, extract frames with ffmpeg into a temporary directory, and load a representative preview frame. Expert mode can bypass the duration/FPS cap.</p></div>
+ </div><div class="note">The pipeline processes grayscale as its base. Original RGB feeds “Source Colors” behavior; immutable RGBA is retained for alpha-safe Smart Mask compositing.</div></div>
+</details><div class="arrow"></div>
+
+<details class="node pink" data-level="main">
+ <summary><span class="num">03</span><span class="title">User edits one document state<span class="teaser">Dither, adjustments, color, effects, glow, mask, preview policy, timeline</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="grid">
+  <div class="block"><h3>Dither controls</h3><p>Search/select a registered style; set scale, threshold/depth, preview toggle, universal mix/orientation/offset/jitter/seed, and the selected style’s native parameters.</p></div>
+  <div class="block"><h3>Tonal & color controls</h3><p>Set contrast, midtones, highlights, blur/sharpen, invert, palette, editable swatches, image-extracted colors, color mode, ramp mapping, depth, and saturation.</p></div>
+  <div class="block"><h3>Effects</h3><p>Add, remove, and reorder stack effects. The separate Glow tab configures Epsilon Glow and appends it to the active stack when enabled.</p></div>
+  <div class="block"><h3>Preview & motion</h3><p>Choose Auto/fixed preview cap, optional zoom refinement, Full Quality Preview, timeline keyframes/easing, temporal pattern/amplitude, and video playback.</p></div>
+ </div><div class="note">Presets serialize render settings, palette/effect state, and Smart Mask settings. Loading applies state as one operation, then renders; legacy presets receive safe defaults.</div></div>
+</details><div class="arrow"></div>
+
+<details class="node violet" data-level="main">
+ <summary><span class="num">04</span><span class="title">Optional Smart Mask lifecycle<span class="teaser">Whole image bypass, or asynchronous subject/background probability detection</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="mini-flow"><span class="pill">mask disabled / Whole Image</span><b class="mini-arrow">→ historical byte-exact bypass</b><span class="pill">mask enabled + Subject/Background</span><b class="mini-arrow">→ inference path</b></div><div class="grid">
+  <div class="block"><h3>Immutable inference request</h3><p>Bind source identity, read-only RGBA, model identity, and preprocessing version. A dedicated one-thread pool runs the adapter without blocking UI rendering.</p></div>
+  <div class="block"><h3>Latest-source wins</h3><p>The inference scheduler coalesces requests, supports cancellation, and rejects a completed probability map if its source identity is no longer current.</p></div>
+  <div class="block"><h3>Derived mask</h3><p>Turn probabilities into a master mask using target, sensitivity, inversion, expansion, and feather. Derived masks are cached by complete mask identity.</p></div>
+  <div class="block"><h3>UI states</h3><p>Disabled/unavailable, detecting with progress, ready, cancelled, or explicit error. Missing assets fail closed; a source change clears stale authority.</p></div>
+ </div><div class="note">When active, masking is supported for still preview and raster export. SVG, batch, animation export, and video export are visibly disabled/guarded.</div></div>
+</details><div class="arrow"></div>
+
+<details class="node cyan" data-level="main">
+ <summary><span class="num">05</span><span class="title">Snapshot & schedule the preview<span class="teaser">Debounce → immutable request → one worker + one freshest trailing request</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="mini-flow"><span class="pill">control changed</span><b class="mini-arrow">→ 20 ms</b><span class="pill">DRAG ≤ min(640, policy cap)</span><b class="mini-arrow">→ 160 ms idle</b><span class="pill">SETTLE ≤ policy cap</span></div><div class="grid">
+  <div class="block"><h3>Frozen request</h3><p>Capture settings, source reference/identity, logical size, target cap, color engine, effect stack, mask context, overlay flag, kind, and generation. Workers never reread mutable controls.</p></div>
+  <div class="block"><h3>Priority</h3><p>Within one generation: DRAG &lt; SETTLE/ZOOM &lt; FULL; ties favor the freshest. Newer generations always win.</p></div>
+  <div class="block"><h3>Coalescing</h3><p>At most one preview render runs. While busy, state changes replace a single pending trailing request; obsolete work cancels safely at stage boundaries.</p></div>
+  <div class="block"><h3>Quality variants</h3><p>Full Quality Preview is uncapped. Optional zoom refinement requests a higher resolution bucket only when needed and never exceeds the configured ceiling/source size.</p></div>
+ </div><div class="note">The viewport’s scene geometry stays source-logical even when the actual pixmap is capped, so replacing a preview does not reset the user’s pan/zoom.</div></div>
+</details><div class="arrow"></div>
+
+<details class="node lime" data-level="main">
+ <summary><span class="num">06</span><span class="title">Execute the frozen render pipeline<span class="teaser">Exact fixed stage order with bounded staged cache and cancellation boundaries</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="mini-flow"><span class="pill">contrast</span><b class="mini-arrow">→</b><span class="pill">midtones</span><b class="mini-arrow">→</b><span class="pill">highlights</span><b class="mini-arrow">→</b><span class="pill">blur/sharpen</span><b class="mini-arrow">→</b><span class="pill">dither</span><b class="mini-arrow">→</b><span class="pill">color</span><b class="mini-arrow">→</b><span class="pill">saturation</span><b class="mini-arrow">→</b><span class="pill">effects</span><b class="mini-arrow">→</b><span class="pill">invert</span></div><div class="grid">
+  <div class="block"><h3>Tonal stages</h3><p>Convert base to float32 and apply contrast → midtones → highlights through call-private scratch, then blur/sharpen. Cache this L1 result by source and adjustment signature.</p></div>
+  <div class="block"><h3>Dither internals</h3><p>Nearest-downscale by scale; optionally subtract the resized temporal field; apply deterministic creative transforms; invoke the selected registry kernel; promote binary kernels to N tones when depth &gt; 2; undo transforms/mix; nearest-upscale.</p></div>
+  <div class="block"><h3>Color & finish</h3><p>Map grayscale through the frozen ColorEngine/palette mode (or broadcast gray to RGB), apply saturation to uint8, run the ordered EffectStack, then apply invert last.</p></div>
+  <div class="block"><h3>Cache & safety</h3><p>Bounded editor-owned cache reuses valid L1–L5 intermediates. Temporal fields bypass dither caching. Context is snapshotted once. Cancellation occurs only between stages; exceptions reach a terminal handler.</p></div>
+ </div><div class="note">Core invariant: this nine-stage order never changes. Exact exports use the same pipeline without the screen-preview resolution cap.</div></div>
+</details><div class="arrow"></div>
+
+<details class="node violet" data-level="main">
+ <summary><span class="num">07</span><span class="title">Apply the mask wrapper, when active<span class="teaser">Render whole branch first, then composite—or bake white/black before dithering</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="grid">
+  <div class="block"><h3>Disabled branch</h3><p>Call the historical renderer directly. No source hashing, derivation, resize, composite, or mask allocation occurs.</p></div>
+  <div class="block"><h3>Outer-composite branch</h3><p>Render the complete nine-stage branch, resize master mask/source RGBA to result size, then combine the processed target with Original, Transparent, White, or Black outside pixels.</p></div>
+  <div class="block"><h3>Baked-fill branch</h3><p>For White/Black + “Bake fill into dither,” feather-blend the fill into the grayscale base before proxy scaling and stage 1. Render uncached through the pipeline; skip the outer composite so dither/effects texture the fill.</p></div>
+  <div class="block"><h3>Overlay & caching</h3><p>Composite results cache by rendered identity + geometry + mask identity + outside mode + algorithm version. Optional editor-only overlay visualizes the derived mask after compositing.</p></div>
+ </div></div>
+</details><div class="arrow"></div>
+
+<details class="node cyan" data-level="main">
+ <summary><span class="num">08</span><span class="title">Deliver only the current result<span class="teaser">NumPy RGB → owned QImage → source-logical viewport; stale work never paints</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="grid">
+  <div class="block"><h3>Success</h3><p>Convert the uint8 NumPy output to a safely owned QImage/QPixmap. Paint only if its generation is current; fit once after a new source, otherwise preserve zoom and pan.</p></div>
+  <div class="block"><h3>Stale result</h3><p>Drop it without painting. The scheduler promotes the single pending freshest request, if one exists.</p></div>
+  <div class="block"><h3>Cancelled result</h3><p>Treat it as expected obsolescence, release the busy state, and launch the trailing request.</p></div>
+  <div class="block"><h3>Failure</h3><p>Do not paint the failed result, but always deliver terminal cleanup so the scheduler cannot remain wedged; then continue with any pending request.</p></div>
+ </div></div>
+</details><div class="arrow"></div>
+
+<details class="node gold" data-level="main">
+ <summary><span class="num">09</span><span class="title">Choose an output path<span class="teaser">Interactive display, exact still export, vector, batch, animation, or video</span></span><span class="chev">＋</span></summary>
+ <div class="inside"><div class="branches">
+  <details class="node gold" data-level="branch"><summary><span class="num">A</span><span class="title">Preview<span class="teaser">Screen-only capped result</span></span><span class="chev">＋</span></summary><div class="inside"><p>The viewport displays the latest capped or full-quality result. It is not an export authority: ordinary exports rerender exactly from the source and current settings.</p></div></details>
+  <details class="node gold" data-level="branch"><summary><span class="num">B</span><span class="title">PNG / JPG<span class="teaser">Exact current still render</span></span><span class="chev">＋</span></summary><div class="inside"><p>Build an export pipeline from current frozen color/effect context, render at full source resolution, apply Smart Mask if active, then save canonical uint8 raster. JPEG composites transparency on white.</p></div></details>
+  <details class="node gold" data-level="branch"><summary><span class="num">C</span><span class="title">SVG<span class="teaser">Binary raster runs → vector shapes</span></span><span class="chev">＋</span></summary><div class="inside"><p>Threshold a full-resolution grayscale result, merge horizontal runs, and serialize SVG. Active scoped Smart Mask blocks this path because its raster composite semantics are unsupported.</p></div></details>
+  <details class="node gold" data-level="branch"><summary><span class="num">D</span><span class="title">Batch folder<span class="teaser">Repeat exact pipeline per image</span></span><span class="chev">＋</span></summary><div class="inside"><p>Decode supported files, resize consistently against the reference size, render through the same core settings/pipeline, save results, and report processed/skipped counts. Scoped Smart Mask blocks batch.</p></div></details>
+  <details class="node gold" data-level="branch"><summary><span class="num">E</span><span class="title">Temporal animation<span class="teaser">Timeline settings + threshold fields</span></span><span class="chev">＋</span></summary><div class="inside"><p>For each frame, interpolate keyframed settings with easing, generate one of nine deterministic temporal fields, pass it into dither thresholding, and render. Scrub/playback is async, capped, and latest-wins; export renders exact frames then ffmpeg encodes MP4. Scoped Smart Mask blocks export.</p></div></details>
+  <details class="node gold" data-level="branch"><summary><span class="num">F</span><span class="title">Imported video<span class="teaser">Extract → per-frame dither → encode/mux</span></span><span class="chev">＋</span></summary><div class="inside"><p>ffmpeg extracts numbered frames; preview playback shows capped frames. Export workers dither every frame with current settings, encode video, and preserve original audio when present by extract/mux. Worker references live until terminal delivery. Scoped Smart Mask blocks export.</p></div></details>
+ </div><div class="note">Presets are a state path, not a rendered-media path: save/load locally, or import/export YAML-compatible preset data for reuse.</div></div>
+</details>
+
+</section></main>
+<footer>Source of truth: current <code>ditherzam/</code> implementation and shared project memory, inspected 2026-07-15. This diagram is documentation only; it makes no network requests and has no external dependencies.</footer>
+<script>
+  const nodes=[...document.querySelectorAll('details.node')];
+  document.querySelector('#expand').onclick=()=>nodes.forEach(n=>n.open=true);
+  document.querySelector('#collapse').onclick=()=>nodes.slice().reverse().forEach(n=>n.open=false);
+  document.querySelector('#mainpath').onclick=()=>nodes.forEach(n=>n.open=n.dataset.level==='main');
+</script>
+</body></html>

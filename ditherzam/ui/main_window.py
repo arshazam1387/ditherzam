@@ -3,7 +3,10 @@ from __future__ import annotations
 import sys
 
 import numpy as np
-from PySide6.QtCore import QObject, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal
+from PIL import Image
+from PySide6.QtCore import (
+    QObject, QRectF, QRunnable, QSettings, Qt, QThreadPool, QTimer, Signal,
+)
 from PySide6.QtGui import QAction, QActionGroup, QImage, QKeySequence, QPixmap
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -210,6 +213,8 @@ class ImageEditor(QMainWindow):
         self._mask_close_timer: QTimer | None = None
         self._mask_source = None
         self._mask_probability: ProbabilityMap | None = None
+        self._decode_generation = 0
+        self._decode_workers: set[_DecodeWorker] = set()
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
         self._base_rgba: np.ndarray | None = None
@@ -248,7 +253,7 @@ class ImageEditor(QMainWindow):
         self.panel.palette_preview.connect(self._on_palette_preview)
         mask_panel = self.panel.smart_mask_panel
         mask_panel.settings_changed.connect(self._on_mask_settings_changed)
-        mask_panel.overlay_changed.connect(lambda _enabled: self.schedule_render())
+        mask_panel.overlay_changed.connect(self._on_mask_overlay_changed)
         mask_panel.redetect_requested.connect(self._request_mask_detection)
         mask_panel.cancel_requested.connect(self._cancel_mask_detection)
         mask_panel.set_availability(source=False, model=self._mask_dependencies_available())
@@ -305,6 +310,8 @@ class ImageEditor(QMainWindow):
         self._wire_export()
         self._wire_video()
         self._wire_animation()
+        self._wire_composition()
+        self._wire_layers()
         self._refresh_mask_scope_actions()
 
     def _mask_dependencies_available(self) -> bool:
@@ -324,6 +331,14 @@ class ImageEditor(QMainWindow):
     def _on_mask_settings_changed(self, settings: SmartMaskSettings) -> None:
         self._apply_mask_settings_lifecycle(settings)
         self._refresh_mask_scope_actions()
+        self.schedule_render()
+
+    def _on_mask_overlay_changed(self, _enabled: bool) -> None:
+        """Refresh inspection pixels without invalidating layer-owned state."""
+        controller = getattr(self, "layers_controller", None)
+        if controller is not None and controller.document is not None:
+            controller.request_preview()
+            return
         self.schedule_render()
 
     def _apply_mask_settings_lifecycle(self, settings: SmartMaskSettings) -> None:
@@ -402,10 +417,26 @@ class ImageEditor(QMainWindow):
             if outcome.terminal is InferenceTerminal.SUCCESS:
                 candidate = outcome.result.probability
                 if self._mask_caches.put_inference(candidate):
+                    if self._layer_transform_active():
+                        # Retain the completed local inference in the bounded
+                        # cache without mutating the active layer transaction.
+                        trailing = self._mask_scheduler.on_terminal(outcome)
+                        if trailing is not None:
+                            self._launch_mask_worker(trailing)
+                        return
                     self._mask_probability = candidate
                     panel.set_valid_mask_available(True)
                     panel.set_status(MaskPanelStatus.READY)
                     self.schedule_render()
+                    controller = getattr(self, "composition_controller", None)
+                    if controller is not None and controller.composition is not None:
+                        controller.request_frame(
+                            self.composition_panel.frame_slider.value())
+                    layers_controller = getattr(
+                        self, "layers_controller", None)
+                    if (layers_controller is not None
+                            and layers_controller.stack.layers):
+                        layers_controller.request_preview()
                 else:
                     # Cache admission is the publication boundary. Never retain
                     # an unaccounted full-resolution array in editor authority.
@@ -425,6 +456,14 @@ class ImageEditor(QMainWindow):
 
     def closeEvent(self, event) -> None:
         """Cancel inference and retire the owned pool without blocking the GUI."""
+        if self._layer_transform_active():
+            self._cancel_layer_transform()
+        controller = getattr(self, "composition_controller", None)
+        if controller is not None:
+            controller.shutdown()
+        layers_controller = getattr(self, "layers_controller", None)
+        if layers_controller is not None:
+            layers_controller.shutdown()
         if self._mask_close_finalizing:
             super().closeEvent(event)
             return
@@ -526,9 +565,10 @@ class ImageEditor(QMainWindow):
 
         self.timeline = Timeline(length=30)
         self.timeline_panel = TimelinePanel(length=30, parent=self)
-        dock = QDockWidget("Animation", self)
-        dock.setWidget(self.timeline_panel)
-        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, dock)
+        self.animation_dock = QDockWidget("Animation", self)
+        self.animation_dock.setWidget(self.timeline_panel)
+        self.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea, self.animation_dock)
 
         self.anim_controller = AnimationController(
             self.timeline_panel, self.pipeline,
@@ -570,6 +610,520 @@ class ImageEditor(QMainWindow):
             return
         self.anim_controller.export(out, fps=24)
 
+    # ---- still-image Look Composer -----------------------------------------
+    def _wire_composition(self) -> None:
+        from PySide6.QtWidgets import QDockWidget
+        from .composition_controller import CompositionController
+        from .composition_panel import CompositionPanel
+
+        self.composition_panel = CompositionPanel(parent=self)
+        self.composition_dock = QDockWidget("Look Composer", self)
+        self.composition_dock.setWidget(self.composition_panel)
+        self.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea, self.composition_dock)
+        self.tabifyDockWidget(self.animation_dock, self.composition_dock)
+
+        self.composition_controller = CompositionController(
+            self.composition_panel,
+            self._registry,
+            preset_provider=self._current_composition_preset,
+            source_provider=self._provide_composition_source,
+            cap_provider=self._policy_cap,
+            frame_sink=self._show_composition_frame,
+            parent=self,
+        )
+        self.composition_panel.export_requested.connect(
+            self._export_composition_frame)
+        self.composition_dock.visibilityChanged.connect(
+            lambda visible: (
+                None if visible else self.composition_panel.stop_playback()))
+
+    def _current_composition_preset(self) -> dict:
+        return settings_to_preset(
+            self._collect_settings(),
+            self._current_palette(),
+            self._current_effect_stack(),
+            self._color_mode(),
+            self.panel.smart_mask_panel.settings,
+            source_dither=int(self.panel.state.get("source_dither", 100)),
+            source_dither_brighten=bool(
+                self.panel.state.get("source_dither_brighten", False)),
+        )
+
+    def _provide_composition_source(self):
+        if self._base_gray is None or self._base_rgba is None:
+            return None
+        probability = self._mask_probability
+        if probability is not None:
+            identity = source_identity(self._base_rgba)
+            if probability.identity.source != identity:
+                probability = None
+        return self._base_gray, self._base_rgba, probability
+
+    def _show_composition_frame(self, rgb_or_rgba_u8) -> None:
+        # Composer interaction owns the viewport until another explicit editor
+        # request: retire queued editor work so it cannot paint over this frame.
+        self._debounce.stop()
+        self._settle.stop()
+        self._zoom_debounce.stop()
+        self._scheduler.invalidate()
+        qimg = numpy_to_qimage(rgb_or_rgba_u8)
+        self.last_qimage = qimg
+        self.viewport.set_pixmap(
+            QPixmap.fromImage(qimg),
+            logical_size=self._reference_size(),
+            refit=False,
+        )
+
+    def _export_composition_frame(self, _frame_index: int) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Current Composition Frame",
+            "composition-frame.png",
+            "PNG Images (*.png);;JPEG Images (*.jpg *.jpeg)",
+        )
+        if path:
+            self.composition_controller.export_current(path)
+
+    # ---- same-canvas spatial layer stack -----------------------------------
+    def _wire_layers(self) -> None:
+        from PySide6.QtWidgets import QDockWidget
+        from .layers_controller import LayersController
+        from .layers_panel import LayersPanel
+
+        self.layers_panel = LayersPanel(parent=self)
+        self.layers_dock = QDockWidget("Layers", self)
+        self.layers_dock.setWidget(self.layers_panel)
+        self.addDockWidget(
+            Qt.DockWidgetArea.RightDockWidgetArea, self.layers_dock)
+
+        self.layers_controller = LayersController(
+            self.layers_panel,
+            self._registry,
+            preset_provider=self._current_composition_preset,
+            source_provider=self._provide_composition_source,
+            cap_provider=self._layer_policy_cap,
+            frame_sink=self._show_layer_frame,
+            apply_preset=self._apply_layer_preset,
+            apply_source=self._apply_layer_source,
+            mutation_guard=self._guard_layer_transform,
+            proxy_sink=self._install_layer_transform_proxy,
+            proxy_geometry_sink=self._update_layer_transform_proxy,
+            proxy_clear=self.viewport.clear_transform_proxy,
+            parent=self,
+        )
+        self.layers_panel.export_requested.connect(self._export_layers)
+        self.layers_panel.transform_mode_requested.connect(
+            self._start_layer_transform)
+        self.layers_panel.transform_confirmed.connect(
+            self._confirm_layer_transform)
+        self.layers_panel.transform_cancelled.connect(
+            self._cancel_layer_transform)
+        self.layers_panel.name_changed.connect(
+            lambda *_args: QTimer.singleShot(
+                0, self._refresh_active_layer_mask_scope))
+        self.layers_controller.place_requested.connect(self._place_layer_image)
+        self.viewport.layer_drag_started.connect(self._begin_layer_drag)
+        self.viewport.layer_dragged.connect(self._drag_active_layer)
+        self.viewport.layer_drag_finished.connect(self._finish_layer_drag)
+        self.viewport.layer_resize_started.connect(self._begin_layer_resize)
+        self.viewport.layer_resized.connect(self._resize_active_layer)
+        self.viewport.layer_resize_finished.connect(self._finish_layer_resize)
+        self.viewport.layer_nudge_requested.connect(self._nudge_active_layer)
+        self.viewport.layer_transform_confirm_requested.connect(
+            self._confirm_layer_transform)
+        self.viewport.layer_transform_cancel_requested.connect(
+            self._cancel_layer_transform)
+        self.layers_controller.active_geometry_changed.connect(
+            self._sync_layer_drag_target)
+        self._layer_transform_session: (
+            tuple[str, tuple[int, int, int, int]] | None
+        ) = None
+        self._layer_drag_origin: tuple[int, int] | None = None
+        self._layer_drag_id: str | None = None
+        self._layer_resize_origin: tuple[int, int, int, int] | None = None
+        self._layer_resize_id: str | None = None
+
+    def _apply_layer_source(self, gray, rgba, probability=None) -> None:
+        """Switch the editor view to a layer-owned immutable source.
+
+        This adapter deliberately does not call ``load_array``: selecting a row
+        must never open a new document or rebuild the layer graph.
+        """
+        self._debounce.stop()
+        self._settle.stop()
+        self._zoom_debounce.stop()
+        self._scheduler.invalidate()
+        self._full_preview_requested = False
+        self._last_zoom_bucket = None
+        self._mask_scheduler.invalidate_source(None)
+
+        self._base_gray = gray
+        self._base_rgba = rgba
+        self._base_rgb = rgba[..., :3]
+        self._mask_probability = probability
+        self._mask_source = (
+            probability.identity.source
+            if probability is not None and hasattr(probability, "identity")
+            else None
+        )
+        self.pipeline.clear_cache()
+        mask_panel = self.panel.smart_mask_panel
+        mask_panel.set_availability(
+            source=True, model=self._mask_dependencies_available())
+        mask_panel.set_valid_mask_available(probability is not None)
+        self._refresh_mask_scope_actions()
+
+    def _place_layer_image(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Place Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp)",
+        )
+        if path:
+            self._start_layer_decode(path, intent="place")
+
+    def _apply_layer_preset(self, preset: dict) -> None:
+        contents = preset_to_settings(preset)
+        self._apply_preset(
+            contents.settings,
+            contents.palette,
+            contents.effects,
+            contents.smart_mask,
+            color_mode=contents.color_mode,
+            source_dither=contents.source_dither,
+            source_dither_brighten=contents.source_dither_brighten,
+            render_result=False,
+        )
+
+    def _layer_reference_size(self) -> tuple[int, int]:
+        controller = getattr(self, "layers_controller", None)
+        document = None if controller is None else controller.document
+        if document is None:
+            return self._reference_size()
+        return document.canvas.width, document.canvas.height
+
+    def _show_layer_frame(self, rgb_or_rgba_u8) -> None:
+        """Publish a document composite using document, not active-layer, geometry."""
+        self._debounce.stop()
+        self._settle.stop()
+        self._zoom_debounce.stop()
+        self._scheduler.invalidate()
+        frame = self._apply_active_layer_mask_overlay(rgb_or_rgba_u8)
+        qimg = numpy_to_qimage(frame)
+        self.last_qimage = qimg
+        self.viewport.set_pixmap(
+            QPixmap.fromImage(qimg),
+            logical_size=self._layer_reference_size(),
+            refit=False,
+        )
+        self._sync_layer_drag_target()
+
+    def _install_layer_transform_proxy(
+        self, proxy, document_size, geometry
+    ) -> None:
+        if geometry is None:
+            return
+        background = QPixmap.fromImage(
+            numpy_to_qimage(proxy.background_rgba)).copy()
+        selected = QPixmap.fromImage(
+            numpy_to_qimage(proxy.layer_rgba)).copy()
+        width, height = document_size
+        self.viewport.install_transform_proxy(
+            background,
+            selected,
+            QRectF(*geometry),
+            document_rect=QRectF(0, 0, width, height),
+            opacity=(proxy.opacity / 100.0 if proxy.visible else 0.0),
+        )
+
+    def _update_layer_transform_proxy(self, geometry) -> None:
+        if (
+            geometry is not None
+            and getattr(self.viewport, "_transform_proxy_layer", None) is not None
+        ):
+            self.viewport.update_transform_proxy_geometry(QRectF(*geometry))
+
+    def _apply_active_layer_mask_overlay(self, composite):
+        """Tint only the active layer's transformed mask in a display copy."""
+        panel = self.panel.smart_mask_panel
+        document = self.layers_controller.document
+        index = self.layers_controller.active_index
+        settings = panel.settings
+        if (
+            not panel.overlay_check.isChecked()
+            or document is None
+            or index is None
+            or not settings.enabled
+            or settings.target is MaskTarget.WHOLE_IMAGE
+        ):
+            return composite
+        layer = document.layers[index]
+        if not layer.visible or layer.opacity == 0:
+            return composite
+        source = layer.source
+        probability = None if source is None else source.probability
+        if source is None or probability is None:
+            return composite
+        context = MaskContext(
+            probability.identity.source,
+            source.rgba,
+            probability,
+            settings,
+        )
+        frame = np.asarray(composite)
+        frame_h, frame_w = frame.shape[:2]
+        scale_x = frame_w / float(document.canvas.width)
+        scale_y = frame_h / float(document.canvas.height)
+        layer_h, layer_w = source.rgba.shape[:2]
+        target_h = max(1, int(round(
+            layer_h * layer.transform.scale_y * scale_y)))
+        target_w = max(1, int(round(
+            layer_w * layer.transform.scale_x * scale_x)))
+        mask = derive_render_mask(
+            context, (target_h, target_w), caches=self._mask_caches)
+        alpha = np.asarray(
+            Image.fromarray(source.rgba[..., 3], mode="L").resize(
+                (target_w, target_h), resample=Image.Resampling.NEAREST),
+            dtype=np.float32,
+        )
+        mask = mask * (alpha / np.float32(255.0))
+        mask = mask * np.float32(layer.opacity / 100.0)
+        coverage = np.zeros((frame_h, frame_w), dtype=np.float32)
+        x = int(round(layer.transform.x * scale_x))
+        y = int(round(layer.transform.y * scale_y))
+        left, top = max(0, x), max(0, y)
+        right, bottom = min(frame_w, x + target_w), min(frame_h, y + target_h)
+        if left >= right or top >= bottom:
+            return composite
+        coverage[top:bottom, left:right] = mask[
+            top - y:bottom - y, left - x:right - x]
+        coverage.flags.writeable = False
+        return apply_mask_overlay(frame, coverage)
+
+    def _sync_layer_drag_target(self) -> None:
+        geometry = (
+            self.layers_controller.active_geometry()
+            if self._layer_transform_session is not None
+            else None
+        )
+        self.viewport.set_layer_drag_target(
+            None if geometry is None else QRectF(*geometry))
+
+    def _active_layer_id(self) -> str | None:
+        document = self.layers_controller.document
+        index = self.layers_controller.active_index
+        return (
+            None if document is None or index is None
+            else document.layers[index].id
+        )
+
+    def _layer_transform_active(self) -> bool:
+        return getattr(self, "_layer_transform_session", None) is not None
+
+    def _guard_layer_transform(self) -> bool:
+        """Return False and explain why an unrelated action cannot proceed."""
+        if not self._layer_transform_active():
+            return True
+        self.layers_panel.set_status(
+            "Confirm or cancel the active layer transform first.", error=True)
+        return False
+
+    def _set_layer_transform_ui_locked(self, active: bool) -> None:
+        self.tabs.setEnabled(not active)
+        self.menuBar().setEnabled(not active)
+        for name in ("composition_panel", "timeline_panel"):
+            widget = getattr(self, name, None)
+            if widget is not None:
+                widget.setEnabled(not active)
+        for action in getattr(self, "_export_actions", {}).values():
+            action.setEnabled(not active)
+        full_quality = getattr(self, "_actions", {}).get("full_quality_preview")
+        if full_quality is not None:
+            full_quality.setEnabled(not active)
+        if not active:
+            self._refresh_mask_scope_actions()
+
+    def _start_layer_transform(self, index: int) -> None:
+        if self._layer_transform_active():
+            self._guard_layer_transform()
+            return
+        if self.layers_controller.active_index != int(index):
+            self.layers_controller.activate_layer(int(index))
+        geometry = self.layers_controller.active_geometry()
+        layer_id = self._active_layer_id()
+        if geometry is None or layer_id is None:
+            return
+        self._layer_transform_session = (layer_id, geometry)
+        self.layers_panel.set_transform_mode(True)
+        self._set_layer_transform_ui_locked(True)
+        self._sync_layer_drag_target()
+        self.layers_panel.set_status(
+            "Drag inside to move, or drag a blue handle to resize.")
+
+    def _confirm_layer_transform(self) -> None:
+        if self._layer_transform_session is None:
+            return
+        self._layer_transform_session = None
+        self._clear_layer_gesture()
+        self.layers_panel.set_transform_mode(False)
+        self._set_layer_transform_ui_locked(False)
+        self._sync_layer_drag_target()
+        self.layers_panel.set_status("Layer transform confirmed.")
+        self._resume_mask_after_layer_transform()
+
+    def _cancel_layer_transform(self) -> None:
+        session = self._layer_transform_session
+        if session is None:
+            return
+        layer_id, geometry = session
+        if self._active_layer_id() == layer_id:
+            self.layers_controller.resize_active_layer_to(*geometry)
+        self._layer_transform_session = None
+        self._clear_layer_gesture()
+        self.layers_panel.set_transform_mode(False)
+        self._set_layer_transform_ui_locked(False)
+        self._sync_layer_drag_target()
+        self.layers_panel.set_status("Layer transform cancelled.")
+        self._resume_mask_after_layer_transform()
+
+    def _resume_mask_after_layer_transform(self) -> None:
+        settings = self.panel.smart_mask_panel.settings
+        if settings.enabled and self._mask_probability is None:
+            self._apply_mask_settings_lifecycle(settings)
+
+    def _clear_layer_gesture(self) -> None:
+        self.layers_controller.end_transform_gesture()
+        self._layer_drag_origin = None
+        self._layer_drag_id = None
+        self._layer_resize_origin = None
+        self._layer_resize_id = None
+
+    def _begin_layer_drag(self) -> None:
+        self.layers_controller.begin_transform_gesture()
+        geometry = self.layers_controller.active_geometry()
+        self._layer_drag_origin = (
+            None if geometry is None else (geometry[0], geometry[1]))
+        document = self.layers_controller.document
+        index = self.layers_controller.active_index
+        self._layer_drag_id = (
+            None if document is None or index is None
+            else document.layers[index].id
+        )
+
+    def _drag_active_layer(self, delta_x: float, delta_y: float) -> None:
+        if self._layer_drag_origin is None:
+            return
+        document = self.layers_controller.document
+        index = self.layers_controller.active_index
+        if (
+            document is None
+            or index is None
+            or document.layers[index].id != self._layer_drag_id
+        ):
+            return
+        origin_x, origin_y = self._layer_drag_origin
+        self.layers_controller.move_active_layer_to(
+            int(round(origin_x + float(delta_x))),
+            int(round(origin_y + float(delta_y))),
+        )
+
+    def _nudge_active_layer(self, delta_x: int, delta_y: int) -> None:
+        if not self._layer_transform_active():
+            return
+        geometry = self.layers_controller.active_geometry()
+        if geometry is None:
+            return
+        x, y, _width, _height = geometry
+        self.layers_controller.move_active_layer_to(
+            x + int(delta_x), y + int(delta_y))
+
+    def _finish_layer_drag(self) -> None:
+        self.layers_controller.end_transform_gesture()
+        self._layer_drag_origin = None
+        self._layer_drag_id = None
+        self._sync_layer_drag_target()
+
+    def _begin_layer_resize(self, _corner: str) -> None:
+        if self._layer_transform_session is None:
+            return
+        self.layers_controller.begin_transform_gesture()
+        self._layer_resize_origin = self.layers_controller.active_geometry()
+        self._layer_resize_id = self._active_layer_id()
+
+    def _resize_active_layer(
+        self, corner: str, delta_x: float, delta_y: float
+    ) -> None:
+        origin = self._layer_resize_origin
+        if origin is None or self._active_layer_id() != self._layer_resize_id:
+            return
+        x, y, width, height = origin
+        dx = int(round(float(delta_x)))
+        dy = int(round(float(delta_y)))
+        if corner == "nw":
+            nx, ny, nw, nh = x + dx, y + dy, width - dx, height - dy
+        elif corner == "ne":
+            nx, ny, nw, nh = x, y + dy, width + dx, height - dy
+        elif corner == "sw":
+            nx, ny, nw, nh = x + dx, y, width - dx, height + dy
+        elif corner == "se":
+            nx, ny, nw, nh = x, y, width + dx, height + dy
+        elif corner == "n":
+            nx, ny, nw, nh = x, y + dy, width, height - dy
+        elif corner == "s":
+            nx, ny, nw, nh = x, y, width, height + dy
+        elif corner == "e":
+            nx, ny, nw, nh = x, y, width + dx, height
+        elif corner == "w":
+            nx, ny, nw, nh = x + dx, y, width - dx, height
+        else:
+            return
+
+        nw = max(1, nw)
+        nh = max(1, nh)
+        if self.layers_panel.lock_aspect_check.isChecked():
+            ratio = width / float(max(1, height))
+            if abs(nw - width) / max(1, width) >= abs(nh - height) / max(1, height):
+                nh = max(1, int(round(nw / ratio)))
+            else:
+                nw = max(1, int(round(nh * ratio)))
+            if "w" in corner:
+                nx = x + width - nw
+            if "n" in corner:
+                ny = y + height - nh
+        else:
+            if "w" in corner:
+                nx = min(nx, x + width - 1)
+            if "n" in corner:
+                ny = min(ny, y + height - 1)
+        self.layers_controller.resize_active_layer_to(nx, ny, nw, nh)
+
+    def _finish_layer_resize(self) -> None:
+        self.layers_controller.end_transform_gesture()
+        self._layer_resize_origin = None
+        self._layer_resize_id = None
+        self._sync_layer_drag_target()
+
+    def _export_layers(self) -> None:
+        """Export the flattened still stack without media-mask gating."""
+        from PySide6.QtWidgets import QFileDialog
+        if not self._guard_layer_transform():
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Layers",
+            "layers.png",
+            "PNG Images (*.png);;JPEG Images (*.jpg *.jpeg)",
+        )
+        if path:
+            self.layers_controller.export_current(path)
+
     # ---- video (Phase 7, UI layer only) -------------------------------------
     def _wire_video(self) -> None:
         from .video_controller import VideoController
@@ -598,6 +1152,7 @@ class ImageEditor(QMainWindow):
                 "export_preset": self._on_export_preset,
                 "export_png":    lambda: self._on_export_raster("PNG Files (*.png)", ".png"),
                 "export_jpg":    lambda: self._on_export_raster("JPEG Files (*.jpg)", ".jpg"),
+                "export_preview": self._on_export_preview,
                 "export_svg":    self._on_export_svg,
                 "batch_folder":  self._on_batch_folder,
             },
@@ -720,7 +1275,15 @@ class ImageEditor(QMainWindow):
             caches=self._mask_caches, rendered_identity=rendered_identity,
             target_shape=source_gray.shape[:2])
 
-    def _apply_preset(self, settings, palette, effects, smart_mask=None) -> None:
+    def _apply_preset(
+        self, settings, palette, effects, smart_mask=None, *,
+        color_mode: str = "off",
+        source_dither: int = 100,
+        source_dither_brighten: bool = False,
+        render_result: bool = True,
+    ) -> None:
+        if not self._guard_layer_transform():
+            return
         # Drop queued renders before mutating several signal-producing controls.
         self._debounce.stop()
         self._settle.stop()
@@ -738,8 +1301,27 @@ class ImageEditor(QMainWindow):
                     panel._sliders[key].setValue(value)
             panel.saturation_slider.setValue(int(settings.saturation))
             panel.scale_slider.setValue(int(settings.scale))
+            panel.depth_slider.setValue(int(settings.depth))
+            panel.mapping_combo.setCurrentText(str(settings.color_mapping))
             panel.invert_toggle.setChecked(bool(settings.invert))
             panel.preview_toggle.setChecked(bool(settings.preview_disabled))
+            panel.mode_combo.setCurrentText(str(color_mode))
+            panel.source_dither_slider.setValue(int(source_dither))
+            panel.source_dither_brighten_check.setChecked(
+                bool(source_dither_brighten))
+            # State is authoritative. Assign it explicitly instead of relying on
+            # child-widget signals while the parent is in a guarded transaction.
+            panel.state.update({
+                "saturation": int(settings.saturation),
+                "scale": int(settings.scale),
+                "depth": int(settings.depth),
+                "color_mapping": str(settings.color_mapping),
+                "invert": bool(settings.invert),
+                "preview_disabled": bool(settings.preview_disabled),
+                "color_mode": str(color_mode),
+                "source_dither": int(source_dither),
+                "source_dither_brighten": bool(source_dither_brighten),
+            })
             from ..effects.glow_params import glow_state_from_params, GLOW_DEFAULTS
             panel.effects_list.clear()
             glow_state = None
@@ -768,11 +1350,13 @@ class ImageEditor(QMainWindow):
         if smart_mask is not None:
             self._apply_mask_settings_lifecycle(smart_mask)
         self._refresh_mask_scope_actions()
-        if self._base_gray is not None:
+        if render_result and self._base_gray is not None:
             self.render_now()
 
     # -- menu handlers --
     def _on_save_preset(self):
+        if not self._guard_layer_transform():
+            return
         from PySide6.QtWidgets import QInputDialog, QMessageBox
         name, ok = QInputDialog.getText(self, "Save Preset", "Enter preset name:")
         if not ok or not name:
@@ -781,12 +1365,17 @@ class ImageEditor(QMainWindow):
             self._collect_settings(), self._current_palette(),
             self._current_effect_stack(), self._color_mode(),
             self.panel.smart_mask_panel.settings,
+            source_dither=int(self.panel.state.get("source_dither", 100)),
+            source_dither_brighten=bool(
+                self.panel.state.get("source_dither_brighten", False)),
         )
         self._preset_manager.save(name, preset)
         QMessageBox.information(self, "Presets", f"Preset '{name}' saved successfully!")
 
     def _on_load_preset(self):
         from PySide6.QtWidgets import QInputDialog
+        if not self._guard_layer_transform():
+            return
         names = self._preset_manager.list()
         if not names:
             return
@@ -794,10 +1383,19 @@ class ImageEditor(QMainWindow):
         if not ok:
             return
         contents = preset_to_settings(self._preset_manager.load(name))
-        self._apply_preset(contents.settings, contents.palette, contents.effects,
-                           contents.smart_mask)
+        self._apply_preset(
+            contents.settings,
+            contents.palette,
+            contents.effects,
+            contents.smart_mask,
+            color_mode=contents.color_mode,
+            source_dither=contents.source_dither,
+            source_dither_brighten=contents.source_dither_brighten,
+        )
 
     def _on_import_preset(self):
+        if not self._guard_layer_transform():
+            return
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         path, _ = QFileDialog.getOpenFileName(self, "Import Preset(s)", "",
                                               "Preset Files (*.yaml *.yml)")
@@ -811,6 +1409,8 @@ class ImageEditor(QMainWindow):
         QMessageBox.information(self, "Presets", f"Imported preset '{name}'.")
 
     def _on_export_preset(self):
+        if not self._guard_layer_transform():
+            return
         from PySide6.QtWidgets import QFileDialog
         import yaml
         path, _ = QFileDialog.getSaveFileName(self, "Export Preset", "",
@@ -821,11 +1421,16 @@ class ImageEditor(QMainWindow):
             self._collect_settings(), self._current_palette(),
             self._current_effect_stack(), self._color_mode(),
             self.panel.smart_mask_panel.settings,
+            source_dither=int(self.panel.state.get("source_dither", 100)),
+            source_dither_brighten=bool(
+                self.panel.state.get("source_dither_brighten", False)),
         )
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(preset, f, sort_keys=False, allow_unicode=True)
 
     def _on_export_raster(self, file_filter, ext):
+        if not self._guard_layer_transform():
+            return
         from pathlib import Path
         from PySide6.QtWidgets import QFileDialog
         if self._base_gray is None:
@@ -844,7 +1449,29 @@ class ImageEditor(QMainWindow):
                 self._jpeg_flatten_notice_shown = True
         save_raster(rendered, path)
 
+    def _on_export_preview(self):
+        """Save the preview raster exactly as displayed.
+
+        Deliberately bypasses the exact-export pipeline: the saved file is the
+        capped/proxy preview image itself, including every preview
+        approximation, at the preview's resolution.
+        """
+        if not self._guard_layer_transform():
+            return
+        from PySide6.QtWidgets import QFileDialog
+        image = self.last_qimage
+        if image is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Preview", "preview.png", "PNG Files (*.png)")
+        if not path:
+            return
+        if not image.save(path):
+            self.statusBar().showMessage(f"Could not save preview to {path}", 8000)
+
     def _on_export_svg(self):
+        if not self._guard_layer_transform():
+            return
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         if self._base_gray is None:
             return
@@ -871,6 +1498,8 @@ class ImageEditor(QMainWindow):
             f.write(svg)
 
     def _on_batch_folder(self):
+        if not self._guard_layer_transform():
+            return
         from PySide6.QtWidgets import QFileDialog, QMessageBox
         if not self._mask_media_allowed("batch"):
             return
@@ -895,11 +1524,16 @@ class ImageEditor(QMainWindow):
         ``gray_f32`` and ``rgb_u8`` remain the render and Source Colors inputs
         respectively.  RGBA retention is additional source authority only.
         """
-        self._replace_source_arrays(gray_f32, rgb_u8, rgba_u8, adopt_decoded_rgba=False)
+        if not self._guard_layer_transform():
+            return
+        self._replace_source_arrays(
+            gray_f32, rgb_u8, rgba_u8, adopt_decoded_rgba=False)
 
     def _replace_source_arrays(self, gray_f32, rgb_u8, rgba_u8,
                                *, adopt_decoded_rgba: bool) -> None:
         """Validate a replacement and optionally accept private decoder ownership."""
+        if not self._guard_layer_transform():
+            return
         if not isinstance(gray_f32, np.ndarray) or gray_f32.dtype != np.float32:
             raise TypeError("gray_f32 must be a float32 ndarray")
         gray = gray_f32
@@ -970,8 +1604,16 @@ class ImageEditor(QMainWindow):
         if settings.enabled and settings.target is not MaskTarget.WHOLE_IMAGE:
             self._request_mask_detection()
         self._refresh_mask_scope_actions()
+        controller = getattr(self, "composition_controller", None)
+        if controller is not None and controller.composition is not None:
+            controller.request_frame(self.composition_panel.frame_slider.value())
+        layers_controller = getattr(self, "layers_controller", None)
+        if layers_controller is not None:
+            layers_controller.initialize_source_layer()
 
     def set_style(self, name: str) -> None:
+        if not self._guard_layer_transform():
+            return
         self.panel.set_style(name)
 
     def render_now(self) -> QImage:
@@ -1012,6 +1654,22 @@ class ImageEditor(QMainWindow):
     def schedule_render(self) -> None:
         if self._applying_preset:
             return
+        layers_controller = getattr(self, "layers_controller", None)
+        if (
+            layers_controller is not None
+            and getattr(layers_controller, "document", None) is not None
+        ):
+            self._debounce.stop()
+            self._settle.stop()
+            self._zoom_debounce.stop()
+            self._scheduler.invalidate()
+            self._full_preview_requested = False
+            self._last_zoom_bucket = None
+            if layers_controller.has_active_layer:
+                layers_controller.update_active_from_editor()
+            else:
+                layers_controller.request_preview()
+            return
         self._full_preview_requested = False       # any edit returns to the cap
         self._last_zoom_bucket = None               # a normal edit re-settles the baseline
         self._debounce.start(self._debounce_ms)   # fast proxy
@@ -1021,6 +1679,14 @@ class ImageEditor(QMainWindow):
     def _policy_cap(self) -> int:
         """Settled longest-side cap from the current preview preference + viewport."""
         w, h = self._reference_size()
+        return self._policy_cap_for_size(w, h)
+
+    def _layer_policy_cap(self) -> int:
+        """Settled cap based on the document canvas, independent of row selection."""
+        w, h = self._layer_reference_size()
+        return self._policy_cap_for_size(w, h)
+
+    def _policy_cap_for_size(self, w: int, h: int) -> int:
         source_longest = max(w, h)
         if source_longest <= 0:
             return 1440  # no image loaded yet; a reasonable default
@@ -1098,6 +1764,19 @@ class ImageEditor(QMainWindow):
         controller = getattr(self, "video_controller", None)
         if controller is not None:
             controller.refresh_mask_scope()
+        self._refresh_active_layer_mask_scope()
+
+    def _refresh_active_layer_mask_scope(self) -> None:
+        mask_panel = self.panel.smart_mask_panel
+        controller = getattr(self, "layers_controller", None)
+        document = None if controller is None else controller.document
+        index = None if controller is None else controller.active_index
+        name = (
+            None
+            if document is None or index is None
+            else document.layers[index].name
+        )
+        mask_panel.set_mask_scope(name)
 
     def _do_render(self) -> None:
         """Debounce tick: request a fast proxy render."""
@@ -1194,16 +1873,58 @@ class ImageEditor(QMainWindow):
             self._launch_worker(nxt)
 
     def _on_image_dropped(self, path: str) -> None:
+        document = getattr(self.layers_controller, "document", None)
+        intent = "open" if document is None else "place"
+        self._start_layer_decode(path, intent=intent)
+
+    def _start_layer_decode(self, path: str, *, intent: str) -> None:
+        """Decode with a frozen routing intent and reject superseded results."""
+        if not self._guard_layer_transform():
+            return
+        if intent not in {"open", "place"}:
+            raise ValueError("decode intent must be 'open' or 'place'")
+        self._decode_generation += 1
+        generation = self._decode_generation
         worker = _DecodeWorker(path)
-        worker.signals.finished.connect(self._on_image_decoded)
-        self._decode_worker = worker  # keep the signals QObject alive until it fires
+        self._decode_workers.add(worker)
+        worker.signals.finished.connect(
+            lambda gray, _rgb, rgba, g=generation, i=intent:
+            self._on_layer_decoded(gray, rgba, generation=g, intent=i))
+        worker.signals.finished.connect(
+            lambda *_args, w=worker: self._decode_workers.discard(w))
         self._pool.start(worker)
 
+    def _on_layer_decoded(
+        self, gray_f32, rgba_u8, *, generation: int, intent: str
+    ) -> None:
+        if generation != self._decode_generation:
+            return
+        self._accept_decoded_layer_source(gray_f32, rgba_u8, intent=intent)
+        self.schedule_render()
+
+    def _accept_decoded_layer_source(
+        self, gray_f32, rgba_u8, *, intent: str
+    ) -> None:
+        """Route decoded pixels explicitly into open or place semantics."""
+        if not self._guard_layer_transform():
+            return
+        if intent == "open":
+            self.layers_controller.open_document(gray_f32, rgba_u8)
+        elif intent == "place":
+            self.layers_controller.place_source(gray_f32, rgba_u8)
+        else:
+            raise ValueError("decode intent must be 'open' or 'place'")
+
     def _on_image_decoded(self, gray_f32, rgb_u8, rgba_u8) -> None:
-        """GUI-thread slot: decode finished off-thread; paint a capped preview
-        immediately instead of blocking on a synchronous exact render."""
-        self._replace_source_arrays(
-            gray_f32, rgb_u8, rgba_u8, adopt_decoded_rgba=True)
+        """Compatibility slot for callers that provide an already-decoded image."""
+        if not self._guard_layer_transform():
+            return
+        document = getattr(self.layers_controller, "document", None)
+        if document is None:
+            self._replace_source_arrays(
+                gray_f32, rgb_u8, rgba_u8, adopt_decoded_rgba=True)
+        else:
+            self._accept_decoded_layer_source(gray_f32, rgba_u8, intent="place")
         self.schedule_render()
 
     def _install_shortcuts(self) -> None:

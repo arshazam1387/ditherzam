@@ -21,13 +21,12 @@ Reproduce:
 | Cache-hit mutation | near-instant | "unchanged" @4K warm **1.2 ms** | ✅ |
 | Exact Full / exports under JIT | byte-exact | exactness suites **172 passed** JIT-on (color-engine, render-cache, tonal fusion, scratch reuse) | ✅ |
 | Export isolated from preview state | exact, cap-independent | video/anim/batch/still snapshot dedicated contexts; preview cap never reaches export (Tasks 4.1/4.2 tests) | ✅ |
-| No stale paints / worker wedge | one terminal outcome | latest-wins + cooperative cancellation, atomic no-partial-publish (Tasks 3.6/4.1, memory 022) | ✅ |
+| No stale paints / worker wedge | one terminal outcome | latest-wins + cooperative cancellation, atomic no-partial-publish (Tasks 3.6/4.1) | ✅ |
 | Full regression suite | green | **915 passed / 0 failed** JIT-off | ✅ |
 
 ### Known-red (pre-existing, not from this program)
-Seven `special.py` float-array-index kernel tests fail under **JIT-on** (memory
-020); they predate Wave 1 and are unrelated to any high-res change. JIT-off is
-fully green.
+Seven `special.py` float-array-index kernel tests fail under **JIT-on**; they
+predate Wave 1 and are unrelated to any high-res change. JIT-off is fully green.
 
 ## Exact render — first vs warm (ms) / tracemalloc peak (MB)
 

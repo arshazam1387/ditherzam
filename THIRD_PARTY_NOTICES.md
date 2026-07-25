@@ -12,9 +12,8 @@ by ditherzam, per component license and attribution requirements.
 - **Status:** Provisional. No U-2-Net weights are committed to this
   repository or shipped in any build yet. Pretrained-weight redistribution
   under compatible terms requires written confirmation or equivalent
-  authoritative evidence before any weight is staged for release; see
-  `docs/superpowers/specs/2026-07-11-smart-subject-masking-design.md` for the
-  full hard-gate policy. If and when an approved, converted asset ships, its
+  authoritative evidence before any weight is staged for release (this is a
+  hard release gate). If and when an approved, converted asset ships, its
   exact manifest (source hash, conversion revision/opset, output hash,
   tensors, license/attribution, modification notice) is recorded alongside it
   under `assets/models/smart_mask/`, per
