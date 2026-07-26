@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+## 0.3.0-alpha — 2026-07-26
+
+### Added
+
+- Editable post-Look raster masks for every spatial layer, including Reveal All,
+  Hide All, transparency and Smart-derived creation, import/export, enable,
+  density, invert, fill, replacement confirmation, and exact compositing.
+- Bounded layer-document undo/redo history with stale-publication protection.
+- Deterministic mask brush painting with Reveal/Hide, size, hardness, strength,
+  document-coordinate mapping, dirty-region previews, and exact release renders.
+- Normal, red-overlay, and mask-only inspection modes that never affect export.
+- Smart-mask refinement with threshold, grow/shrink, feather, invert, cancellable
+  previews, and exact source-resolution confirmation.
+- Source-luminance, linear/radial gradient, Bayer/line/seeded-noise, and
+  endpoint-safe dithered raster-mask generators.
+- Exact Replace, Add, Subtract, and Intersect candidate combinations with capped
+  preview, exact confirmation, undo, cancellation, and stale-result protection.
+- Temporary rectangle/ellipse selections with soft document-coordinate coverage,
+  From Selection, and selection-restricted raster-mask editing.
+
+### Improved
+
+- Raster-mask creation now uses one source-bound typed candidate boundary across
+  Smart, imported, luminance, gradient, and pattern sources.
+- Hilbert/Riemersma feedback remains numerically stable across advertised control
+  ranges, and Triangular rendering is exact across JIT modes.
+- Previously duplicated Stippling, Artifact Modulation, Uniform Modulation X,
+  and Bit Tone defaults now produce distinct, deterministic styles.
+
 ## 0.2.0 — 2026-07-24
 
 ### Added

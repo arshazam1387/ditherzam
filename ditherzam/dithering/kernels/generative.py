@@ -38,6 +38,21 @@ def _hilbert_riemersma(img, threshold, queue_length, decay=np.float32(0.5),
     while side < max(h, w):
         side *= 2
     errors = np.zeros(queue_length, dtype=np.float32)
+    # The unbounded geometric history can amplify the stored errors many times
+    # over at the advertised high-decay/high-gain settings.  Keep the combined
+    # feedback gain at or below one: it retains the existing default weights
+    # (whose total is just below one) while making every UI endpoint stable.
+    weight_sum = np.float32(0.0)
+    history_weight = decay
+    for _ in range(queue_length):
+        weight_sum += history_weight
+        history_weight *= decay
+    feedback_scale = np.float32(1.0)
+    feedback_limited = False
+    if error_gain * weight_sum > np.float32(1.0):
+        feedback_scale = np.float32(1.0) / (error_gain * weight_sum)
+        feedback_limited = True
+    error_limit = max(np.float32(255.0), np.float32(255.0) * error_gain)
     out = np.empty_like(img)
     cursor = 0
     for index in range(side * side):
@@ -46,7 +61,7 @@ def _hilbert_riemersma(img, threshold, queue_length, decay=np.float32(0.5),
         if x >= w or y >= h:
             continue
         carried = np.float32(0.0)
-        weight = decay
+        weight = decay * feedback_scale
         for age in range(queue_length):
             slot = (cursor - 1 - age) % queue_length
             carried += errors[slot] * weight
@@ -54,7 +69,10 @@ def _hilbert_riemersma(img, threshold, queue_length, decay=np.float32(0.5),
         value = img[y, x] + carried
         quantized = np.float32(255.0) if value >= threshold + threshold_shift else np.float32(0.0)
         out[y, x] = quantized
-        errors[cursor] = (value - quantized) * error_gain
+        stored_error = (value - quantized) * error_gain
+        if feedback_limited:
+            stored_error = min(error_limit, max(-error_limit, stored_error))
+        errors[cursor] = stored_error
         cursor = (cursor + 1) % queue_length
     return out
 
@@ -163,15 +181,19 @@ def _triangular(img, cell_size, diagonal=np.float32(1.0), split=np.float32(2.0),
                 contrast=np.float32(1.0), matrix_turn=0):
     h, w = img.shape
     out = np.empty_like(img)
+    cell = int(cell_size)
     matrix = np.array(((0, 8, 2, 10), (12, 4, 14, 6),
                        (3, 11, 1, 9), (15, 7, 13, 5)), dtype=np.float32)
     for y in prange(h):
         for x in range(w):
-            col = int(np.float32(x) / cell_size)
-            row = int(np.float32(y) / cell_size)
-            fx = np.float32(x) / cell_size - col
-            fy = np.float32(y) / cell_size - row
-            upper = fx * diagonal + fy < np.float32(1.0)
+            col = x // cell
+            row = y // cell
+            local_x = x % cell
+            local_y = y % cell
+            # Compare in cell-space.  The normalized form accumulated different
+            # float32 rounding in Python and Numba at triangle boundaries.
+            upper = (np.float32(local_x) * diagonal + np.float32(local_y)
+                     < np.float32(cell))
             mr, mc = int(row % 4), int(col % 4)
             for _ in range(matrix_turn % 4):
                 mr, mc = mc, 3 - mr

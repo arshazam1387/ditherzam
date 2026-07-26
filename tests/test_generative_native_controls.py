@@ -69,6 +69,33 @@ def test_reaction_diffusion_default_is_not_fully_collapsed():
     assert 0.0 < black_fraction < 1.0
 
 
+@pytest.mark.parametrize("history", (1, 24))
+@pytest.mark.parametrize("decay", (10, 75))
+@pytest.mark.parametrize("gain", (0, 200))
+@pytest.mark.parametrize("local_threshold", (-64, 64))
+@pytest.mark.parametrize("direction", (0, 1))
+@pytest.mark.parametrize(
+    "image",
+    (
+        np.tile(np.linspace(0, 255, 48, dtype=np.float32), (48, 1)),
+        np.random.default_rng(23).integers(0, 256, (48, 48)).astype(np.float32),
+    ),
+    ids=("gradient", "noise"),
+)
+def test_hilbert_advertised_endpoints_stay_finite_and_tonal(
+    history, decay, gain, local_threshold, direction, image,
+):
+    """High Hilbert feedback must not overflow into a one-tone image."""
+    output = registry.get_entry("Hilbert (Riemersma)").func(
+        image, (history, decay, gain, local_threshold, direction), np.float32(127.5),
+    )
+
+    assert np.isfinite(output).all()
+    assert set(np.unique(output)).issubset({0.0, 255.0})
+    black_fraction = np.mean(output == 0.0)
+    assert 0.2 < black_fraction < 0.8
+
+
 def test_reaction_diffusion_iteration_control_uses_classic_x3_mapping(monkeypatch):
     # Restored pre-audit semantics: slider value runs 3 steps per unit,
     # clamped to [10, 60], so the default of 20 reproduces the classic look.

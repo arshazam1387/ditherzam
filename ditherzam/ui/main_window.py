@@ -712,6 +712,14 @@ class ImageEditor(QMainWindow):
             proxy_sink=self._install_layer_transform_proxy,
             proxy_geometry_sink=self._update_layer_transform_proxy,
             proxy_clear=self.viewport.clear_transform_proxy,
+            mask_caches_provider=lambda: self._mask_caches,
+            smart_mask_readiness_provider=self._layer_smart_mask_readiness,
+            mask_stroke_sink=self._install_mask_stroke_roi,
+            mask_stroke_clear=self.viewport.clear_mask_stroke_overlay,
+            refinement_preview_sink=self._show_smart_refinement_preview,
+            refinement_preview_clear=lambda: None,
+            selection_overlay_sink=self.viewport.install_selection_overlay,
+            selection_overlay_clear=self.viewport.clear_selection_overlay,
             parent=self,
         )
         self.layers_panel.export_requested.connect(self._export_layers)
@@ -725,6 +733,18 @@ class ImageEditor(QMainWindow):
             lambda *_args: QTimer.singleShot(
                 0, self._refresh_active_layer_mask_scope))
         self.layers_controller.place_requested.connect(self._place_layer_image)
+        self.layers_panel.import_mask_requested.connect(
+            self._import_active_raster_mask)
+        self.layers_panel.export_mask_requested.connect(
+            self._export_active_raster_mask)
+        self.layers_panel.selection_tool_requested.connect(
+            self.viewport.set_selection_tool)
+        self.layers_panel.selection_clear_requested.connect(
+            self._clear_temporary_selection)
+        self.layers_panel.selection_from_mask_requested.connect(
+            self.layers_controller.create_mask_from_selection)
+        self.layers_panel.gradient_tool_requested.connect(
+            lambda kind: self.viewport.set_gradient_tool(kind or None))
         self.viewport.layer_drag_started.connect(self._begin_layer_drag)
         self.viewport.layer_dragged.connect(self._drag_active_layer)
         self.viewport.layer_drag_finished.connect(self._finish_layer_drag)
@@ -738,6 +758,44 @@ class ImageEditor(QMainWindow):
             self._cancel_layer_transform)
         self.layers_controller.active_geometry_changed.connect(
             self._sync_layer_drag_target)
+        from ditherzam.layers import BrushMode, BrushSettings
+        self._mask_brush_settings = BrushSettings(
+            32.0, 100, 100, BrushMode.REVEAL)
+        self.viewport.mask_brush_started.connect(
+            self._begin_mask_brush_stroke)
+        self.viewport.mask_brush_moved.connect(
+            self.layers_controller.continue_mask_brush_stroke)
+        self.viewport.mask_brush_finished.connect(
+            self.layers_controller.finish_mask_brush_stroke)
+        self.viewport.mask_brush_cancel_requested.connect(
+            self.layers_controller.cancel_mask_brush_stroke)
+        self.viewport.mask_brush_size_delta_requested.connect(
+            self._change_mask_brush_size)
+        self.viewport.mask_brush_mode_swap_requested.connect(
+            self._swap_mask_brush_mode)
+        self.viewport.selection_dragged.connect(
+            self._apply_temporary_selection_drag)
+        self.viewport.gradient_dragged.connect(
+            self._apply_gradient_drag)
+        if hasattr(self.layers_panel, "edit_target_requested"):
+            self.layers_panel.edit_target_requested.connect(
+                self._set_viewport_edit_target)
+        self.edit_menu = self.menuBar().addMenu("&Edit")
+        self.undo_action = QAction("Undo", self)
+        self.undo_action.setObjectName("undo_layer_document_action")
+        self.undo_action.setShortcut(
+            QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self.layers_controller.undo)
+        self.edit_menu.addAction(self.undo_action)
+        self.redo_action = QAction("Redo", self)
+        self.redo_action.setObjectName("redo_layer_document_action")
+        self.redo_action.setShortcut(
+            QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self.layers_controller.redo)
+        self.edit_menu.addAction(self.redo_action)
+        self.layers_controller.history_changed.connect(
+            self._refresh_layer_history_actions)
+        self._refresh_layer_history_actions()
         self._layer_transform_session: (
             tuple[str, tuple[int, int, int, int]] | None
         ) = None
@@ -745,6 +803,116 @@ class ImageEditor(QMainWindow):
         self._layer_drag_id: str | None = None
         self._layer_resize_origin: tuple[int, int, int, int] | None = None
         self._layer_resize_id: str | None = None
+
+    def _set_viewport_edit_target(self, _layer_id: str, kind: str) -> None:
+        enabled = kind == "mask" and not self._layer_transform_active()
+        self.viewport.set_mask_brush_mode(
+            enabled, self._mask_brush_settings.size)
+
+    def _begin_mask_brush_stroke(self, x: float, y: float) -> None:
+        if not self.layers_controller.begin_mask_brush_stroke(
+            x, y, self._mask_brush_settings
+        ):
+            self.layers_panel.set_status(
+                "Mask brush needs a selected, enabled mask.", True)
+
+    def _apply_temporary_selection_drag(
+        self, shape: str, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        from ditherzam.layers.selection import (
+            SelectionOperation, SelectionShape)
+
+        operation_text = getattr(
+            self.layers_panel, "selection_operation_text",
+            lambda: "Replace")()
+        operation = SelectionOperation(operation_text.lower())
+        self.layers_controller.update_temporary_selection(
+            SelectionShape(shape), (x0, y0, x1, y1), operation)
+
+    def _clear_temporary_selection(self) -> None:
+        self.layers_controller.clear_temporary_selection()
+        self.viewport.clear_selection_overlay()
+
+    def _apply_gradient_drag(
+        self, kind: str, x0: float, y0: float, x1: float, y1: float
+    ) -> None:
+        from ditherzam.layers import GradientKind
+
+        try:
+            self.layers_controller.generate_gradient_from_document_points(
+                GradientKind(kind), x0, y0, x1, y1)
+        except ValueError:
+            self.layers_panel.set_status(
+                "Gradient drag must start and end on the active layer.", True)
+
+    def _change_mask_brush_size(self, direction: int) -> None:
+        from dataclasses import replace
+        size = max(1.0, min(
+            2048.0,
+            self._mask_brush_settings.size
+            * (1.1 if direction > 0 else 1.0 / 1.1)))
+        self._mask_brush_settings = replace(
+            self._mask_brush_settings, size=size)
+        self.viewport.set_mask_brush_size(size)
+
+    def _swap_mask_brush_mode(self) -> None:
+        from dataclasses import replace
+        from ditherzam.layers import BrushMode
+        mode = (
+            BrushMode.HIDE
+            if self._mask_brush_settings.mode is BrushMode.REVEAL
+            else BrushMode.REVEAL)
+        self._mask_brush_settings = replace(
+            self._mask_brush_settings, mode=mode)
+        self.layers_panel.set_status(
+            f"Mask brush: {mode.value.capitalize()}.")
+
+    def _layer_smart_mask_readiness(self, layer) -> tuple[bool, str]:
+        """Authorize Smart freeze from the live selected-editor lifecycle."""
+        panel = self.panel.smart_mask_panel
+        settings = layer.look.smart_mask
+        if panel.settings != settings:
+            return False, "Smart Mask settings are stale for the selected layer."
+        if not settings.enabled:
+            return False, "Enable Smart Mask before freezing it."
+        if settings.target is MaskTarget.WHOLE_IMAGE:
+            return True, ""
+        if not self._mask_dependencies_available():
+            return False, "Smart Mask model is unavailable."
+        if panel.status is not MaskPanelStatus.READY:
+            return False, "Smart Mask is not ready; wait for detection to finish."
+        source = layer.source
+        if source is None:
+            return False, "Smart Mask source is unavailable."
+        probability = source.probability
+        current = self._mask_probability
+        if (
+            self._mask_source != source.source_identity
+            or probability is None
+            or current is None
+            or current.identity.source != source.source_identity
+            or current.identity != probability.identity
+        ):
+            return False, "Smart Mask result is stale for the selected layer."
+        return True, ""
+
+    def _refresh_layer_history_actions(self) -> None:
+        controller = self.layers_controller
+        undo_label = controller.undo_label
+        redo_label = controller.redo_label
+        self.undo_action.setText(
+            "Undo" if undo_label is None else f"Undo {undo_label}")
+        self.redo_action.setText(
+            "Redo" if redo_label is None else f"Redo {redo_label}")
+        blocked = self._layer_transform_active()
+        self.undo_action.setEnabled(controller.can_undo and not blocked)
+        self.redo_action.setEnabled(controller.can_redo and not blocked)
+        self.undo_action.setToolTip(
+            "Undo the last layer or mask change."
+            if undo_label is None else f"Undo {undo_label}.")
+        self.redo_action.setToolTip(
+            "Redo the next layer or mask change."
+            if redo_label is None else f"Redo {redo_label}.")
 
     def _apply_layer_source(self, gray, rgba, probability=None) -> None:
         """Switch the editor view to a layer-owned immutable source.
@@ -788,6 +956,30 @@ class ImageEditor(QMainWindow):
         if path:
             self._start_layer_decode(path, intent="place")
 
+    def _import_active_raster_mask(self) -> None:
+        if self._layer_transform_active():
+            self.layers_panel.set_status(
+                "Confirm or cancel the active layer transform first.", True)
+            return
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Raster Mask", "", "PNG Images (*.png)")
+        if path:
+            self.layers_controller.import_active_raster_mask(path)
+
+    def _export_active_raster_mask(self) -> None:
+        if self._layer_transform_active():
+            self.layers_panel.set_status(
+                "Confirm or cancel the active layer transform first.", True)
+            return
+        from PySide6.QtWidgets import QFileDialog
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Raster Mask", "layer-mask.png", "PNG Images (*.png)")
+        if path:
+            self.layers_controller.export_active_raster_mask(path)
+
     def _apply_layer_preset(self, preset: dict) -> None:
         contents = preset_to_settings(preset)
         self._apply_preset(
@@ -814,7 +1006,12 @@ class ImageEditor(QMainWindow):
         self._settle.stop()
         self._zoom_debounce.stop()
         self._scheduler.invalidate()
-        frame = self._apply_active_layer_mask_overlay(rgb_or_rgba_u8)
+        from ditherzam.layers import InspectionMode
+        frame = (
+            self._apply_active_layer_mask_overlay(rgb_or_rgba_u8)
+            if self.layers_controller.inspection_mode is InspectionMode.NORMAL
+            else rgb_or_rgba_u8
+        )
         qimg = numpy_to_qimage(frame)
         self.last_qimage = qimg
         self.viewport.set_pixmap(
@@ -840,6 +1037,29 @@ class ImageEditor(QMainWindow):
             QRectF(*geometry),
             document_rect=QRectF(0, 0, width, height),
             opacity=(proxy.opacity / 100.0 if proxy.visible else 0.0),
+        )
+
+    def _install_mask_stroke_roi(self, _authority, rect, rgba) -> None:
+        x0, y0, x1, y1 = rect
+        pixmap = QPixmap.fromImage(numpy_to_qimage(rgba)).copy()
+        proxy = self.layers_controller._latest_proxy
+        if proxy is None or proxy.prefix_rgba is None:
+            return
+        raster_h, raster_w = proxy.prefix_rgba.shape[:2]
+        self.viewport.install_mask_stroke_roi(
+            pixmap, QRectF(x0, y0, x1 - x0, y1 - y0),
+            (raster_w, raster_h), self._layer_reference_size())
+
+    def _show_smart_refinement_preview(self, mask, _token: str) -> None:
+        """Show capped grayscale transaction coverage without publishing state."""
+        alpha = np.full(mask.shape, 255, dtype=np.uint8)
+        preview = np.dstack((mask, mask, mask, alpha))
+        qimg = numpy_to_qimage(preview)
+        self.last_qimage = qimg
+        self.viewport.set_pixmap(
+            QPixmap.fromImage(qimg),
+            logical_size=self._layer_reference_size(),
+            refit=False,
         )
 
     def _update_layer_transform_proxy(self, geometry) -> None:
@@ -960,6 +1180,7 @@ class ImageEditor(QMainWindow):
         if geometry is None or layer_id is None:
             return
         self._layer_transform_session = (layer_id, geometry)
+        self.layers_controller.begin_transform_transaction()
         self.layers_panel.set_transform_mode(True)
         self._set_layer_transform_ui_locked(True)
         self._sync_layer_drag_target()
@@ -971,6 +1192,7 @@ class ImageEditor(QMainWindow):
             return
         self._layer_transform_session = None
         self._clear_layer_gesture()
+        self.layers_controller.confirm_transform_transaction()
         self.layers_panel.set_transform_mode(False)
         self._set_layer_transform_ui_locked(False)
         self._sync_layer_drag_target()
@@ -981,11 +1203,9 @@ class ImageEditor(QMainWindow):
         session = self._layer_transform_session
         if session is None:
             return
-        layer_id, geometry = session
-        if self._active_layer_id() == layer_id:
-            self.layers_controller.resize_active_layer_to(*geometry)
         self._layer_transform_session = None
         self._clear_layer_gesture()
+        self.layers_controller.cancel_transform_transaction()
         self.layers_panel.set_transform_mode(False)
         self._set_layer_transform_ui_locked(False)
         self._sync_layer_drag_target()
@@ -1935,6 +2155,7 @@ class ImageEditor(QMainWindow):
             "zoom_out": self.viewport.zoom_out,
             "zoom_reset": self.viewport.reset_zoom,
             "full_quality_preview": self._do_full_quality_preview,
+            "toggle_mask_inspection": self._toggle_mask_inspection,
         }
         for action_name, slot in bindings.items():
             act = QAction(self)
@@ -1942,3 +2163,13 @@ class ImageEditor(QMainWindow):
             act.triggered.connect(slot)
             self.addAction(act)
             self._actions[action_name] = act
+
+    def _toggle_mask_inspection(self) -> None:
+        from PySide6.QtWidgets import QApplication, QAbstractSpinBox, QLineEdit
+
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QAbstractSpinBox)):
+            return
+        controller = getattr(self, "layers_controller", None)
+        if controller is not None:
+            controller.toggle_red_inspection()

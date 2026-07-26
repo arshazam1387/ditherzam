@@ -110,6 +110,7 @@ def test_transform_gesture_defers_panel_rebuild_and_thumbnail_invalidation(
     qapp_fixture, monkeypatch
 ):
     from ditherzam.ui.layers_panel import LayersPanel
+    from ditherzam.ui.layers_controller import _thumbnail_key
     from PySide6.QtGui import QPixmap
 
     panel = LayersPanel()
@@ -122,13 +123,7 @@ def test_transform_gesture_defers_panel_rebuild_and_thumbnail_invalidation(
         )
     )
     original = controller.document.layers[0]
-    original_key = (
-        original.id,
-        original.source.source_identity,
-        original.look.signature,
-        original.mask_revision,
-        original.transform,
-    )
+    original_key = _thumbnail_key(original)
     controller._thumbnail_cache[original_key] = QPixmap(1, 1)
     rebuilds = []
     monkeypatch.setattr(
@@ -348,3 +343,182 @@ def test_mutation_guard_blocks_graph_changes_but_allows_geometry(
 
     controller.set_transform(0, x=7, y=-3, width=6, height=5)
     assert controller.active_geometry() == (7, -3, 6, 5)
+
+
+def test_stale_terminal_cannot_clear_active_worker_or_consume_pending(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    controller = _controller(LayersPanel())
+    pending = (11, "document", 480, (), ())
+    controller._busy = True
+    controller._active_generation = 10
+    controller._pending_request = pending
+    starts = []
+    monkeypatch.setattr(
+        controller, "_start_request", lambda request: starts.append(request))
+
+    controller._terminal(9)
+    assert controller._busy is True
+    assert controller._pending_request is pending
+    assert starts == []
+
+    controller._terminal(10)
+    assert controller._busy is False
+    assert controller._pending_request is None
+    assert starts == [pending]
+
+    controller._terminal(9)
+    assert starts == [pending]
+
+
+def test_same_generation_old_mask_publication_is_rejected(
+    qapp_fixture, monkeypatch,
+):
+    from dataclasses import replace
+    from ditherzam.layers import RasterLayerMask
+    from ditherzam.ui.layers_controller import _publication_key
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    frames = []
+    controller = _controller(LayersPanel(), frame_sink=frames.append)
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    layer = controller.document.layers[0]
+    mask_a = RasterLayerMask(np.zeros((4, 4), np.uint8))
+    old_document = controller.document.replace(
+        0, replace(layer, raster_mask=mask_a))
+    generation = controller._generation
+    old_keys = tuple(
+        _publication_key(item, old_document, 480, generation)
+        for item in old_document.layers)
+    mask_b = mask_a.evolve(pixels=np.full((4, 4), 255, np.uint8))
+    controller._document = old_document.replace(
+        0, replace(old_document.layers[0], raster_mask=mask_b))
+    controller._active_generation = generation
+    controller._busy = True
+    frame = np.zeros((4, 4, 4), np.uint8)
+
+    controller._preview_finished((frame, (), None, old_keys), generation)
+
+    assert frames == []
+    assert controller._latest_proxy is None
+
+
+def test_discrete_layer_and_mask_mutations_are_undoable(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    controller = _controller(LayersPanel())
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    controller.set_name(0, "Ink")
+    controller.reveal_all_raster_mask(replace_existing=False)
+    assert controller.undo_label == "Edit Layer Mask"
+    assert controller.undo() is True
+    assert controller.document.layers[0].raster_mask is None
+    assert controller.undo() is True
+    assert controller.document.layers[0].name == "Layer 1"
+    assert controller.redo() is True
+    assert controller.document.layers[0].name == "Ink"
+
+
+def test_selection_and_editor_look_capture_do_not_enter_history(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    current = {"value": _preset(contrast=10)}
+    controller = _controller(
+        LayersPanel(), preset_provider=lambda: current["value"])
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    controller.place_source(*_source())
+    label = controller.undo_label
+    controller.activate_layer(0)
+    current["value"] = _preset(contrast=88)
+    controller.update_active_from_editor()
+    assert controller.undo_label == label
+
+
+def test_transform_transaction_records_confirm_once_and_cancel_never(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    controller = _controller(LayersPanel())
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    assert controller.begin_transform_transaction()
+    controller.move_active_layer_to(4, 5)
+    controller.move_active_layer_to(8, 9)
+    assert controller.confirm_transform_transaction()
+    assert controller.undo_label == "Transform Layer"
+    assert controller.undo()
+    assert controller.active_geometry() == (0, 0, 4, 4)
+
+    assert controller.begin_transform_transaction()
+    controller.move_active_layer_to(3, 2)
+    assert controller.cancel_transform_transaction()
+    assert controller.active_geometry() == (0, 0, 4, 4)
+    assert controller.redo_label == "Transform Layer"
+
+
+def test_direct_undo_redo_calls_are_blocked_during_transform_transaction(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    controller = _controller(LayersPanel())
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    controller.set_name(0, "Ink")
+    assert controller.begin_transform_transaction()
+    current = controller.document
+    assert controller.undo() is False
+    assert controller.redo() is False
+    assert controller.document is current
+    controller.cancel_transform_transaction()
+
+
+def test_history_move_invalidates_workers_thumbnails_and_proxy_not_look_cache(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    clears = []
+    controller = _controller(
+        LayersPanel(), proxy_clear=lambda: clears.append(True))
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    controller.set_name(0, "Ink")
+    fake_worker = type("Worker", (), {"cancel": lambda self: setattr(
+        self, "cancelled", True)})()
+    controller._workers.add(fake_worker)
+    controller._thumbnail_cache[("stale",)] = object()
+    controller._latest_proxy = object()
+    look_cache = controller._look_cache
+    assert controller.undo()
+    assert fake_worker.cancelled is True
+    assert controller._thumbnail_cache == {}
+    assert controller._latest_proxy is None
+    assert controller._look_cache is look_cache
+    assert clears
+
+
+def test_successful_open_resets_history_but_failed_open_preserves_it(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    controller = _controller(LayersPanel())
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    controller.initialize_source_layer()
+    controller.set_name(0, "Ink")
+    assert controller.can_undo
+    controller.open_document("bad", "bad")
+    assert controller.can_undo
+    controller.open_document(*_source())
+    assert not controller.can_undo

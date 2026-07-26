@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from ditherzam.dithering import registry
+from ditherzam.dithering.parameters import parameter_specs
 from ditherzam.dithering.kernels import ordered, pattern  # noqa: F401
 
 
@@ -125,9 +126,20 @@ def test_block_tone_default_has_useful_tonal_progression():
 
 
 def test_related_default_styles_are_not_duplicate_effects(texture):
-    # Bayer-Ordered / Bayer-Matrix 4x4 / Bit Tone intentionally share the
-    # classic 4x4 Bayer output at defaults (restored by request); they only
-    # diverge once their native sliders move.
+    # Bayer-Ordered remains the explicit Bayer-Matrix 4x4 alias, while Bit
+    # Tone has its own digital bit-cell at its default Tone Size.
+    defaults = lambda name: tuple(
+        spec.default for spec in parameter_specs(registry.get_entry(name))[6:]
+    )
+    bayer_ordered = registry.get_entry("Bayer-Ordered").func(
+        texture, defaults("Bayer-Ordered"), 128)
+    bayer_4 = registry.get_entry("Bayer-Matrix 4x4").func(
+        texture, defaults("Bayer-Matrix 4x4"), 128)
+    bit_tone = registry.get_entry("Bit Tone").func(
+        texture, defaults("Bit Tone"), 128)
+    np.testing.assert_array_equal(bayer_ordered, bayer_4)
+    assert np.any(bit_tone != bayer_4)
+
     halftone = registry.get_entry("Halftone-Ordered").func(
         texture, ORDERED_DEFAULTS["Halftone-Ordered"], 128)
     dot_screen = registry.get_entry("Dot Screen").func(

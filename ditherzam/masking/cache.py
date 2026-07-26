@@ -22,7 +22,9 @@ from ditherzam.render_cache import MAX_EDITOR_RETAINED_CACHE_BYTES, MIB, _group_
 
 
 DEFAULT_MASK_CACHE_BUDGET_BYTES = 64 * MIB
-DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES = 128 * MIB
+DEFAULT_LAYER_LOOK_CACHE_BUDGET_BYTES = 32 * MIB
+DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES = 96 * MIB
+DEFAULT_UNMASKED_RENDER_CACHE_BUDGET_BYTES = 160 * MIB
 
 
 @dataclass(frozen=True)
@@ -30,9 +32,10 @@ class EditorCacheAllocation:
     """Budgets for the two cache instances owned by one image editor."""
     render_bytes: int
     mask_bytes: int
+    layer_look_bytes: int = DEFAULT_LAYER_LOOK_CACHE_BUDGET_BYTES
 
     def __post_init__(self) -> None:
-        values = (self.render_bytes, self.mask_bytes)
+        values = (self.render_bytes, self.mask_bytes, self.layer_look_bytes)
         if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
             raise ValueError("cache allocations must be integer byte counts")
         if any(value < 0 for value in values):
@@ -42,7 +45,8 @@ class EditorCacheAllocation:
 
 
 def editor_cache_allocation(mask_enabled: bool, *, render_bytes: int | None = None,
-                            mask_bytes: int | None = None) -> EditorCacheAllocation:
+                            mask_bytes: int | None = None,
+                            layer_look_bytes: int | None = None) -> EditorCacheAllocation:
     """Return the validated split an editor must use for its owned caches.
 
     SM-12 must instantiate both actual caches from this result and verify their
@@ -50,14 +54,19 @@ def editor_cache_allocation(mask_enabled: bool, *, render_bytes: int | None = No
     """
     if not isinstance(mask_enabled, bool):
         raise ValueError("mask_enabled must be bool")
-    allocation = EditorCacheAllocation(
-        (DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES if mask_enabled else MAX_EDITOR_RETAINED_CACHE_BYTES)
-        if render_bytes is None else render_bytes,
-        (DEFAULT_MASK_CACHE_BUDGET_BYTES if mask_enabled else 0)
-        if mask_bytes is None else mask_bytes,
-    )
-    if not mask_enabled and allocation.mask_bytes != 0:
+    resolved_mask_bytes = (
+        DEFAULT_MASK_CACHE_BUDGET_BYTES if mask_enabled else 0
+    ) if mask_bytes is None else mask_bytes
+    if not mask_enabled and resolved_mask_bytes != 0:
         raise ValueError("mask-disabled editors must allocate zero mask-cache bytes")
+    allocation = EditorCacheAllocation(
+        (DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES if mask_enabled
+         else DEFAULT_UNMASKED_RENDER_CACHE_BUDGET_BYTES)
+        if render_bytes is None else render_bytes,
+        resolved_mask_bytes,
+        (DEFAULT_LAYER_LOOK_CACHE_BUDGET_BYTES
+         if layer_look_bytes is None else layer_look_bytes),
+    )
     return allocation
 
 
