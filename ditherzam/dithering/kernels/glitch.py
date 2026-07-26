@@ -161,6 +161,34 @@ def _waveform_alt(img, thr, blend, base_freq, tone_freq, amplitude, phase, spaci
 
 
 @njit(cache=True)
+def _artifact_modulation(img, thr, amount, base_freq, tone_freq, amplitude, phase, spacing):
+    """Waveform modulation broken into stepped horizontal artifact bands."""
+    h, w = img.shape
+    out = np.empty_like(img)
+    for y in range(h):
+        for x in range(w):
+            gx = 0.0
+            if 0 < x < w - 1:
+                gx = (img[y, x + 1] - img[y, x - 1]) / 255.0
+            sp = spacing / 100.0
+            # VHS-like artifacts are phase discontinuities in short scanline
+            # bands, rather than the smooth image-gradient blend used by
+            # Waveform Alt. ``amount`` controls their displacement.
+            band = (y // 4) % 3 - 1
+            artifact_phase = band * amount * 0.65
+            p = (x * (base_freq / 100.0 +
+                      (1.0 - img[y, x] / 255.0) * tone_freq / 100.0) / sp +
+                 gx * amount + artifact_phase + phase * math.pi / 180.0)
+            s = math.sin(p)
+            s = 1.0 - (1.0 - s) * sp * sp
+            if s < -1.0:
+                s = -1.0
+            v = 127.5 + s * amplitude
+            out[y, x] = 255.0 if img[y, x] >= v else 0.0
+    return out
+
+
+@njit(cache=True)
 def _ordered_modulation(img, thr, param, base, frequency, amplitude, xweight, phase, spacing):
     h, w = img.shape
     mh, mw = base.shape
@@ -289,8 +317,8 @@ def _contrast_aware(img, thr, line_scale, horizontal, contrast_gain, contrast_ce
                    param_sliders=("dither_parameter_slider", "artifact_base_frequency_slider", "artifact_tone_frequency_slider", "artifact_amplitude_slider", "artifact_phase_slider", "wave_line_spacing_slider"))
 def artifact_modulation(image_array, parameter, luminance_threshold_value):
     p, base, tone, amp, phase, spacing = _unpack6(parameter, 1, 5, 10, 128, 0, 100)
-    return _waveform_alt(image_array.astype(np.float32),
-                         luminance_threshold_value, float(p), float(base), float(tone), _half_span(amp), float(phase), float(spacing))
+    return _artifact_modulation(image_array.astype(np.float32),
+                               luminance_threshold_value, float(p), float(base), float(tone), _half_span(amp), float(phase), float(spacing))
 
 
 # ── Kernel: Atkinson-VHS · Glitch · dims=2 · Line Count 1-20-1 ──
@@ -350,7 +378,7 @@ def uniform_modulation_y(image_array, parameter, luminance_threshold_value):
                                   "bleed_fraction_slider", "diffusion_error_gain_slider", "diffusion_decay_slider",
                                   "diffusion_line_spacing_slider"))
 def uniform_modulation_x(image_array, parameter, luminance_threshold_value):
-    ls, smooth, bleed, gain, decay, spacing = _unpack6(parameter, 1, 0, 0, 100, 0, 100)
+    ls, smooth, bleed, gain, decay, spacing = _unpack6(parameter, 1, 35, 20, 100, 8, 100)
     return _uniform_modulation(image_array.astype(np.float32),
                                luminance_threshold_value,
                                int(ls), float(smooth) / 100.0, float(bleed) / 100.0, False, float(gain) / 100.0, float(decay) / 100.0, float(spacing) / 100.0)

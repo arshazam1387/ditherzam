@@ -145,5 +145,61 @@ def test_layers_panel_preserves_canvas_with_compact_width_and_tab_order(qapp_fix
     assert panel.maximumWidth() == 320
     assert panel.focusProxy() is panel.layer_list
     assert next_focusable(panel.new_blank_btn) is panel.place_image_btn
-    assert next_focusable(panel.opacity_slider) is panel.x_spin
+    assert next_focusable(panel.opacity_slider) is panel.create_mask_btn
+    assert next_focusable(panel.mask_density_slider) is panel.inspection_combo
+    assert next_focusable(panel.inspection_combo) is panel.x_spin
     assert next_focusable(panel.fit_btn) is panel.transform_btn
+
+
+def test_mask_section_state_signals_accessibility_and_transform_guard(qapp_fixture):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    panel = LayersPanel()
+    panel.set_layers(
+        [("a", "Layer 1", True, 100, "normal", 0, 0, 4, 4)], 0)
+    panel.set_mask_state(False)
+    assert panel.mask_state_label.text() == "No raster mask"
+    assert panel.reveal_mask_btn.isEnabled()
+    assert not panel.mask_enabled_check.isEnabled()
+    assert not panel.mask_density_slider.isEnabled()
+
+    emitted = []
+    panel.reveal_mask_requested.connect(
+        lambda index, replace: emitted.append(("reveal", index, replace)))
+    panel.hide_mask_requested.connect(
+        lambda index, replace: emitted.append(("hide", index, replace)))
+    panel.transparency_mask_requested.connect(
+        lambda index, replace: emitted.append(("alpha", index, replace)))
+    panel.mask_enabled_changed.connect(
+        lambda index, enabled: emitted.append(("enabled", index, enabled)))
+    panel.mask_density_changed.connect(
+        lambda index, density: emitted.append(("density", index, density)))
+
+    panel.reveal_mask_btn.click()
+    panel.hide_mask_btn.click()
+    panel.transparency_mask_btn.click()
+    assert emitted[:3] == [
+        ("reveal", 0, True), ("hide", 0, True), ("alpha", 0, True)]
+
+    panel.set_mask_state(True, enabled=False, density=37)
+    assert panel.mask_state_label.text() == "Raster mask disabled · 37%"
+    assert panel.mask_enabled_check.isEnabled()
+    assert panel.mask_density_slider.isEnabled()
+    assert panel.mask_density_label.text() == "37%"
+    panel.mask_enabled_check.click()
+    panel.mask_density_slider.setValue(42)
+    assert emitted[-2:] == [("enabled", 0, True), ("density", 0, 42)]
+
+    assert panel.transparency_mask_btn.accessibleName() == (
+        "Create raster mask from source transparency")
+    assert panel.mask_enabled_check.accessibleName() == (
+        "Enable selected layer raster mask")
+    assert panel.mask_density_slider.accessibleName() == (
+        "Selected layer raster mask density")
+
+    panel.set_transform_mode(True)
+    assert all(not widget.isEnabled() for widget in (
+        panel.reveal_mask_btn, panel.hide_mask_btn,
+        panel.transparency_mask_btn, panel.mask_enabled_check,
+        panel.mask_density_slider,
+    ))

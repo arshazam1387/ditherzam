@@ -1,4 +1,3 @@
-import importlib
 import sys
 
 import numpy as np
@@ -198,10 +197,20 @@ def test_document_renderer_resizes_layer_before_placing_it():
     assert np.count_nonzero(outside) == 0
 
 
-def test_layers_core_imports_without_qt(monkeypatch):
-    for name in tuple(sys.modules):
-        if name == "ditherzam.layers" or name.startswith("ditherzam.layers."):
-            sys.modules.pop(name)
-    monkeypatch.setitem(sys.modules, "PySide6", None)
-    module = importlib.import_module("ditherzam.layers")
-    assert hasattr(module, "LayerDocument")
+def test_layers_core_imports_without_qt():
+    import subprocess
+
+    script = """
+import sys
+sys.modules["PySide6"] = None
+import ditherzam.layers
+assert hasattr(ditherzam.layers, "LayerDocument")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

@@ -3,6 +3,7 @@ from ditherzam.ui.hotkeys import get_hotkeys
 ACTIONS = {
     "change_theme", "export_image", "copy_to_clipboard", "import_image",
     "restart_application", "zoom_in", "zoom_out", "zoom_reset", "show_help",
+    "toggle_mask_inspection",
     "cycle_theme", "open_image", "save", "help", "full_quality_preview",
 }
 

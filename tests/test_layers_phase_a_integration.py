@@ -401,6 +401,51 @@ def test_transform_blocks_public_source_replacement_and_reentry(qapp_fixture):
     assert editor.layers_controller.active_geometry() == (0, 0, 12, 10)
 
 
+def test_edit_menu_history_actions_use_standard_shortcuts_and_dynamic_labels(
+        qapp_fixture, monkeypatch
+):
+    from PySide6.QtGui import QKeySequence
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor()
+    monkeypatch.setattr(editor.layers_controller, "request_preview", lambda: None)
+    gray = np.zeros((3, 4), np.float32)
+    rgba = np.zeros((3, 4, 4), np.uint8)
+    rgba[..., 3] = 255
+    editor.layers_controller.open_document(gray, rgba)
+    assert not editor.undo_action.isEnabled()
+    editor.layers_controller.set_name(0, "Ink")
+    assert editor.undo_action.text() == "Undo Rename Layer"
+    assert editor.undo_action.shortcut().matches(
+        QKeySequence.StandardKey.Undo)
+    editor.undo_action.trigger()
+    assert editor.layers_controller.document.layers[0].name == "Layer 1"
+    assert editor.redo_action.text() == "Redo Rename Layer"
+    assert editor.redo_action.shortcut().matches(
+        QKeySequence.StandardKey.Redo)
+
+
+def test_transform_confirm_is_one_history_entry_and_actions_are_blocked(
+        qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor()
+    monkeypatch.setattr(editor.layers_controller, "request_preview", lambda: None)
+    gray = np.zeros((3, 4), np.float32)
+    rgba = np.zeros((3, 4, 4), np.uint8)
+    rgba[..., 3] = 255
+    editor.layers_controller.open_document(gray, rgba)
+    editor._start_layer_transform(0)
+    editor.layers_controller.move_active_layer_to(4, 5)
+    editor.layers_controller.move_active_layer_to(8, 9)
+    assert not editor.undo_action.isEnabled()
+    editor._confirm_layer_transform()
+    assert editor.undo_action.text() == "Undo Transform Layer"
+    assert editor.layers_controller.undo()
+    assert editor.layers_controller.active_geometry() == (0, 0, 4, 3)
+
+
 def test_transform_disables_editor_mutations_until_cancel(qapp_fixture):
     from ditherzam.ui.main_window import ImageEditor
 

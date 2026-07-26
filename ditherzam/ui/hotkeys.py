@@ -17,6 +17,7 @@ _BINDINGS = {
     "save": "{mod}+S",
     "help": "{mod}+H",
     "full_quality_preview": "{mod}+Return",
+    "toggle_mask_inspection": "\\",
 }
 
 

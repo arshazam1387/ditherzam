@@ -33,6 +33,15 @@ _CLUSTER4_IDX = np.array([[12, 5, 6, 13],
                           [15, 10, 9, 14]], dtype=np.float32)
 _CLUSTER4 = ((_CLUSTER4_IDX + 0.5) / 16.0 * 255.0).astype(np.float32)
 
+# Bit Tone grows a readable binary bit-cell, rather than reusing the Bayer
+# ranking.  Bit-reversing the four-bit Bayer ranks fills the low bit planes
+# first, yielding a crisp digital texture distinct from ordered Bayer dots.
+_BIT_TONE4_IDX = np.array([[0, 1, 4, 5],
+                           [3, 2, 7, 6],
+                           [12, 13, 8, 9],
+                           [15, 14, 11, 10]], dtype=np.float32)
+_BIT_TONE4 = ((_BIT_TONE4_IDX + 0.5) / 16.0 * 255.0).astype(np.float32)
+
 
 @njit(cache=True, parallel=True)
 def _ordered(img, thresholds, levels=2, contrast=100.0, bias=0.0,
@@ -304,7 +313,7 @@ def random_ordered(image_array, parameter, luminance_threshold_value):
                    param_sliders=_PRIMARY_ORDERED_SLIDERS)
 def bit_tone(image_array, parameter, luminance_threshold_value):
     img, dot, ox, oy = _input_controls(image_array, parameter, 1)
-    return _unphase(_bit_tone(img, int(dot), _BAYER4), ox, oy)
+    return _unphase(_bit_tone(img, int(dot), _BIT_TONE4), ox, oy)
 
 
 # ── Kernel: Mosaic · Ordered Dither · dims=2 · Block Size 1-50-10 ──

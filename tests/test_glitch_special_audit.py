@@ -77,20 +77,24 @@ def test_each_native_control_changes_at_least_one_audit_fixture(name, audit_imag
 
 
 def test_upgraded_defaults_are_not_duplicate_styles(audit_images):
-    # Artifact Modulation / Waveform Alt and Modulated Diffuse X / Uniform
-    # Modulation X share their classic default output by request (restored
-    # pre-audit defaults); they diverge once native sliders move.
+    # Similar-looking styles must still offer genuinely different default
+    # marks. Check the gradient, edge, and deterministic texture fixtures so
+    # a difference cannot hide only in a single image type.
     pairs = (
-        ("Modulated Diffuse Y", "Uniform Modulation Y"),
-        ("Diagonal", "Wireframe Alt"),
+        ("Stippling", "Noise"),
+        ("Artifact Modulation", "Waveform Alt"),
+        ("Modulated Diffuse X", "Uniform Modulation X"),
+        ("Bit Tone", "Bayer-Matrix 4x4"),
     )
-    texture = audit_images[-1]
+    fixtures = (audit_images[0], audit_images[2], audit_images[-1])
     for left, right in pairs:
         le = registry.get_entry(left)
         re = registry.get_entry(right)
         lp = tuple(s.default for s in parameter_specs(le)[6:])
         rp = tuple(s.default for s in parameter_specs(re)[6:])
-        assert np.any(le.func(texture.copy(), lp, 127.5) != re.func(texture.copy(), rp, 127.5))
+        for fixture in fixtures:
+            assert np.any(le.func(fixture.copy(), lp, 127.5) !=
+                          re.func(fixture.copy(), rp, 127.5)), (left, right)
 
 
 def test_geometric_spacing_spreads_marks(audit_images):

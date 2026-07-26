@@ -86,17 +86,27 @@ def _block_tone(img, dot):
     return out
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _stippling(img, density):
-    np.random.seed(0)
+    """Evenly dispersed, deterministic stipple dots.
+
+    Stippling needs a different character from the independently sampled
+    ``Noise`` effect: an interleaved-gradient threshold scatters dots without
+    the clumps and voids of white noise, while still making dot density follow
+    the local darkness.
+    """
     h, w = img.shape
     scale = density if density >= 1 else 1
     out = np.empty_like(img)
-    for y in range(h):
+    for y in prange(h):
         for x in range(w):
             darkness = 1.0 - img[y, x] / 255.0
             p = darkness / (1.0 + (scale - 1) * 0.15)
-            out[y, x] = 0.0 if np.random.random() < p else 255.0
+            # Interleaved gradient noise: a low-discrepancy, coordinate-only
+            # sequence that gives stipple dots a visibly even distribution.
+            v = (0.06711056 * x + 0.00583715 * y) % 1.0
+            threshold = (52.9829189 * v) % 1.0
+            out[y, x] = 0.0 if threshold < p else 255.0
     return out
 
 

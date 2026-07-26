@@ -84,12 +84,18 @@ def test_atomic_lru_oversized_and_metrics_are_bounded():
 
 def test_editor_allocation_preserves_unmasked_default_and_splits_masked_budget():
     assert DEFAULT_CACHE_BUDGET_BYTES == 192 * MIB
-    assert editor_cache_allocation(False).render_bytes == 192 * MIB
-    assert editor_cache_allocation(False).mask_bytes == 0
+    unmasked = editor_cache_allocation(False)
+    assert unmasked.render_bytes == 160 * MIB
+    assert unmasked.mask_bytes == 0
+    assert unmasked.layer_look_bytes == 32 * MIB
     masked = editor_cache_allocation(True)
-    assert masked.render_bytes == 128 * MIB
+    assert masked.render_bytes == 96 * MIB
     assert masked.mask_bytes == DEFAULT_MASK_CACHE_BUDGET_BYTES == 64 * MIB
-    assert masked.render_bytes + masked.mask_bytes == 192 * MIB
+    assert masked.layer_look_bytes == 32 * MIB
+    assert (
+        masked.render_bytes + masked.mask_bytes + masked.layer_look_bytes
+        == 192 * MIB
+    )
 
 
 def test_editor_allocation_rejects_invalid_custom_aggregate():
@@ -99,7 +105,10 @@ def test_editor_allocation_rejects_invalid_custom_aggregate():
     with pytest.raises(ValueError, match="zero"):
         editor_cache_allocation(False, render_bytes=128 * MIB, mask_bytes=64 * MIB)
     custom = editor_cache_allocation(True, render_bytes=100 * MIB, mask_bytes=50 * MIB)
-    assert custom.render_bytes + custom.mask_bytes == 150 * MIB
+    assert (
+        custom.render_bytes + custom.mask_bytes + custom.layer_look_bytes
+        == 182 * MIB
+    )
 
 
 def test_inference_payload_is_charged_and_oversized_probability_not_retained():

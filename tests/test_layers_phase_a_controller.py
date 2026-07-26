@@ -129,7 +129,7 @@ def test_export_uses_current_document_graph(qapp_fixture, monkeypatch, tmp_path)
     seen = []
     monkeypatch.setattr(
         module, "render_layer_document",
-        lambda document, registry: seen.append(document)
+        lambda document, registry, **_kwargs: seen.append(document)
         or np.zeros((3, 4, 4), np.uint8),
     )
     monkeypatch.setattr(

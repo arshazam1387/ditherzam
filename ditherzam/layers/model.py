@@ -12,6 +12,7 @@ from ..masking.contracts import ProbabilityMap, SourceIdentity, source_identity
 BLEND_MODES = frozenset(
     {"normal", "multiply", "screen", "overlay", "difference"}
 )
+_UNCHANGED = object()
 
 
 def _index(value, length: int, label: str = "index") -> int:
@@ -76,6 +77,112 @@ class LayerSource:
         object.__setattr__(self, "source_identity", identity)
 
 
+class RasterLayerMask:
+    """Immutable source-coordinate coverage for one or more spatial layers."""
+
+    __slots__ = ("_pixels", "_enabled", "_density", "_revision")
+    __hash__ = None
+
+    def __init__(
+        self,
+        pixels: np.ndarray,
+        enabled: bool = True,
+        density: int = 100,
+        revision: int = 0,
+    ) -> None:
+        if not isinstance(pixels, np.ndarray) or pixels.dtype != np.uint8:
+            raise ValueError("pixels must be a uint8 ndarray")
+        if pixels.ndim != 2 or not pixels.size:
+            raise ValueError("pixels must be a non-empty 2-D array")
+        if type(enabled) is not bool:
+            raise ValueError("enabled must be a bool")
+        if isinstance(density, bool) or not isinstance(density, int):
+            raise ValueError("density must be an integer")
+        if not 0 <= density <= 100:
+            raise ValueError("density must be within 0..100")
+        if (
+            isinstance(revision, bool)
+            or not isinstance(revision, int)
+            or revision < 0
+        ):
+            raise ValueError("revision must be a non-negative integer")
+        contiguous = np.array(pixels, dtype=np.uint8, order="C", copy=True)
+        immutable = np.frombuffer(
+            contiguous.tobytes(order="C"), dtype=np.uint8).reshape(contiguous.shape)
+        object.__setattr__(self, "_pixels", immutable)
+        object.__setattr__(self, "_enabled", enabled)
+        object.__setattr__(self, "_density", density)
+        object.__setattr__(self, "_revision", revision)
+
+    def __setattr__(self, _name, _value) -> None:
+        raise AttributeError("RasterLayerMask is immutable")
+
+    @property
+    def pixels(self) -> np.ndarray:
+        return self._pixels
+
+    @property
+    def enabled(self) -> bool:
+        return self._enabled
+
+    @property
+    def density(self) -> int:
+        return self._density
+
+    @property
+    def revision(self) -> int:
+        return self._revision
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, RasterLayerMask):
+            return NotImplemented
+        return (
+            self.enabled == other.enabled
+            and self.density == other.density
+            and self.revision == other.revision
+            and np.array_equal(self.pixels, other.pixels)
+        )
+
+    @classmethod
+    def _reuse_pixels(
+        cls, pixels: np.ndarray, enabled: bool, density: int, revision: int
+    ) -> RasterLayerMask:
+        value = object.__new__(cls)
+        object.__setattr__(value, "_pixels", pixels)
+        object.__setattr__(value, "_enabled", enabled)
+        object.__setattr__(value, "_density", density)
+        object.__setattr__(value, "_revision", revision)
+        return value
+
+    def evolve(
+        self,
+        *,
+        pixels=_UNCHANGED,
+        enabled=_UNCHANGED,
+        density=_UNCHANGED,
+    ) -> RasterLayerMask:
+        """Return one validated replacement and advance its revision once."""
+        if pixels is _UNCHANGED:
+            pixels = self.pixels
+        if enabled is _UNCHANGED:
+            enabled = self.enabled
+        if density is _UNCHANGED:
+            density = self.density
+        if pixels is self.pixels:
+            if type(enabled) is not bool:
+                raise ValueError("enabled must be a bool")
+            if (
+                isinstance(density, bool)
+                or not isinstance(density, int)
+                or not 0 <= density <= 100
+            ):
+                raise ValueError("density must be an integer within 0..100")
+            return self._reuse_pixels(
+                self.pixels, enabled, density, self.revision + 1)
+        return RasterLayerMask(
+            pixels, enabled=enabled, density=density, revision=self.revision + 1)
+
+
 @dataclass(frozen=True)
 class LayerTransform:
     x: float = 0.0
@@ -112,6 +219,7 @@ class Layer:
     source: LayerSource | None = None
     transform: LayerTransform = LayerTransform()
     mask_revision: int = 0
+    raster_mask: RasterLayerMask | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.id, str) or not self.id.strip():
@@ -138,6 +246,13 @@ class Layer:
             or self.mask_revision < 0
         ):
             raise ValueError("mask_revision must be a non-negative integer")
+        if self.raster_mask is not None:
+            if not isinstance(self.raster_mask, RasterLayerMask):
+                raise ValueError("raster_mask must be a RasterLayerMask or None")
+            if self.source is None:
+                raise ValueError("raster_mask requires a layer source")
+            if self.raster_mask.pixels.shape != self.source.gray.shape:
+                raise ValueError("raster_mask dimensions must match the layer source")
 
 
 @dataclass(frozen=True)
