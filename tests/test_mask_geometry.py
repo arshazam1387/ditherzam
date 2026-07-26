@@ -7,6 +7,7 @@ from ditherzam.masking.geometry import (
     RESIZE_ALGORITHM_VERSION,
     MaskGeometryError,
     derive_master_mask,
+    derive_preview_mask,
     expand_contract,
     feather,
     resize_mask_area,
@@ -131,6 +132,95 @@ def test_area_resize_is_deterministic_immutable_and_preserves_thin_coverage() ->
     assert np.any((first > 0.0) & (first < 1.0))
     assert first.dtype == np.float32 and first.flags.c_contiguous
     assert not first.flags.writeable
+
+
+def test_derive_upsamples_capped_probability_to_source_shape() -> None:
+    # A capped probability map (bounded retained resolution for very large
+    # sources) must derive a master mask at full source resolution, identical
+    # to deriving from the explicitly bilinear-upsampled probability.
+    rng = np.random.default_rng(20260716)
+    capped = rng.random((9, 12)).astype(np.float32)
+    mask = derive_master_mask(
+        capped, sensitivity=50, target=MaskTarget.SUBJECT, source_shape=(27, 36)
+    )
+    assert mask.shape == (27, 36)
+    assert not mask.flags.writeable
+
+    from PIL import Image
+
+    upsampled = np.asarray(
+        Image.fromarray(capped, mode="F").resize((36, 27), Image.Resampling.BILINEAR),
+        dtype=np.float32,
+    )
+    expected = derive_master_mask(
+        np.clip(upsampled, 0.0, 1.0), sensitivity=50, target=MaskTarget.SUBJECT
+    )
+    assert np.array_equal(mask, expected)
+
+    # Exact-shape probability is untouched: no resample, byte-identical path.
+    exact = derive_master_mask(
+        capped, sensitivity=50, target=MaskTarget.SUBJECT, source_shape=(9, 12)
+    )
+    assert np.array_equal(exact, derive_master_mask(capped, sensitivity=50, target=MaskTarget.SUBJECT))
+
+
+def test_preview_derivation_targets_preview_shape_and_scales_radii() -> None:
+    prob = np.zeros((32, 32), dtype=np.float32)
+    prob[8:24, 8:24] = 1.0
+    source_shape = (320, 320)
+    target_shape = (32, 32)  # ratio 0.1
+    preview = derive_preview_mask(
+        prob, sensitivity=50, target=MaskTarget.SUBJECT,
+        expansion_px=40, feather_px=8,
+        source_shape=source_shape, target_shape=target_shape,
+    )
+    assert preview.shape == target_shape
+    assert preview.dtype == np.float32
+    assert not preview.flags.writeable
+    # ratio 0.1: expansion 40 -> round(4.0)=4, feather 8 -> round(0.8)=1.
+    direct = derive_master_mask(
+        prob, sensitivity=50, target=MaskTarget.SUBJECT,
+        expansion_px=4, feather_px=1, source_shape=target_shape,
+    )
+    assert np.array_equal(preview, direct)
+
+
+def test_preview_derivation_rounds_subpixel_radius_to_zero() -> None:
+    prob = np.zeros((32, 32), dtype=np.float32)
+    prob[8:24, 8:24] = 1.0
+    # 8 px feather at a 3750 px source is sub-pixel at an 8 px preview.
+    preview = derive_preview_mask(
+        prob, sensitivity=50, target=MaskTarget.SUBJECT,
+        expansion_px=0, feather_px=8,
+        source_shape=(3750, 3750), target_shape=(8, 8),
+    )
+    hard = derive_master_mask(
+        prob, sensitivity=50, target=MaskTarget.SUBJECT,
+        expansion_px=0, feather_px=0, source_shape=(8, 8),
+    )
+    assert np.array_equal(preview, hard)
+    assert set(np.unique(preview)).issubset({0.0, 1.0})
+
+
+def test_preview_derivation_whole_image_is_ones_at_target_shape() -> None:
+    whole = derive_preview_mask(
+        None, sensitivity=50, target=MaskTarget.WHOLE_IMAGE,
+        source_shape=(400, 400), target_shape=(20, 40),
+    )
+    assert whole.shape == (20, 40)
+    assert np.all(whole == 1.0)
+
+
+def test_preview_derivation_clamps_expansion_to_valid_range() -> None:
+    prob = np.zeros((16, 16), dtype=np.float32)
+    prob[4:12, 4:12] = 1.0
+    # ratio 2.0 would scale +64 to +128, outside EXPANSION_MAX_PX; must clamp.
+    preview = derive_preview_mask(
+        prob, sensitivity=50, target=MaskTarget.SUBJECT,
+        expansion_px=64, feather_px=0,
+        source_shape=(16, 16), target_shape=(32, 32),
+    )
+    assert preview.shape == (32, 32)
 
 
 @pytest.mark.parametrize("call", [

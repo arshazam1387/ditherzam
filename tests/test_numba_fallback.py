@@ -18,13 +18,26 @@ import sys
 sys.stdout.write(",".join(str(int(v)) for v in out.ravel().tolist()))
 """
 
+_TRIANGULAR_PARITY_SCRIPT = r"""
+import numpy as np
+from ditherzam.dithering import registry
+img = np.random.default_rng(20260726).integers(0, 256, (17, 29)).astype(np.float32)
+out = registry.get_entry("Triangular").func(img, (3, 100, 2, 100, 0), np.float32(127.5))
+import sys
+sys.stdout.write(",".join(str(int(v)) for v in out.ravel().tolist()))
+"""
+
 
 def _run(kernel_name: str, disable_jit: str) -> np.ndarray:
+    return _run_script(_SCRIPT, kernel_name, disable_jit)
+
+
+def _run_script(script: str, kernel_name: str, disable_jit: str) -> np.ndarray:
     env = dict(os.environ)
     env["NUMBA_DISABLE_JIT"] = disable_jit
     env["DZ_KERNEL"] = kernel_name
     proc = subprocess.run(
-        [sys.executable, "-c", _SCRIPT],
+        [sys.executable, "-c", script],
         capture_output=True, text=True, env=env,
     )
     assert proc.returncode == 0, f"subprocess failed:\n{proc.stderr}"
@@ -44,3 +57,10 @@ def test_bayer4_jit_on_equals_jit_off():
     on = _run("Bayer-Matrix 4x4", "0")   # exercises the parallel=True prange path
     np.testing.assert_array_equal(on, off)
     assert set(np.unique(off).tolist()) <= {0, 255}
+
+
+def test_triangular_jit_on_equals_jit_off_at_default_boundary():
+    off = _run_script(_TRIANGULAR_PARITY_SCRIPT, "Triangular", "1")
+    on = _run_script(_TRIANGULAR_PARITY_SCRIPT, "Triangular", "0")
+    assert off.shape == on.shape and off.size == 17 * 29
+    np.testing.assert_array_equal(on, off)

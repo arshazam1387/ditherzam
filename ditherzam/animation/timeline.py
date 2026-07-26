@@ -48,6 +48,15 @@ class Timeline:
     def fields(self) -> list[str]:
         return list(self._keys.keys())
 
+    def keyframes(self) -> tuple[Keyframe, ...]:
+        return tuple(
+            replace(key)
+            for key in sorted(
+                (key for keys in self._keys.values() for key in keys),
+                key=lambda key: (key.field, key.frame),
+            )
+        )
+
     def value_at(self, field: str, frame: int) -> float:
         keys = self._keys.get(field)
         if not keys:

@@ -118,6 +118,136 @@ def test_render_preview_dithers_the_baked_fill():
     assert np.all(stamped == 255)
 
 
+def test_baked_capped_preview_derives_and_bakes_at_preview_shape(monkeypatch):
+    from ditherzam.masking import render as module
+    context = _context(np.ones((4, 6), np.float32),
+                       outside=OutsideMode.WHITE, bake_fill=True)  # source 4x6
+    seen = {"master": [], "preview": []}
+    real_master, real_preview = module.derive_master_mask, module.derive_preview_mask
+    monkeypatch.setattr(module, "derive_master_mask",
+                        lambda *a, **k: (seen["master"].append(k.get("source_shape")),
+                                         real_master(*a, **k))[1])
+    monkeypatch.setattr(module, "derive_preview_mask",
+                        lambda *a, **k: (seen["preview"].append(
+                            (k.get("source_shape"), k.get("target_shape"))),
+                            real_preview(*a, **k))[1])
+    baked_shapes = []
+
+    def renderer(bake):
+        # A capped preview downscales first, so bake receives a preview-res base.
+        baked_shapes.append(bake(np.full((2, 3), 100.0, np.float32)).shape)
+        return np.full((2, 3, 3), 7, np.uint8)
+
+    render_with_mask(renderer, context, target_shape=(2, 3))
+    assert seen["master"] == []                    # never derived at source resolution
+    assert seen["preview"] == [((4, 6), (2, 3))]   # derived at the preview shape
+    assert baked_shapes == [(2, 3)]                # bake applied to the small base
+
+
+def test_capped_preview_bakes_the_fill_at_proxy_resolution(monkeypatch):
+    from ditherzam.dithering import registry
+    from ditherzam.masking import render as rmod
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.preview import render_preview
+
+    base = np.full((8, 12), 100.0, np.float32)  # longest side 12
+    ctx = _context(np.zeros((8, 12), np.float32),
+                   outside=OutsideMode.WHITE, bake_fill=True)
+    shapes = []
+    real = rmod.bake_outside_base
+    monkeypatch.setattr(rmod, "bake_outside_base",
+                        lambda b, m, f: (shapes.append(b.shape), real(b, m, f))[1])
+    render_preview(RenderPipeline(registry), base,
+                   RenderSettings(style="None", scale=1), max_side=6, mask_context=ctx)
+    # max_side 6 -> factor 2 -> target (4, 6); the bake must run at that shape.
+    assert shapes == [(4, 6)]
+
+
+def test_capped_preview_bake_lands_on_correct_side_with_hard_edge():
+    from ditherzam.dithering import registry
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.preview import render_preview
+
+    base = np.full((8, 12), 100.0, np.float32)
+    prob = np.zeros((8, 12), np.float32)
+    prob[:, :6] = 1.0  # left half subject, right half outside
+    ctx = _context(prob, outside=OutsideMode.WHITE, bake_fill=True)
+    out = render_preview(RenderPipeline(registry), base,
+                         RenderSettings(style="None", scale=1), max_side=6, mask_context=ctx)
+    assert out.shape == (4, 6, 3)
+    assert np.all(out[:, 3:] == 255)     # outside filled white
+    assert np.all(out[:, :3] != 255)     # subject untouched -> hard edge preserved
+
+
+def test_baked_capped_preview_cache_serves_no_stale_pixels():
+    from ditherzam.dithering import registry
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.preview import render_preview
+
+    base = np.full((8, 12), 100.0, np.float32)
+    prob = np.zeros((8, 12), np.float32)  # whole frame outside
+    pipeline = RenderPipeline(registry, cache_budget_bytes=4 * 1024 * 1024)
+    caches = MaskCaches(4 * 1024 * 1024)
+
+    def render(ctx):
+        return render_preview(pipeline, base, RenderSettings(style="None", scale=1),
+                              max_side=6, mask_context=ctx, mask_caches=caches,
+                              rendered_identity=(ctx.source, "creative-a"))
+
+    white = render(_context(prob, outside=OutsideMode.WHITE, bake_fill=True))
+    assert np.all(white == 255)
+    # Flip the outside fill on the SAME caches: a key that ignored the bake would
+    # serve the stale white intermediate here.
+    black = render(_context(prob, outside=OutsideMode.BLACK, bake_fill=True))
+    assert np.all(black == 0)
+    white_again = render(_context(prob, outside=OutsideMode.WHITE, bake_fill=True))
+    assert np.all(white_again == 255)  # repeat is a cache hit and still correct
+
+
+def test_baked_capped_preview_cache_invalidates_on_mask_and_source(monkeypatch):
+    import ditherzam.render as render_module
+    from ditherzam.dithering import registry
+    from ditherzam.render import RenderPipeline, RenderSettings
+    from ditherzam.ui.preview import render_preview
+
+    def context_rgb(probability, rgb, **kw):
+        probability = np.asarray(probability, np.float32)
+        rgba = np.zeros((*probability.shape, 4), np.uint8)
+        rgba[..., :3] = rgb; rgba[..., 3] = 255; rgba.flags.writeable = False
+        source = source_identity(rgba)
+        identity = InferenceIdentity(source, ModelIdentity("m", "1", "a" * 64), "p", "primary")
+        prob = ProbabilityMap(identity, probability)
+        return MaskContext(source, rgba, prob,
+                           SmartMaskSettings(enabled=True, feather_px=0, bake_fill=True, **kw))
+
+    base = np.arange(16 * 24, dtype=np.float32).reshape(16, 24) % 256
+    prob = np.linspace(0, 1, base.size, dtype=np.float32).reshape(base.shape)
+    pipeline = RenderPipeline(registry, cache_budget_bytes=8 * 1024 * 1024)
+    caches = MaskCaches(8 * 1024 * 1024)
+    real = render_module.apply_contrast
+    calls = {"n": 0}
+    monkeypatch.setattr(render_module, "apply_contrast",
+                        lambda *a, **k: (calls.__setitem__("n", calls["n"] + 1),
+                                         real(*a, **k))[1])
+
+    def render(gray, ctx):
+        render_preview(pipeline, gray, RenderSettings(style="None", scale=1), 12,
+                       mask_context=ctx, mask_caches=caches,
+                       rendered_identity=(ctx.source, "creative-a"))
+
+    c0 = context_rgb(prob, (10, 20, 30), outside=OutsideMode.WHITE)
+    render(base, c0)
+    render(base, c0)                      # identical repeat -> cache hit
+    assert calls["n"] == 1
+    render(base, context_rgb(prob, (10, 20, 30), outside=OutsideMode.WHITE, sensitivity=60))
+    assert calls["n"] == 2                # sensitivity moves the baked boundary
+    render(base, context_rgb(prob, (10, 20, 30), outside=OutsideMode.BLACK))
+    assert calls["n"] == 3                # outside fill flipped
+    # A different source image (distinct rgba identity) must not reuse the base.
+    render((base + 7.0) % 256, context_rgb(prob, (40, 50, 60), outside=OutsideMode.WHITE))
+    assert calls["n"] == 4
+
+
 def test_panel_bake_checkbox_follows_outside_mode(qapp_fixture):
     from ditherzam.ui.smart_mask_panel import SmartMaskPanel
 

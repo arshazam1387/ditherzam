@@ -13,8 +13,7 @@ def test_exact_defaults_labels_and_ranges(qapp_fixture):
     assert panel.enabled_check.text() == "Enabled"
     assert [panel.target_combo.itemText(i) for i in range(3)] == [
         "Subject", "Background", "Whole Image"]
-    assert panel.candidate_combo.currentText() == "Primary (1 of 1)"
-    assert not panel.candidate_combo.isEnabled()
+    assert panel.candidate_combo.isHidden()
     assert (panel.sensitivity_slider.minimum(), panel.sensitivity_slider.maximum(),
             panel.sensitivity_slider.value()) == (0, 100, 50)
     assert (panel.feather_slider.minimum(), panel.feather_slider.value()) == (0, 8)
@@ -169,7 +168,6 @@ def test_labels_accessibility_and_focus_policy(qapp_fixture):
     buddies = {label.text(): label.buddy() for label in panel.findChildren(QLabel)
                if label.buddy() is not None}
     assert buddies["Target"] is panel.target_combo
-    assert buddies["Detected subject"] is panel.candidate_combo
     assert buddies["Sensitivity"] is panel.sensitivity_slider
     assert buddies["Edge feather"] is panel.feather_slider
     assert buddies["Expand / contract"] is panel.expansion_slider
@@ -179,3 +177,50 @@ def test_labels_accessibility_and_focus_policy(qapp_fixture):
     assert panel.candidate_combo.focusPolicy() is Qt.FocusPolicy.NoFocus
     for spin in (panel.sensitivity_spin, panel.feather_spin, panel.expansion_spin):
         assert spin.focusPolicy() is Qt.FocusPolicy.NoFocus
+
+
+def test_scope_and_plain_language_outcome_are_persistent(qapp_fixture):
+    panel = SmartMaskPanel()
+    assert panel.scope_label.text() == "Masking: No active layer"
+    panel.set_mask_scope("Layer 2")
+    assert panel.scope_label.text() == "Masking: Layer 2 · Subject"
+    assert panel.scope_label.accessibleName() == "Smart Mask layer scope"
+    assert panel.outcome_label.text() == (
+        "Mask result: Subject selected; outside keeps original pixels.")
+
+    panel.enabled_check.click()
+    panel.target_combo.setCurrentIndex(
+        panel.target_combo.findData(MaskTarget.BACKGROUND))
+    panel.invert_check.setChecked(True)
+    assert panel.scope_label.text() == "Masking: Layer 2 · Background"
+    assert panel.outcome_label.text() == (
+        "Mask result: Subject selected; outside keeps original pixels.")
+    panel.set_mask_scope(None)
+    assert panel.scope_label.text() == "Masking: No active layer"
+
+
+def test_automatic_mask_copy_is_honest_when_local_model_is_unavailable(qapp_fixture):
+    panel = SmartMaskPanel()
+    assert panel.automatic_help_label.text() == (
+        "Quick subject isolation using a local model.")
+    panel.set_availability(source=True, model=False)
+    assert panel.availability_label.text() == (
+        "Automatic masking needs a local model installed on this device. "
+        "Nothing is uploaded or downloaded automatically.")
+    assert not panel.availability_label.isHidden()
+    panel.show()
+    assert panel.availability_label.isVisibleTo(panel)
+    panel.set_availability(source=True, model=True)
+    assert panel.availability_label.text() == ""
+    assert panel.availability_label.isHidden()
+
+
+def test_candidate_selector_is_removed_from_focus_order(qapp_fixture):
+    from PySide6.QtCore import Qt
+
+    panel = SmartMaskPanel()
+    assert panel.candidate_combo.isHidden()
+    candidate = panel.target_combo.nextInFocusChain()
+    while candidate.focusPolicy() is Qt.FocusPolicy.NoFocus:
+        candidate = candidate.nextInFocusChain()
+    assert candidate is panel.sensitivity_slider

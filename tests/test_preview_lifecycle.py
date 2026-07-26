@@ -162,3 +162,5 @@ def test_image_dropped_runs_decode_off_thread_pool_not_sync_render(qapp_fixture,
     assert calls["schedule_render"] == 1
     assert editor._base_gray is not None
     assert editor._base_rgba is not None
+    assert len(editor.layers_controller.stack.layers) == 1
+    assert editor.layers_controller.active_index == 0

@@ -22,7 +22,9 @@ from ditherzam.render_cache import MAX_EDITOR_RETAINED_CACHE_BYTES, MIB, _group_
 
 
 DEFAULT_MASK_CACHE_BUDGET_BYTES = 64 * MIB
-DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES = 128 * MIB
+DEFAULT_LAYER_LOOK_CACHE_BUDGET_BYTES = 32 * MIB
+DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES = 96 * MIB
+DEFAULT_UNMASKED_RENDER_CACHE_BUDGET_BYTES = 160 * MIB
 
 
 @dataclass(frozen=True)
@@ -30,9 +32,10 @@ class EditorCacheAllocation:
     """Budgets for the two cache instances owned by one image editor."""
     render_bytes: int
     mask_bytes: int
+    layer_look_bytes: int = DEFAULT_LAYER_LOOK_CACHE_BUDGET_BYTES
 
     def __post_init__(self) -> None:
-        values = (self.render_bytes, self.mask_bytes)
+        values = (self.render_bytes, self.mask_bytes, self.layer_look_bytes)
         if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
             raise ValueError("cache allocations must be integer byte counts")
         if any(value < 0 for value in values):
@@ -42,7 +45,8 @@ class EditorCacheAllocation:
 
 
 def editor_cache_allocation(mask_enabled: bool, *, render_bytes: int | None = None,
-                            mask_bytes: int | None = None) -> EditorCacheAllocation:
+                            mask_bytes: int | None = None,
+                            layer_look_bytes: int | None = None) -> EditorCacheAllocation:
     """Return the validated split an editor must use for its owned caches.
 
     SM-12 must instantiate both actual caches from this result and verify their
@@ -50,14 +54,19 @@ def editor_cache_allocation(mask_enabled: bool, *, render_bytes: int | None = No
     """
     if not isinstance(mask_enabled, bool):
         raise ValueError("mask_enabled must be bool")
-    allocation = EditorCacheAllocation(
-        (DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES if mask_enabled else MAX_EDITOR_RETAINED_CACHE_BYTES)
-        if render_bytes is None else render_bytes,
-        (DEFAULT_MASK_CACHE_BUDGET_BYTES if mask_enabled else 0)
-        if mask_bytes is None else mask_bytes,
-    )
-    if not mask_enabled and allocation.mask_bytes != 0:
+    resolved_mask_bytes = (
+        DEFAULT_MASK_CACHE_BUDGET_BYTES if mask_enabled else 0
+    ) if mask_bytes is None else mask_bytes
+    if not mask_enabled and resolved_mask_bytes != 0:
         raise ValueError("mask-disabled editors must allocate zero mask-cache bytes")
+    allocation = EditorCacheAllocation(
+        (DEFAULT_MASKED_RENDER_CACHE_BUDGET_BYTES if mask_enabled
+         else DEFAULT_UNMASKED_RENDER_CACHE_BUDGET_BYTES)
+        if render_bytes is None else render_bytes,
+        resolved_mask_bytes,
+        (DEFAULT_LAYER_LOOK_CACHE_BUDGET_BYTES
+         if layer_look_bytes is None else layer_look_bytes),
+    )
     return allocation
 
 
@@ -201,12 +210,16 @@ class MaskCaches:
         if not isinstance(probability, ProbabilityMap): raise TypeError("probability must be a ProbabilityMap")
         return self._put("inference", probability.identity, probability)
 
-    def get_derived(self, identity: MaskIdentity) -> np.ndarray | None:
-        return self._get("derived", identity)
-
-    def put_derived(self, identity: MaskIdentity, mask: np.ndarray) -> bool:
+    def get_derived(self, identity: MaskIdentity, shape=None) -> np.ndarray | None:
         if not isinstance(identity, MaskIdentity): raise TypeError("identity must be a MaskIdentity")
-        return self._put("derived", identity, self._readonly_owned(mask, confidence=True))
+        return self._get("derived", (identity, shape))
+
+    def put_derived(self, identity: MaskIdentity, mask: np.ndarray, shape=None) -> bool:
+        # A capped preview derives the mask at its own resolution; folding the
+        # derivation shape into the key keeps preview masks from colliding with
+        # (and evicting the far larger) source-resolution master for one identity.
+        if not isinstance(identity, MaskIdentity): raise TypeError("identity must be a MaskIdentity")
+        return self._put("derived", (identity, shape), self._readonly_owned(mask, confidence=True))
 
     def get_composite(self, identity: CompositeIdentity) -> np.ndarray | None:
         return self._get("composite", identity)
@@ -224,7 +237,7 @@ class MaskCaches:
             for key in tuple(self._stores["inference"]):
                 if key.source == source: self._remove("inference", key)
             for key in tuple(self._stores["derived"]):
-                if key.inference.source == source: self._remove("derived", key)
+                if key[0].inference.source == source: self._remove("derived", key)
             for key in tuple(self._stores["composite"]):
                 if key.source == source or key.mask.inference.source == source:
                     self._remove("composite", key)

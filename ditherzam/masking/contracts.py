@@ -28,6 +28,14 @@ from ditherzam.masking.settings import (
 _SHA256_HEX_LENGTH = 64
 _SHA256_HEX_DIGITS = frozenset("0123456789abcdef")
 
+# Retained probability maps are capped at 2**23 pixels (32 MiB float32) so a
+# single inference payload always fits the 64 MiB mask cache budget regardless
+# of source size. The cap sits just above 4K UHD (8,294,400 px), so every
+# source at or below 4K keeps its exact source-resolution map. Nothing real is
+# lost above the cap either: the model's native output is 320x320 and the map
+# is only a bilinear upsample of it.
+PROBABILITY_CAP_PIXELS = 8_388_608
+
 
 class MaskContractError(Exception):
     """Raised when source, model, inference, mask, or probability data is invalid."""
@@ -67,6 +75,30 @@ def _validate_int_min(value: object, name: str, minimum: int) -> None:
         raise MaskContractError(f"{name} must be an int, got {type(value).__name__}")
     if value < minimum:
         raise MaskContractError(f"{name} must be >= {minimum}, got {value}")
+
+
+def capped_probability_shape(height: int, width: int) -> tuple[int, int]:
+    """Canonical retained probability-map shape for an ``(height, width)`` source.
+
+    Identity at or below :data:`PROBABILITY_CAP_PIXELS`; above it, both
+    dimensions are scaled down proportionally (floor) so the area never
+    exceeds the cap and each dimension stays at least 1. Deterministic: the
+    same source dimensions always produce the same capped shape.
+    """
+    _validate_positive_int(height, "height")
+    _validate_positive_int(width, "width")
+    if height * width <= PROBABILITY_CAP_PIXELS:
+        return height, width
+    scale = (PROBABILITY_CAP_PIXELS / (height * width)) ** 0.5
+    capped_height = max(1, int(height * scale))
+    capped_width = max(1, int(width * scale))
+    if capped_height * capped_width > PROBABILITY_CAP_PIXELS:
+        # Only reachable when one dimension was clamped up to 1.
+        if capped_height == 1:
+            capped_width = PROBABILITY_CAP_PIXELS
+        else:
+            capped_height = max(1, PROBABILITY_CAP_PIXELS // capped_width)
+    return capped_height, capped_width
 
 
 @dataclass(frozen=True)
@@ -194,10 +226,11 @@ def validate_confidence_array(array: object, *, name: str = "confidence array") 
 class ProbabilityMap:
     """One inference run's immutable adapter output.
 
-    ``values`` is the raw per-pixel foreground confidence at source
-    resolution -- 1.0 means foreground. Cached separately from any derived
-    mask so sensitivity/target/invert/geometry/feather edits reuse it
-    without rerunning inference.
+    ``values`` is the raw per-pixel foreground confidence at the source's
+    canonical capped resolution (see :func:`capped_probability_shape`;
+    exact source resolution at or below the cap) -- 1.0 means foreground.
+    Cached separately from any derived mask so sensitivity/target/invert/
+    geometry/feather edits reuse it without rerunning inference.
 
     Equality/hash are keyed on ``identity`` alone: an inference identity fully
     determines the confidence payload, and a raw ndarray field cannot support
@@ -212,12 +245,13 @@ class ProbabilityMap:
         if not isinstance(self.identity, InferenceIdentity):
             raise MaskContractError("ProbabilityMap.identity must be an InferenceIdentity")
         validate_confidence_array(self.values, name="ProbabilityMap.values")
-        expected_shape = (self.identity.source.height, self.identity.source.width)
+        expected_shape = capped_probability_shape(
+            self.identity.source.height, self.identity.source.width)
         if self.values.shape != expected_shape:
             raise MaskContractError(
                 f"ProbabilityMap.values shape {self.values.shape} does not match "
-                f"source identity dimensions {expected_shape}; shape mismatch is "
-                "never silently resized"
+                f"the capped source identity dimensions {expected_shape}; shape "
+                "mismatch is never silently resized"
             )
         # Own the memory: a defensive C-contiguous copy so a caller's view/slice
         # of a larger writable base buffer can never mutate the stored payload.

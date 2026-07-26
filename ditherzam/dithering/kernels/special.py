@@ -28,7 +28,13 @@ def _wave(img, thr, xfreq, yfreq, phase, xweight, amplitude, line_spacing):
             wx = xweight / 100.0
             p = phase * math.pi / 180.0
             spacing = line_spacing / 100.0
-            t = 127.5 + (math.sin(x * xfreq / (100.0 * spacing) + p) * wx + math.sin(y * yfreq / (100.0 * spacing) + p) * (1.0 - wx)) * amplitude
+            s = math.sin(x * xfreq / (100.0 * spacing) + p) * wx + math.sin(y * yfreq / (100.0 * spacing) + p) * (1.0 - wx)
+            # crest-sharpen by spacing^2 so each dark line keeps a constant
+            # pixel width while the pitch stretches (identity at spacing 100)
+            s = 1.0 - (1.0 - s) * spacing * spacing
+            if s < -1.0:
+                s = -1.0
+            t = 127.5 + s * amplitude
             out[y, x] = 255.0 if img[y, x] >= t else 0.0
     return out
 
@@ -137,6 +143,10 @@ def _sine_wave_modulation(img, freq, wave_thr, yfreq, phase, contrast, line_spac
             darkness = 1.0 - img[y, x] / 255.0
             spacing = line_spacing / 100.0
             line = math.sin((x * freq * 0.05 + y * yfreq / 100.0) / spacing + phase * math.pi / 180.0) * 0.5 + 0.5
+            # trough-sharpen by spacing^2: constant line width as pitch grows
+            line = line * spacing * spacing
+            if line > 1.0:
+                line = 1.0
             gate = darkness * (wave_thr / 15.0) * contrast / 100.0
             out[y, x] = 0.0 if line < gate else 255.0
     return out

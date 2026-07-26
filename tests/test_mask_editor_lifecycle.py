@@ -60,6 +60,34 @@ def test_disabled_load_and_whole_image_do_not_infer(qapp_fixture, monkeypatch):
     assert calls == []
 
 
+def test_layer_from_whole_image_smart_needs_no_model_or_probability(
+    qapp_fixture, monkeypatch
+):
+    window, _launched = editor()
+    window.load_array(*source())
+    settings = SmartMaskSettings(
+        enabled=True, target=MaskTarget.WHOLE_IMAGE)
+    window.panel.smart_mask_panel.set_settings(settings)
+    window._on_mask_settings_changed(settings)
+    window.layers_controller.update_active_from_editor()
+    monkeypatch.setattr(
+        window, "_mask_dependencies_available", lambda: False)
+    window._mask_probability = None
+    window._mask_source = None
+
+    assert window.layers_controller.raster_mask_from_smart()
+    mask = window.layers_controller.document.layers[0].raster_mask
+    assert np.all(mask.pixels == 255)
+
+    window.layers_controller.delete_active_raster_mask()
+    disabled = SmartMaskSettings(target=MaskTarget.WHOLE_IMAGE)
+    window.panel.smart_mask_panel.set_settings(disabled)
+    window._on_mask_settings_changed(disabled)
+    window.layers_controller.update_active_from_editor()
+    assert window.layers_controller.raster_mask_from_smart() is False
+    assert window.layers_controller.document.layers[0].raster_mask is None
+
+
 def test_enable_infers_once_edits_reuse_and_request_freezes_context(qapp_fixture):
     window, launched = editor(); window.load_array(*source())
     settings = SmartMaskSettings(enabled=True)
@@ -114,16 +142,19 @@ def test_terminal_promotes_at_most_one_trailing(qapp_fixture):
 
 def test_actual_editor_cache_budgets_obey_global_ceiling(qapp_fixture):
     window, _ = editor()
-    assert window.pipeline.cache_metrics["budget_bytes"] == 192 * MIB
+    assert window.pipeline.cache_metrics["budget_bytes"] == 160 * MIB
     assert window._mask_caches.budget_bytes == 0
+    assert window.layers_controller._look_cache.metrics["budget_bytes"] == 32 * MIB
     window.load_array(*source())
     settings = SmartMaskSettings(enabled=True); window.panel.smart_mask_panel.set_settings(settings)
     window._on_mask_settings_changed(settings)
-    assert window.pipeline.cache_metrics["budget_bytes"] == 128 * MIB
+    assert window.pipeline.cache_metrics["budget_bytes"] == 96 * MIB
     assert window._mask_caches.budget_bytes == 64 * MIB
     assert (window.pipeline.cache_metrics["budget_bytes"] + window._mask_caches.budget_bytes
+            + window.layers_controller._look_cache.metrics["budget_bytes"]
             <= 192 * MIB)
     assert (window.pipeline.cache_metrics["retained_bytes"] + window._mask_caches.retained_bytes
+            + window.layers_controller._look_cache.metrics["retained_bytes"]
             <= 192 * MIB)
     window._on_mask_terminal(success(window._mask_scheduler._active))
     assert window._mask_probability is not None
@@ -134,7 +165,7 @@ def test_actual_editor_cache_budgets_obey_global_ceiling(qapp_fixture):
     window._on_mask_settings_changed(disabled)
     assert window._mask_probability is None and window._mask_source is None
     assert window._mask_caches.retained_bytes == 0
-    assert window.pipeline.cache_metrics["budget_bytes"] == 192 * MIB
+    assert window.pipeline.cache_metrics["budget_bytes"] == 160 * MIB
 
 
 def test_only_current_progress_is_published_and_terminal_clears_it(qapp_fixture):
@@ -194,10 +225,10 @@ def test_blocking_inference_pool_does_not_block_render_pool_and_close_retires_it
     heartbeat.timeout.connect(lambda: heartbeats.append(time.monotonic()))
     heartbeat.start()
     assert window.close() is False
-    deadline = time.monotonic() + 1
-    while len(heartbeats) < 2 and time.monotonic() < deadline:
+    deadline = time.monotonic() + .15
+    while time.monotonic() < deadline:
         qapp_fixture.processEvents(); time.sleep(.005)
-    assert len(heartbeats) >= 2, "GUI event loop stalled while inference was active"
+    assert len(heartbeats) >= 2
     assert window.isVisible(), "first close must be ignored while inference is active"
     assert window._mask_closing and not window._mask_close_finalizing
     release.set()

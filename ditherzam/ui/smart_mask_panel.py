@@ -46,6 +46,7 @@ class SmartMaskPanel(QGroupBox):
         self._source_available = False
         self._model_available = False
         self._has_valid_mask = False
+        self._active_layer_name: str | None = None
         self._build_ui()
         self._sync_controls_from_settings()
         self._set_expanded(True)
@@ -77,6 +78,16 @@ class SmartMaskPanel(QGroupBox):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
 
+        self.automatic_help_label = QLabel(
+            "Quick subject isolation using a local model.")
+        self.automatic_help_label.setWordWrap(True)
+        self.automatic_help_label.setAccessibleName("Smart Mask capability")
+        layout.addWidget(self.automatic_help_label)
+        self.scope_label = QLabel("Masking: No active layer")
+        self.scope_label.setWordWrap(True)
+        self.scope_label.setAccessibleName("Smart Mask layer scope")
+        layout.addWidget(self.scope_label)
+
         self.enabled_check = QCheckBox("Enabled")
         self.target_combo = QComboBox()
         self.target_combo.addItem("Subject", MaskTarget.SUBJECT)
@@ -86,10 +97,10 @@ class SmartMaskPanel(QGroupBox):
         self.candidate_combo.addItem("Primary (1 of 1)")
         self.candidate_combo.setEnabled(False)
         self.candidate_combo.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.candidate_combo.hide()
 
         layout.addWidget(self.enabled_check)
         layout.addWidget(self._labeled("Target", self.target_combo))
-        layout.addWidget(self._labeled("Detected subject", self.candidate_combo))
 
         self.sensitivity_slider, self.sensitivity_spin = self._slider_row(
             layout, "Sensitivity", SENSITIVITY_MIN, SENSITIVITY_MAX, 50)
@@ -113,6 +124,10 @@ class SmartMaskPanel(QGroupBox):
         layout.addWidget(self._labeled("Outside region", self.outside_combo))
         layout.addWidget(self.bake_check)
         layout.addWidget(self.overlay_check)
+        self.outcome_label = QLabel()
+        self.outcome_label.setWordWrap(True)
+        self.outcome_label.setAccessibleName("Smart Mask result")
+        layout.addWidget(self.outcome_label)
 
         buttons = QHBoxLayout()
         self.redetect_button = QPushButton("Re-detect")
@@ -125,6 +140,11 @@ class SmartMaskPanel(QGroupBox):
         self.status_label = QLabel("Disabled")
         self.status_label.setAccessibleName("Smart Mask status")
         layout.addWidget(self.status_label)
+        self.availability_label = QLabel()
+        self.availability_label.setWordWrap(True)
+        self.availability_label.setAccessibleName("Smart Mask model availability")
+        self.availability_label.hide()
+        layout.addWidget(self.availability_label)
 
         self.disclosure_button.toggled.connect(self._set_expanded)
 
@@ -144,6 +164,7 @@ class SmartMaskPanel(QGroupBox):
         for spin in (self.sensitivity_spin, self.feather_spin, self.expansion_spin):
             spin.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._set_tab_order()
+        self._refresh_scope_and_outcome()
 
     @staticmethod
     def _labeled(text: str, widget: QWidget) -> QWidget:
@@ -215,6 +236,7 @@ class SmartMaskPanel(QGroupBox):
                             else MaskPanelStatus.NEEDS_DETECTION)
             self.status_label.setText(self._status.value)
         self._refresh_enabled_state()
+        self._refresh_scope_and_outcome()
         self.settings_changed.emit(self._settings)
 
     def set_settings(self, settings: SmartMaskSettings) -> None:
@@ -230,6 +252,7 @@ class SmartMaskPanel(QGroupBox):
         self.status_label.setText(self._status.value)
         self.progress_label.clear()
         self._refresh_enabled_state()
+        self._refresh_scope_and_outcome()
 
     def _sync_controls_from_settings(self) -> None:
         controls = (self.enabled_check, self.target_combo, self.sensitivity_slider,
@@ -254,7 +277,54 @@ class SmartMaskPanel(QGroupBox):
     def set_availability(self, *, source: bool, model: bool) -> None:
         self._source_available = bool(source)
         self._model_available = bool(model)
+        if self._model_available:
+            self.availability_label.clear()
+            self.availability_label.hide()
+        else:
+            self.availability_label.setText(
+                "Automatic masking needs a local model installed on this device. "
+                "Nothing is uploaded or downloaded automatically.")
+            self.availability_label.show()
         self._refresh_enabled_state()
+
+    def set_mask_scope(self, layer_name: str | None) -> None:
+        """Display which active layer owns this mask without changing settings."""
+        cleaned = str(layer_name).strip() if layer_name is not None else ""
+        self._active_layer_name = cleaned or None
+        self._refresh_scope_and_outcome()
+
+    def _refresh_scope_and_outcome(self) -> None:
+        if self._active_layer_name is None:
+            self.scope_label.setText("Masking: No active layer")
+        else:
+            target = {
+                MaskTarget.SUBJECT: "Subject",
+                MaskTarget.BACKGROUND: "Background",
+                MaskTarget.WHOLE_IMAGE: "Whole Image",
+            }[self._settings.target]
+            self.scope_label.setText(
+                f"Masking: {self._active_layer_name} · {target}")
+
+        selected = self._settings.target
+        if self._settings.invert:
+            if selected is MaskTarget.SUBJECT:
+                selected = MaskTarget.BACKGROUND
+            elif selected is MaskTarget.BACKGROUND:
+                selected = MaskTarget.SUBJECT
+        if selected is MaskTarget.WHOLE_IMAGE:
+            self.outcome_label.setText(
+                "Mask result: The whole layer remains selected.")
+            return
+        selected_text = (
+            "Subject" if selected is MaskTarget.SUBJECT else "Background")
+        outside_text = {
+            OutsideMode.ORIGINAL: "outside keeps original pixels",
+            OutsideMode.TRANSPARENT: "outside becomes transparent",
+            OutsideMode.WHITE: "outside becomes white",
+            OutsideMode.BLACK: "outside becomes black",
+        }[self._settings.outside]
+        self.outcome_label.setText(
+            f"Mask result: {selected_text} selected; {outside_text}.")
 
     def set_valid_mask_available(self, available: bool) -> None:
         """Record whether the current source/model has a publishable mask."""

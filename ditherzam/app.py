@@ -5,11 +5,6 @@ from pathlib import Path
 
 
 def main() -> int:
-    if "--release-smoke" in sys.argv:
-        from ditherzam.release_smoke import run
-        index = sys.argv.index("--release-smoke")
-        output_dir = Path(sys.argv[index + 1]) if index + 1 < len(sys.argv) else Path.cwd()
-        return run(output_dir)
     if "--offline-smoke" in sys.argv:
         from ditherzam.offline_smoke import run
         root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent

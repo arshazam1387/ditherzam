@@ -42,6 +42,24 @@ def test_partitions_use_complete_identities_and_publish_readonly_arrays():
     assert caches.get_inference(_ids(preprocessing="pp2")[1]) is None
 
 
+def test_derived_cache_separates_preview_from_source_resolution():
+    caches = MaskCaches(10_000)
+    _, _, mask_id = _ids()
+    source_mask = np.full((2, 3), .25, np.float32)
+    preview_mask = np.full((1, 2), .75, np.float32)
+    assert caches.put_derived(mask_id, source_mask, (2, 3))
+    assert caches.put_derived(mask_id, preview_mask, (1, 2))
+    # Same MaskIdentity, different derivation shape -> two distinct entries.
+    assert np.all(caches.get_derived(mask_id, (2, 3)) == .25)
+    assert np.all(caches.get_derived(mask_id, (1, 2)) == .75)
+    assert caches.metrics["derived_entries"] == 2
+    assert caches.get_derived(mask_id, (4, 4)) is None
+    # Default (no shape) keeps its own slot and does not collide.
+    assert caches.put_derived(mask_id, np.full((2, 3), .5, np.float32))
+    assert np.all(caches.get_derived(mask_id) == .5)
+    assert caches.metrics["derived_entries"] == 3
+
+
 def test_atomic_lru_oversized_and_metrics_are_bounded():
     caches = MaskCaches(30)
     _, inf1, mask1 = _ids(1)
@@ -66,12 +84,18 @@ def test_atomic_lru_oversized_and_metrics_are_bounded():
 
 def test_editor_allocation_preserves_unmasked_default_and_splits_masked_budget():
     assert DEFAULT_CACHE_BUDGET_BYTES == 192 * MIB
-    assert editor_cache_allocation(False).render_bytes == 192 * MIB
-    assert editor_cache_allocation(False).mask_bytes == 0
+    unmasked = editor_cache_allocation(False)
+    assert unmasked.render_bytes == 160 * MIB
+    assert unmasked.mask_bytes == 0
+    assert unmasked.layer_look_bytes == 32 * MIB
     masked = editor_cache_allocation(True)
-    assert masked.render_bytes == 128 * MIB
+    assert masked.render_bytes == 96 * MIB
     assert masked.mask_bytes == DEFAULT_MASK_CACHE_BUDGET_BYTES == 64 * MIB
-    assert masked.render_bytes + masked.mask_bytes == 192 * MIB
+    assert masked.layer_look_bytes == 32 * MIB
+    assert (
+        masked.render_bytes + masked.mask_bytes + masked.layer_look_bytes
+        == 192 * MIB
+    )
 
 
 def test_editor_allocation_rejects_invalid_custom_aggregate():
@@ -81,7 +105,10 @@ def test_editor_allocation_rejects_invalid_custom_aggregate():
     with pytest.raises(ValueError, match="zero"):
         editor_cache_allocation(False, render_bytes=128 * MIB, mask_bytes=64 * MIB)
     custom = editor_cache_allocation(True, render_bytes=100 * MIB, mask_bytes=50 * MIB)
-    assert custom.render_bytes + custom.mask_bytes == 150 * MIB
+    assert (
+        custom.render_bytes + custom.mask_bytes + custom.layer_look_bytes
+        == 182 * MIB
+    )
 
 
 def test_inference_payload_is_charged_and_oversized_probability_not_retained():
@@ -90,6 +117,21 @@ def test_inference_payload_is_charged_and_oversized_probability_not_retained():
     assert not caches.put_inference(_probability(inference))
     assert caches.get_inference(inference) is None
     assert caches.retained_bytes == 0
+
+
+def test_capped_probability_for_huge_source_fits_default_budget():
+    # Regression: a 37.5 MP phone photo produced a 143 MiB source-resolution
+    # probability map, which the 64 MiB budget rejected -- Smart Mask reported
+    # ERROR despite a successful inference. The retained map is now capped.
+    from ditherzam.masking.contracts import SourceIdentity, capped_probability_shape
+
+    source = SourceIdentity(content_hash="c" * 64, width=8160, height=4592, has_alpha=False)
+    inference = InferenceIdentity(source, ModelIdentity("u2", "1", "a" * 64), "pp1", "primary")
+    shape = capped_probability_shape(4592, 8160)
+    probability = ProbabilityMap(inference, np.full(shape, .5, np.float32))
+    caches = MaskCaches(DEFAULT_MASK_CACHE_BUDGET_BYTES)
+    assert caches.put_inference(probability)
+    assert caches.get_inference(inference) is probability
 
 
 def test_probability_alias_replacement_is_not_double_charged():
@@ -113,7 +155,7 @@ def test_clear_source_and_fifty_source_soak():
         assert caches.retained_bytes <= 80
     caches.clear_source(first)
     assert all(key.source != first for key in caches._stores["inference"])
-    assert all(key.inference.source != first for key in caches._stores["derived"])
+    assert all(key[0].inference.source != first for key in caches._stores["derived"])
 
 
 def test_fifty_probability_sources_stay_within_retained_budget():

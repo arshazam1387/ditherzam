@@ -15,7 +15,9 @@ from ditherzam.render import RenderCancelled
 from .cache import CompositeIdentity, MaskCaches
 from .composite import bake_outside_base, composite_masked
 from .contracts import MaskIdentity
-from .geometry import FEATHER_ALGORITHM_VERSION, derive_master_mask, resize_mask_area
+from .geometry import (
+    FEATHER_ALGORITHM_VERSION, derive_master_mask, derive_preview_mask, resize_mask_area,
+)
 from .settings import OutsideMode
 
 ALPHA_ALGORITHM_VERSION = "straight-u8-v1"
@@ -54,9 +56,56 @@ def bake_fill_active(settings) -> bool:
         OutsideMode.WHITE, OutsideMode.BLACK)
 
 
+def _derive_cached_master(mask_context, derive_shape, source_shape, *, caches, is_cancelled):
+    """Return the master mask derived at ``derive_shape``, via the derived cache.
+
+    ``derive_shape == source_shape`` is the exact full-resolution derivation used
+    by exports and Full previews; any other shape is a capped preview derived
+    directly at that resolution. Returns ``(master, mask_identity, derived_new)``
+    so the caller owns cache publication (kept atomic with compositing).
+    """
+    settings = mask_context.settings
+    mask_identity = _mask_identity(mask_context)
+    master = caches.get_derived(mask_identity, derive_shape) if caches is not None else None
+    derived_new = master is None
+    if master is None:
+        if derive_shape == source_shape:
+            master = derive_master_mask(
+                mask_context.probability,
+                sensitivity=settings.sensitivity, target=settings.target,
+                invert=settings.invert, expansion_px=settings.expansion_px,
+                feather_px=settings.feather_px, source_shape=source_shape)
+        else:
+            master = derive_preview_mask(
+                mask_context.probability,
+                sensitivity=settings.sensitivity, target=settings.target,
+                invert=settings.invert, expansion_px=settings.expansion_px,
+                feather_px=settings.feather_px,
+                source_shape=source_shape, target_shape=derive_shape)
+        _cancel(is_cancelled)
+    return master, mask_identity, derived_new
+
+
+def derive_render_mask(mask_context, target_shape, *, caches=None, is_cancelled=None) -> np.ndarray:
+    """Derive the mask a render/overlay needs at ``target_shape``, cached.
+
+    Capped previews (``target_shape`` smaller than the source) derive at the
+    preview resolution and share the derived cache with :func:`render_with_mask`,
+    so a mask-overlay preview never re-derives the master at source resolution.
+    """
+    source_shape = mask_context.source_rgba.shape[:2]
+    target_shape = tuple(target_shape)
+    derive_shape = source_shape if target_shape == source_shape else target_shape
+    master, mask_identity, derived_new = _derive_cached_master(
+        mask_context, derive_shape, source_shape, caches=caches, is_cancelled=is_cancelled)
+    if derived_new and caches is not None:
+        caches.put_derived(mask_identity, master, derive_shape)
+    return master if master.shape == target_shape else resize_mask_area(master, target_shape)
+
+
 def _render_baked(renderer, settings, master, mask_identity, mask_context,
                   caches, rendered_identity, is_cancelled, target_shape,
-                  derived_new) -> np.ndarray:
+                  derived_new, derive_shape) -> np.ndarray:
     """Bake the outside fill into the renderer's base and skip compositing.
 
     The renderer receives one ``bake(base) -> baked_base`` callable it must
@@ -73,7 +122,7 @@ def _render_baked(renderer, settings, master, mask_identity, mask_context,
         if cached is not None:
             _cancel(is_cancelled)
             if derived_new:
-                caches.put_derived(mask_identity, master)
+                caches.put_derived(mask_identity, master, derive_shape)
             return cached
 
     def bake(base: np.ndarray) -> np.ndarray:
@@ -85,7 +134,7 @@ def _render_baked(renderer, settings, master, mask_identity, mask_context,
     _cancel(is_cancelled)
     if caches is not None:
         if derived_new:
-            caches.put_derived(mask_identity, master)
+            caches.put_derived(mask_identity, master, derive_shape)
         if composite_identity is not None:
             caches.put_composite(composite_identity, rendered)
     return rendered
@@ -110,45 +159,43 @@ def render_with_mask(renderer: Callable[..., np.ndarray], mask_context=None, *,
     _cancel(is_cancelled)
     settings = mask_context.settings
     source = mask_context.source_rgba
-    mask_identity = _mask_identity(mask_context)
-    master = caches.get_derived(mask_identity) if caches is not None else None
-    derived_new = master is None
-    if master is None:
-        master = derive_master_mask(
-            mask_context.probability,
-            sensitivity=settings.sensitivity,
-            target=settings.target,
-            invert=settings.invert,
-            expansion_px=settings.expansion_px,
-            feather_px=settings.feather_px,
-            source_shape=source.shape[:2],
-        )
-        _cancel(is_cancelled)
+    source_shape = source.shape[:2]
+    resolved_target = tuple(target_shape) if target_shape is not None else None
+    baked = bake_fill_active(settings)
+    # A capped preview (target smaller than the source) derives the master at the
+    # preview shape -- including the baked path, whose fill is now dithered into
+    # the proxy-downscaled base at that same shape (preview.py bakes after the
+    # downscale). An unknown target (None) or a source-equal target stays
+    # full-res, matching exports and the historical path.
+    preview = resolved_target is not None and resolved_target != source_shape
+    derive_shape = resolved_target if preview else source_shape
+    master, mask_identity, derived_new = _derive_cached_master(
+        mask_context, derive_shape, source_shape, caches=caches, is_cancelled=is_cancelled)
     _cancel(is_cancelled)
-    if bake_fill_active(settings):
+    if baked:
         return _render_baked(renderer, settings, master, mask_identity, mask_context,
-                             caches, rendered_identity, is_cancelled, target_shape,
-                             derived_new)
+                             caches, rendered_identity, is_cancelled, resolved_target,
+                             derived_new, derive_shape)
     rendered = None
-    if target_shape is None:
+    if resolved_target is None:
         rendered = renderer()
         _cancel(is_cancelled)
-        target_shape = rendered.shape[:2]
-    target_shape = tuple(target_shape)
-    mask = master if master.shape == target_shape else resize_mask_area(master, target_shape)
+        resolved_target = rendered.shape[:2]
+    resolved_target = tuple(resolved_target)
+    mask = master if master.shape == resolved_target else resize_mask_area(master, resolved_target)
     _cancel(is_cancelled)
-    target_source = _resize_source_rgba(source, target_shape)
+    target_source = _resize_source_rgba(source, resolved_target)
     _cancel(is_cancelled)
     composite_identity = None
     if caches is not None and rendered_identity is not None:
         composite_identity = CompositeIdentity(
-            (rendered_identity, target_shape), mask_identity, settings.outside,
+            (rendered_identity, resolved_target), mask_identity, settings.outside,
             mask_context.source, ALPHA_ALGORITHM_VERSION)
         cached = caches.get_composite(composite_identity)
         if cached is not None:
             _cancel(is_cancelled)
             if derived_new:
-                caches.put_derived(mask_identity, master)
+                caches.put_derived(mask_identity, master, derive_shape)
             return cached
     if rendered is None:
         rendered = renderer()
@@ -157,7 +204,7 @@ def render_with_mask(renderer: Callable[..., np.ndarray], mask_context=None, *,
     _cancel(is_cancelled)
     if caches is not None:
         if derived_new:
-            caches.put_derived(mask_identity, master)
+            caches.put_derived(mask_identity, master, derive_shape)
         if composite_identity is not None:
             caches.put_composite(composite_identity, result)
     return result
