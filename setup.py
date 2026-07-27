@@ -28,6 +28,11 @@ extensions = [
         extra_compile_args=composite_compile_args,
         extra_link_args=composite_link_args,
     ),
+    Extension(
+        "ditherzam._native._selection",
+        ["ditherzam/_native/_selection.pyx"],
+        include_dirs=[numpy.get_include()],
+    ),
 ]
 
 
