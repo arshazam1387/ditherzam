@@ -26,6 +26,7 @@ from contextlib import contextmanager
 
 SUPPORTED = (1, 2, 4, 8)
 INTERACTIVE_CAP = 4  # parallel kernels plateau past this (4.3 baseline)
+NATIVE_DEFAULT = 2  # certified compositor/transitions baseline
 
 
 def cpu_threads() -> int:
@@ -50,6 +51,34 @@ def export_budget(cpu: int | None = None) -> int:
     """Threads an async export may use while reserving the interactive budget."""
     cpu = cpu_threads() if cpu is None else cpu
     return snap_to_supported(max(1, cpu - interactive_budget(cpu)))
+
+
+def native_budget(cpu: int | None = None) -> int:
+    """Default OpenMP budget for native compositor and transition loops."""
+    cpu = cpu_threads() if cpu is None else cpu
+    return max(1, min(NATIVE_DEFAULT, cpu))
+
+
+def _native_composite():
+    """Return the native compositor module, or None when unavailable."""
+    try:
+        from ditherzam._native import _composite
+        return _composite
+    except ImportError:
+        return None
+
+
+def get_native_threads() -> int | None:
+    module = _native_composite()
+    return None if module is None else int(module.get_thread_budget())
+
+
+def set_native_threads(n: int) -> int | None:
+    """Best-effort setter for the independent native OpenMP budget."""
+    module = _native_composite()
+    if module is None:
+        return None
+    return int(module.set_thread_budget(max(1, min(8, int(n)))))
 
 
 def _numba():
@@ -82,6 +111,20 @@ def numba_threads(n: int):
         nb.set_num_threads(prev)
 
 
+@contextmanager
+def native_threads(n: int):
+    """Temporarily bound native OpenMP loops, independently of Numba."""
+    previous = get_native_threads()
+    if previous is None:
+        yield
+        return
+    try:
+        set_native_threads(n)
+        yield
+    finally:
+        set_native_threads(previous)
+
+
 def install_interactive_budget() -> int | None:
     """Set the process-default numba thread count to the interactive budget.
 
@@ -89,6 +132,7 @@ def install_interactive_budget() -> int | None:
     """
     nb = _numba()
     budget = interactive_budget()
+    set_native_threads(native_budget())
     if nb is None:
         return None
     nb.set_num_threads(budget)
