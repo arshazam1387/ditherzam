@@ -4,8 +4,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import math
+import os
 
 import numpy as np
+
+try:
+    from ditherzam._native import _selection as _native_selection
+except ImportError:
+    _native_selection = None
 
 
 class SelectionError(ValueError):
@@ -119,7 +125,7 @@ def combine_selection(
     return TemporarySelection(result.astype(np.uint8))
 
 
-def selection_to_source(
+def _validate_selection_to_source(
     selection: TemporarySelection,
     source_shape: tuple[int, int],
     *,
@@ -127,8 +133,7 @@ def selection_to_source(
     layer_y: float,
     scale_x: float,
     scale_y: float,
-) -> np.ndarray:
-    """Map document coverage to source pixels through inverse x/y/scale."""
+) -> tuple[int, int, float, float, float, float]:
     if (
         not isinstance(source_shape, tuple)
         or len(source_shape) != 2
@@ -144,10 +149,40 @@ def selection_to_source(
     ) or scale_x <= 0 or scale_y <= 0:
         raise SelectionError("layer mapping must use finite positive scales")
     height, width = source_shape
+    return (
+        height,
+        width,
+        float(layer_x),
+        float(layer_y),
+        float(scale_x),
+        float(scale_y),
+    )
+
+
+def _selection_to_source_reference(
+    selection: TemporarySelection,
+    source_shape: tuple[int, int],
+    *,
+    layer_x: float,
+    layer_y: float,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    """Independently callable NumPy reference for differential verification."""
+    height, width, layer_x, layer_y, scale_x, scale_y = (
+        _validate_selection_to_source(
+            selection,
+            source_shape,
+            layer_x=layer_x,
+            layer_y=layer_y,
+            scale_x=scale_x,
+            scale_y=scale_y,
+        )
+    )
     # A source pixel centre is transformed into document coordinates, then
     # sampled from document coverage with bilinear interpolation.
-    dx = float(layer_x) + (np.arange(width) + 0.5) * float(scale_x) - 0.5
-    dy = float(layer_y) + (np.arange(height) + 0.5) * float(scale_y) - 0.5
+    dx = layer_x + (np.arange(width) + 0.5) * scale_x - 0.5
+    dy = layer_y + (np.arange(height) + 0.5) * scale_y - 0.5
     x0 = np.floor(dx).astype(np.int64)
     y0 = np.floor(dy).astype(np.int64)
     fx = dx - x0
@@ -164,6 +199,60 @@ def selection_to_source(
             sample = source[np.ix_(clipped_y, clipped_x)]
             result += sample * wy[:, None] * wx[None, :] * valid
     return np.floor(result + 0.5).astype(np.uint8)
+
+
+def _selection_to_source_native(
+    selection: TemporarySelection,
+    source_shape: tuple[int, int],
+    *,
+    layer_x: float,
+    layer_y: float,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    """Independently callable native seam; it never silently falls back."""
+    height, width, layer_x, layer_y, scale_x, scale_y = (
+        _validate_selection_to_source(
+            selection,
+            source_shape,
+            layer_x=layer_x,
+            layer_y=layer_y,
+            scale_x=scale_x,
+            scale_y=scale_y,
+        )
+    )
+    if _native_selection is None:
+        raise RuntimeError("native selection extension is unavailable")
+    return _native_selection.selection_to_source_u8(
+        selection.pixels,
+        height,
+        width,
+        layer_x,
+        layer_y,
+        scale_x,
+        scale_y,
+    )
+
+
+def selection_to_source(
+    selection: TemporarySelection,
+    source_shape: tuple[int, int],
+    *,
+    layer_x: float,
+    layer_y: float,
+    scale_x: float,
+    scale_y: float,
+) -> np.ndarray:
+    """Map document coverage to source pixels through inverse x/y/scale."""
+    kwargs = {
+        "layer_x": layer_x,
+        "layer_y": layer_y,
+        "scale_x": scale_x,
+        "scale_y": scale_y,
+    }
+    if _native_selection is None or os.environ.get("DITHERZAM_DISABLE_NATIVE") == "1":
+        return _selection_to_source_reference(selection, source_shape, **kwargs)
+    return _selection_to_source_native(selection, source_shape, **kwargs)
 
 
 def restrict_mask_edit(
