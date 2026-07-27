@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import importlib
+import os
 from typing import Any
 
 import numpy as np
+
+
+try:
+    if os.environ.get("DITHERZAM_DISABLE_NATIVE") == "1":
+        raise ImportError("native extensions disabled by environment")
+    _composite = importlib.import_module("ditherzam._native._composite")
+except ImportError:
+    _composite = None
 
 
 def _as_rgba(value: Any) -> np.ndarray:
@@ -58,8 +68,8 @@ def _weight_array(weight: Any, shape: tuple[int, int]) -> tuple[float | np.ndarr
     return weights, False
 
 
-def blend_straight_rgba(a: Any, b: Any, weight: Any) -> np.ndarray:
-    """Blend straight-alpha pixels using premultiplication for the calculation."""
+def _blend_straight_rgba_reference(a: Any, b: Any, weight: Any) -> np.ndarray:
+    """Independently callable NumPy reference for exactness verification."""
     a_rgba, b_rgba = _canonical_pair(a, b)
     normalized_weight, is_scalar = _weight_array(weight, a_rgba.shape[:2])
 
@@ -89,6 +99,34 @@ def blend_straight_rgba(a: Any, b: Any, weight: Any) -> np.ndarray:
 
     out = np.concatenate((out_rgb, out_alpha), axis=2)
     return np.clip(np.floor(out + 0.5), 0.0, 255.0).astype(np.uint8)
+
+
+def _blend_straight_rgba_native(a: Any, b: Any, weight: Any) -> np.ndarray:
+    """Independently callable native seam; raises instead of falling back."""
+    a_rgba, b_rgba = _canonical_pair(a, b)
+    normalized_weight, is_scalar = _weight_array(weight, a_rgba.shape[:2])
+    if _composite is None:
+        raise RuntimeError("native compositor extension is unavailable")
+    if is_scalar and normalized_weight == 0.0:
+        return a_rgba
+    if is_scalar and normalized_weight == 1.0:
+        return b_rgba
+    a_rgba = np.ascontiguousarray(a_rgba)
+    b_rgba = np.ascontiguousarray(b_rgba)
+    if is_scalar:
+        return _composite.blend_transition_scalar_u8(
+            a_rgba, b_rgba, normalized_weight
+        )
+    return _composite.blend_transition_plane_u8(
+        a_rgba, b_rgba, np.ascontiguousarray(normalized_weight)
+    )
+
+
+def blend_straight_rgba(a: Any, b: Any, weight: Any) -> np.ndarray:
+    """Blend straight-alpha pixels using premultiplication for the calculation."""
+    if _composite is None:
+        return _blend_straight_rgba_reference(a, b, weight)
+    return _blend_straight_rgba_native(a, b, weight)
 
 
 def select_rgba(a: Any, b: Any, choose_b: Any) -> np.ndarray:
