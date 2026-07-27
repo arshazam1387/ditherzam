@@ -33,6 +33,11 @@ extensions = [
         ["ditherzam/_native/_selection.pyx"],
         include_dirs=[numpy.get_include()],
     ),
+    Extension(
+        "ditherzam._native._brush",
+        ["ditherzam/_native/_brush.pyx"],
+        include_dirs=[numpy.get_include()],
+    ),
 ]
 
 
