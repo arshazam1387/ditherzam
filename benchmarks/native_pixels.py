@@ -154,6 +154,68 @@ def benchmark_compositor(*, warmup: int = 1, samples: int = 7) -> list[dict[str,
     return rows
 
 
+def benchmark_selection(*, samples: int = 7) -> list[dict[str, object]]:
+    """Benchmark exact selection mapping at 1080p and 4K after warmup."""
+    from ditherzam.layers.selection import (
+        TemporarySelection,
+        _selection_to_source_native,
+        _selection_to_source_reference,
+    )
+
+    cases = (
+        ("1080p", (1080, 1920)),
+        ("4k", (2160, 3840)),
+    )
+    transforms = (
+        ("identity", dict(layer_x=0.0, layer_y=0.0, scale_x=1.0, scale_y=1.0)),
+        (
+            "transformed",
+            dict(layer_x=-13.25, layer_y=7.75, scale_x=0.83, scale_y=1.17),
+        ),
+    )
+    results: list[dict[str, object]] = []
+    for resolution, shape in cases:
+        selection = TemporarySelection(deterministic_u8(shape, seed=sum(shape)))
+        for transform_name, transform in transforms:
+            comparison = compare_exact_outputs(
+                _selection_to_source_reference,
+                _selection_to_source_native,
+                selection,
+                shape,
+                **transform,
+            )
+            reference = measure(
+                lambda: _selection_to_source_reference(
+                    selection, shape, **transform
+                ),
+                warmup=1,
+                samples=samples,
+            )
+            native = measure(
+                lambda: _selection_to_source_native(selection, shape, **transform),
+                warmup=1,
+                samples=samples,
+            )
+            results.append(
+                {
+                    "operation": "selection_to_source",
+                    "resolution": resolution,
+                    "transform": transform_name,
+                    "shape": shape,
+                    "samples": samples,
+                    "reference_median_ms": reference["median_ms"],
+                    "reference_p95_ms": reference["p95_ms"],
+                    "native_median_ms": native["median_ms"],
+                    "native_p95_ms": native["p95_ms"],
+                    "speedup": speedup(
+                        float(reference["median_ms"]), float(native["median_ms"])
+                    ),
+                    "digest": comparison["digest"],
+                }
+            )
+    return results
+
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -166,13 +228,18 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--warmup", type=int, default=1)
     parser.add_argument("--samples", type=int, default=7)
+    parser.add_argument(
+        "--selection", action="store_true", help="run selection mapping benchmarks"
+    )
     arguments = parser.parse_args()
-    print(
-        json.dumps(
-            benchmark_compositor(
-                warmup=arguments.warmup,
-                samples=arguments.samples,
-            ),
-            indent=2,
+    benchmark = (
+        benchmark_selection(samples=arguments.samples)
+        if arguments.selection
+        else benchmark_compositor(
+            warmup=arguments.warmup,
+            samples=arguments.samples,
         )
+    )
+    print(
+        json.dumps(benchmark, indent=2)
     )
