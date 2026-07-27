@@ -327,6 +327,78 @@ def benchmark_transitions(
     return results
 
 
+def benchmark_brush(*, samples: int = 7) -> list[dict[str, object]]:
+    """Benchmark exact bounded mask stamps and a representative repeated stroke."""
+    from ditherzam.layers.mask_brush import (
+        BrushMode,
+        BrushSettings,
+        BrushStroke,
+        _stamp_mask_brush_native,
+        _stamp_mask_brush_reference,
+    )
+
+    results: list[dict[str, object]] = []
+    for diameter in (64, 256, 1024):
+        side = max(512, diameter * 2)
+        settings = BrushSettings(diameter, 55, 73, BrushMode.HIDE)
+
+        def call(seam):
+            mask = np.full((side, side), 255, dtype=np.uint8)
+            dirty = seam(mask, side / 2, side / 2, settings)
+            return mask, dirty
+
+        reference_mask, reference_dirty = call(_stamp_mask_brush_reference)
+        native_mask, native_dirty = call(_stamp_mask_brush_native)
+        if native_dirty != reference_dirty or not np.array_equal(
+            native_mask, reference_mask
+        ):
+            raise AssertionError(f"{diameter}px brush differs from reference")
+        reference = measure(
+            lambda: call(_stamp_mask_brush_reference)[0], warmup=1, samples=samples
+        )
+        native = measure(
+            lambda: call(_stamp_mask_brush_native)[0], warmup=1, samples=samples
+        )
+        results.append(
+            {
+                "operation": "stamp_mask_brush",
+                "diameter": diameter,
+                "samples": samples,
+                "reference_median_ms": reference["median_ms"],
+                "reference_p95_ms": reference["p95_ms"],
+                "native_median_ms": native["median_ms"],
+                "native_p95_ms": native["p95_ms"],
+                "speedup": speedup(
+                    float(reference["median_ms"]), float(native["median_ms"])
+                ),
+                "dirty": tuple(native_dirty.__dict__.values()),
+                "digest": native["digest"],
+            }
+        )
+
+    def repeated_stroke():
+        mask = np.full((1080, 1920), 255, dtype=np.uint8)
+        stroke = BrushStroke(
+            mask, BrushSettings(256, 40, 65, BrushMode.HIDE)
+        )
+        stroke.start(256.0, 540.0)
+        stroke.add_point(1664.0, 540.0)
+        return mask
+
+    repeated = measure(repeated_stroke, warmup=1, samples=samples)
+    results.append(
+        {
+            "operation": "mask_brush_repeated_stroke",
+            "diameter": 256,
+            "samples": samples,
+            "native_median_ms": repeated["median_ms"],
+            "native_p95_ms": repeated["p95_ms"],
+            "digest": repeated["digest"],
+        }
+    )
+    return results
+
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -345,8 +417,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--transitions", action="store_true", help="run transition benchmarks"
     )
+    parser.add_argument(
+        "--brush", action="store_true", help="run mask-brush benchmarks"
+    )
     arguments = parser.parse_args()
-    if arguments.selection:
+    if arguments.brush:
+        benchmark = benchmark_brush(samples=arguments.samples)
+    elif arguments.selection:
         benchmark = benchmark_selection(samples=arguments.samples)
     elif arguments.transitions:
         benchmark = benchmark_transitions(
