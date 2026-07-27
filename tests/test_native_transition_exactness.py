@@ -104,3 +104,39 @@ def test_noncontiguous_rgb_inputs_and_float32_plane_preserve_contract():
         weights,
     )
     assert comparison["shape"] == (3, 4, 4)
+
+
+@pytest.mark.parametrize("seed", (0, 1, 17, 0xD17E, 0xFFFF))
+def test_seeded_randomized_scalar_and_plane_differential(seed):
+    from ditherzam.composition.transitions import (
+        _blend_straight_rgba_native,
+        _blend_straight_rgba_reference,
+    )
+
+    rng = np.random.default_rng(seed)
+    a = rng.integers(0, 256, size=(19, 23, 4), dtype=np.uint8)
+    b = rng.integers(0, 256, size=(19, 23, 4), dtype=np.uint8)
+    alpha_boundaries = np.array([0, 1, 127, 128, 254, 255], dtype=np.uint8)
+    a[..., 3] = np.resize(alpha_boundaries, a.shape[:2])
+    b[..., 3] = np.resize(alpha_boundaries[::-1], b.shape[:2])
+
+    scalar = float(rng.random())
+    scalar_result = compare_exact_outputs(
+        _blend_straight_rgba_reference,
+        _blend_straight_rgba_native,
+        a,
+        b,
+        scalar,
+    )
+    assert scalar_result["shape"] == a.shape
+
+    weights = rng.random(a.shape[:2], dtype=np.float64)
+    weights.flat[:6] = np.array([0.0, 1.0, 0.5, 1 / 255, 127 / 255, 254 / 255])
+    plane_result = compare_exact_outputs(
+        _blend_straight_rgba_reference,
+        _blend_straight_rgba_native,
+        a,
+        b,
+        weights,
+    )
+    assert plane_result["shape"] == a.shape
