@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
     [switch]$SkipPyInstaller,
+    [switch]$SmartMask,
     [string]$PythonPath
 )
 
@@ -30,13 +31,21 @@ Invoke-External $Python @("-c", "from ditherzam._native import native_available,
 Invoke-External $Python @("-m", "pytest", "-q", (Join-Path $ProjectRoot "tests\test_native_pixels_exactness.py"))
 
 if (-not $SkipPyInstaller) {
-    $Lock = Join-Path $ProjectRoot "packaging\smart-mask-release.lock.json"
-    if (-not (Test-Path -LiteralPath $Lock)) {
-        throw "PyInstaller release requires the approved Smart Mask lock and local assets: $Lock"
+    if ($SmartMask) {
+        $Lock = Join-Path $ProjectRoot "packaging\smart-mask-release.lock.json"
+        if (-not (Test-Path -LiteralPath $Lock)) {
+            throw "Smart Mask release requires the approved lock and local assets: $Lock"
+        }
+        Invoke-External $Python @((Join-Path $ProjectRoot "tools\build_smart_mask_release.py"))
+    } else {
+        Invoke-External $Python @("-m", "PyInstaller", "--clean", "--noconfirm",
+            (Join-Path $ProjectRoot "packaging\ditherzam-standard.spec"))
     }
-    Invoke-External $Python @((Join-Path $ProjectRoot "tools\build_smart_mask_release.py"))
-    $FrozenNative = Get-ChildItem -Path (Join-Path $ProjectRoot "dist\ditherzam") -Recurse -Filter "_smoke*.pyd"
-    if (-not $FrozenNative) {
-        throw "Frozen release did not collect ditherzam._native._smoke"
+    foreach ($Module in @("_smoke", "_composite", "_selection", "_brush")) {
+        $FrozenNative = Get-ChildItem -Path (Join-Path $ProjectRoot "dist\ditherzam") -Recurse -Filter "${Module}*.pyd"
+        if (-not $FrozenNative) {
+            throw "Frozen release did not collect ditherzam._native.$Module"
+        }
     }
+    Invoke-External (Join-Path $ProjectRoot "dist\ditherzam\ditherzam.exe") @("--native-smoke")
 }

@@ -3,6 +3,16 @@
 This file records third-party code, models, and assets bundled with or staged
 by ditherzam, per component license and attribution requirements.
 
+## Native build and frozen distribution
+
+The Windows distribution contains Cython-generated extension modules, the NumPy
+runtime needed by those modules, the Microsoft Visual C++/OpenMP runtime selected
+by the supported toolchain, and is assembled with PyInstaller. Cython and
+PyInstaller are build tools and their source is not incorporated into
+ditherzam's source tree. Their applicable license files, along with NumPy,
+PySide6/Shiboken, Numba/llvmlite, Pillow, PyYAML, and platformdirs notices, must
+be retained when producing a redistributable binary bundle.
+
 ## Smart Mask — U-2-Net (provisional, weights not yet shipped)
 
 - **Project:** U-2-Net
