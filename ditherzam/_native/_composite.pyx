@@ -41,6 +41,18 @@ cdef inline unsigned char quantize(double value) noexcept nogil:
     return <unsigned char>rounded
 
 
+cdef inline unsigned char resolve_straight_channel(
+    double premul,
+    double out_alpha,
+    double scale,
+    double hidden,
+) noexcept nogil:
+    """Resolve one premultiplied channel, including zero-alpha hidden RGB."""
+    if out_alpha > 0.0:
+        return quantize((premul / out_alpha) * scale)
+    return quantize(hidden)
+
+
 cdef inline unsigned char composite_channel(
     double cb,
     double cs,
@@ -55,9 +67,7 @@ cdef inline unsigned char composite_channel(
         + (1.0 - ab) * ass * cs
         + ab * ass * blended
     )
-    if ao > 0.0:
-        return quantize((premul / ao) * 255.0)
-    return quantize(cs * 255.0)
+    return resolve_straight_channel(premul, ao, 255.0, cs * 255.0)
 
 
 cdef inline void transition_pixel(
@@ -78,14 +88,13 @@ cdef inline void transition_pixel(
             a[offset + channel] * a_alpha * one_minus_weight
             + b[offset + channel] * b_alpha * weight
         )
-        if out_alpha > 0.0:
-            output[offset + channel] = quantize(premul / out_alpha)
-        else:
-            hidden = (
-                a[offset + channel] * one_minus_weight
-                + b[offset + channel] * weight
-            )
-            output[offset + channel] = quantize(hidden)
+        hidden = (
+            a[offset + channel] * one_minus_weight
+            + b[offset + channel] * weight
+        )
+        output[offset + channel] = resolve_straight_channel(
+            premul, out_alpha, 1.0, hidden
+        )
     output[offset + 3] = quantize(out_alpha)
 
 
