@@ -216,6 +216,117 @@ def benchmark_selection(*, samples: int = 7) -> list[dict[str, object]]:
     return results
 
 
+def benchmark_transitions(
+    *, warmup: int = 1, samples: int = 7
+) -> list[dict[str, object]]:
+    """Benchmark exact scalar blends and soft spatial wipes at 1080p and 4K."""
+    from ditherzam.composition.transitions import (
+        _blend_straight_rgba_native,
+        _blend_straight_rgba_reference,
+    )
+
+    results: list[dict[str, object]] = []
+    for resolution, (height, width) in (
+        ("1080p", (1080, 1920)),
+        ("4k", (2160, 3840)),
+    ):
+        a = deterministic_u8((height, width, 4), seed=DEFAULT_SEED + height)
+        b = deterministic_u8((height, width, 4), seed=DEFAULT_SEED + width)
+        comparison = compare_exact_outputs(
+            _blend_straight_rgba_reference,
+            _blend_straight_rgba_native,
+            a,
+            b,
+            0.37,
+        )
+        reference = measure(
+            lambda: _blend_straight_rgba_reference(a, b, 0.37),
+            warmup=warmup,
+            samples=samples,
+        )
+        native = measure(
+            lambda: _blend_straight_rgba_native(a, b, 0.37),
+            warmup=warmup,
+            samples=samples,
+        )
+        results.append(
+            {
+                "operation": "transition_scalar",
+                "resolution": resolution,
+                "samples": samples,
+                "reference_median_ms": reference["median_ms"],
+                "reference_p95_ms": reference["p95_ms"],
+                "native_median_ms": native["median_ms"],
+                "native_p95_ms": native["p95_ms"],
+                "speedup": speedup(
+                    float(reference["median_ms"]), float(native["median_ms"])
+                ),
+                "digest": comparison["digest"],
+            }
+        )
+
+        base_gray = deterministic_u8((height, width), seed=height + width)
+
+        def make_weight(mode: str) -> np.ndarray:
+            if mode == "linear":
+                coord = np.broadcast_to(
+                    np.arange(width, dtype=np.float64) / max(width - 1, 1),
+                    (height, width),
+                )
+            elif mode == "radial":
+                yy, xx = np.indices((height, width), dtype=np.float64)
+                center_y = (height - 1) / 2.0
+                center_x = (width - 1) / 2.0
+                coord = np.hypot(yy - center_y, xx - center_x)
+                coord /= np.hypot(center_y, center_x)
+            else:
+                coord = base_gray.astype(np.float64) / 255.0
+            return np.ascontiguousarray(
+                np.clip((0.57 - coord) / 0.2 + 0.5, 0.0, 1.0)
+            )
+
+        for mode in ("linear", "radial", "luma"):
+            weight = make_weight(mode)
+            comparison = compare_exact_outputs(
+                _blend_straight_rgba_reference,
+                _blend_straight_rgba_native,
+                a,
+                b,
+                weight,
+            )
+            reference = measure(
+                lambda mode=mode: _blend_straight_rgba_reference(
+                    a, b, make_weight(mode)
+                ),
+                warmup=warmup,
+                samples=samples,
+            )
+            native = measure(
+                lambda mode=mode: _blend_straight_rgba_native(
+                    a, b, make_weight(mode)
+                ),
+                warmup=warmup,
+                samples=samples,
+            )
+            results.append(
+                {
+                    "operation": "spatial_wipe_end_to_end",
+                    "resolution": resolution,
+                    "mode": mode,
+                    "samples": samples,
+                    "reference_median_ms": reference["median_ms"],
+                    "reference_p95_ms": reference["p95_ms"],
+                    "native_median_ms": native["median_ms"],
+                    "native_p95_ms": native["p95_ms"],
+                    "speedup": speedup(
+                        float(reference["median_ms"]), float(native["median_ms"])
+                    ),
+                    "digest": comparison["digest"],
+                }
+            )
+    return results
+
+
 if __name__ == "__main__":
     import argparse
     import sys
@@ -231,15 +342,22 @@ if __name__ == "__main__":
     parser.add_argument(
         "--selection", action="store_true", help="run selection mapping benchmarks"
     )
+    parser.add_argument(
+        "--transitions", action="store_true", help="run transition benchmarks"
+    )
     arguments = parser.parse_args()
-    benchmark = (
-        benchmark_selection(samples=arguments.samples)
-        if arguments.selection
-        else benchmark_compositor(
+    if arguments.selection:
+        benchmark = benchmark_selection(samples=arguments.samples)
+    elif arguments.transitions:
+        benchmark = benchmark_transitions(
             warmup=arguments.warmup,
             samples=arguments.samples,
         )
-    )
+    else:
+        benchmark = benchmark_compositor(
+            warmup=arguments.warmup,
+            samples=arguments.samples,
+        )
     print(
         json.dumps(benchmark, indent=2)
     )
