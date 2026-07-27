@@ -60,6 +60,111 @@ cdef inline unsigned char composite_channel(
     return quantize(cs * 255.0)
 
 
+cdef inline void transition_pixel(
+    const unsigned char* a,
+    const unsigned char* b,
+    unsigned char* output,
+    Py_ssize_t offset,
+    double weight,
+) noexcept nogil:
+    cdef double one_minus_weight = 1.0 - weight
+    cdef double a_alpha = a[offset + 3]
+    cdef double b_alpha = b[offset + 3]
+    cdef double out_alpha = a_alpha * one_minus_weight + b_alpha * weight
+    cdef double premul, hidden
+    cdef Py_ssize_t channel
+    for channel in range(3):
+        premul = (
+            a[offset + channel] * a_alpha * one_minus_weight
+            + b[offset + channel] * b_alpha * weight
+        )
+        if out_alpha > 0.0:
+            output[offset + channel] = quantize(premul / out_alpha)
+        else:
+            hidden = (
+                a[offset + channel] * one_minus_weight
+                + b[offset + channel] * weight
+            )
+            output[offset + channel] = quantize(hidden)
+    output[offset + 3] = quantize(out_alpha)
+
+
+cdef tuple transition_arrays(object first, object second):
+    cdef cnp.ndarray a_array = np.asarray(first)
+    cdef cnp.ndarray b_array = np.asarray(second)
+    if (
+        a_array.dtype != np.uint8
+        or b_array.dtype != np.uint8
+        or a_array.ndim != 3
+        or b_array.ndim != 3
+        or a_array.shape[2] != 4
+        or b_array.shape[2] != 4
+        or not a_array.flags.c_contiguous
+        or not b_array.flags.c_contiguous
+    ):
+        raise ValueError("inputs must be C-contiguous RGBA uint8 arrays")
+    if (
+        a_array.shape[0] != b_array.shape[0]
+        or a_array.shape[1] != b_array.shape[1]
+    ):
+        raise ValueError("inputs must have equal height and width")
+    return a_array, b_array
+
+
+def blend_transition_scalar_u8(object first, object second, double weight):
+    """Straight-alpha transition blend with one scalar weight."""
+    cdef cnp.ndarray a_array
+    cdef cnp.ndarray b_array
+    a_array, b_array = transition_arrays(first, second)
+    if weight < 0.0 or weight > 1.0:
+        raise ValueError("weight must be within [0,1]")
+    cdef Py_ssize_t height = a_array.shape[0]
+    cdef Py_ssize_t width = a_array.shape[1]
+    cdef cnp.ndarray output_array = np.empty(
+        (height, width, 4), dtype=np.uint8, order="C"
+    )
+    cdef const unsigned char* a = <const unsigned char*>a_array.data
+    cdef const unsigned char* b = <const unsigned char*>b_array.data
+    cdef unsigned char* output = <unsigned char*>output_array.data
+    cdef Py_ssize_t pixel
+    cdef Py_ssize_t pixels = height * width
+    with nogil:
+        for pixel in prange(pixels, schedule="static", num_threads=2):
+            transition_pixel(a, b, output, pixel * 4, weight)
+    return output_array
+
+
+def blend_transition_plane_u8(object first, object second, object weight_plane):
+    """Straight-alpha transition blend with a C-contiguous float64 plane."""
+    cdef cnp.ndarray a_array
+    cdef cnp.ndarray b_array
+    a_array, b_array = transition_arrays(first, second)
+    cdef cnp.ndarray weights_array = np.asarray(weight_plane)
+    if (
+        weights_array.dtype != np.float64
+        or weights_array.ndim != 2
+        or not weights_array.flags.c_contiguous
+        or weights_array.shape[0] != a_array.shape[0]
+        or weights_array.shape[1] != a_array.shape[1]
+    ):
+        raise ValueError("weights must be a matching C-contiguous float64 plane")
+    cdef Py_ssize_t height = a_array.shape[0]
+    cdef Py_ssize_t width = a_array.shape[1]
+    cdef cnp.ndarray output_array = np.empty(
+        (height, width, 4), dtype=np.uint8, order="C"
+    )
+    cdef const unsigned char* a = <const unsigned char*>a_array.data
+    cdef const unsigned char* b = <const unsigned char*>b_array.data
+    cdef const double* weights = <const double*>weights_array.data
+    cdef unsigned char* output = <unsigned char*>output_array.data
+    cdef Py_ssize_t pixel
+    cdef Py_ssize_t pixels = height * width
+    with nogil:
+        for pixel in prange(pixels, schedule="static", num_threads=2):
+            transition_pixel(a, b, output, pixel * 4, weights[pixel])
+    return output_array
+
+
 def blend_layer_u8(object backdrop, object source, int mode, int opacity):
     """Composite validated C-contiguous RGBA uint8 arrays in one pixel pass."""
     cdef cnp.ndarray back_array = np.asarray(backdrop)
