@@ -1,8 +1,27 @@
 from __future__ import annotations
 
+import importlib
+import os
+
 import numpy as np
 
 from .model import BLEND_MODES
+
+
+try:
+    if os.environ.get("DITHERZAM_DISABLE_NATIVE") == "1":
+        raise ImportError("native extensions disabled by environment")
+    _composite = importlib.import_module("ditherzam._native._composite")
+except ImportError:
+    _composite = None
+
+_MODE_CODES = {
+    "normal": 0,
+    "multiply": 1,
+    "screen": 2,
+    "overlay": 3,
+    "difference": 4,
+}
 
 
 def _rgba(image) -> np.ndarray:
@@ -23,8 +42,7 @@ def _rgba(image) -> np.ndarray:
     return result
 
 
-def blend_layer(backdrop, source, mode: str = "normal", opacity: int = 100):
-    """Composite source over backdrop using the W3C separable blend formula."""
+def _validated_inputs(backdrop, source, mode: str, opacity: int):
     backdrop = _rgba(backdrop)
     source = _rgba(source)
     if backdrop.shape[:2] != source.shape[:2]:
@@ -35,7 +53,14 @@ def blend_layer(backdrop, source, mode: str = "normal", opacity: int = 100):
         raise ValueError("opacity must be an integer")
     if not 0 <= opacity <= 100:
         raise ValueError("opacity must be within 0..100")
+    return backdrop, source
 
+
+def _blend_layer_reference(
+    backdrop, source, mode: str = "normal", opacity: int = 100
+) -> np.ndarray:
+    """Independently callable NumPy reference for exactness verification."""
+    backdrop, source = _validated_inputs(backdrop, source, mode, opacity)
     cb = backdrop[..., :3].astype(np.float64) / 255.0
     cs = source[..., :3].astype(np.float64) / 255.0
     ab = backdrop[..., 3:4].astype(np.float64) / 255.0
@@ -72,3 +97,25 @@ def blend_layer(backdrop, source, mode: str = "normal", opacity: int = 100):
     np.copyto(rgb, cs, where=np.broadcast_to(ao == 0.0, rgb.shape))
     straight = np.concatenate((rgb, ao), axis=2) * 255.0
     return np.clip(np.floor(straight + 0.5), 0.0, 255.0).astype(np.uint8)
+
+
+def _blend_layer_native(
+    backdrop, source, mode: str = "normal", opacity: int = 100
+) -> np.ndarray:
+    """Independently callable native seam; raises instead of falling back."""
+    backdrop, source = _validated_inputs(backdrop, source, mode, opacity)
+    if _composite is None:
+        raise RuntimeError("native compositor extension is unavailable")
+    return _composite.blend_layer_u8(
+        np.ascontiguousarray(backdrop),
+        np.ascontiguousarray(source),
+        _MODE_CODES[mode],
+        opacity,
+    )
+
+
+def blend_layer(backdrop, source, mode: str = "normal", opacity: int = 100):
+    """Composite source over backdrop using the W3C separable blend formula."""
+    if _composite is None:
+        return _blend_layer_reference(backdrop, source, mode, opacity)
+    return _blend_layer_native(backdrop, source, mode, opacity)
