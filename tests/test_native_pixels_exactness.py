@@ -5,7 +5,13 @@ from pathlib import Path
 
 import numpy as np
 
-from benchmarks.native_pixels import deterministic_u8, measure, output_digest, speedup
+from benchmarks.native_pixels import (
+    compare_exact_outputs,
+    deterministic_u8,
+    measure,
+    output_digest,
+    speedup,
+)
 
 
 def test_native_smoke_import_and_reference_are_exact():
@@ -24,6 +30,10 @@ def test_native_fallback_is_independently_selectable(monkeypatch):
     try:
         assert fallback.native_available() is False
         assert fallback.smoke_add(20, 22) == fallback.smoke_add_reference(20, 22) == 42
+        source = deterministic_u8((3, 5, 4))
+        result = fallback.smoke_copy_u8(source)
+        assert np.array_equal(result, fallback.smoke_copy_u8_reference(source))
+        assert result is not source and result.flags.owndata and result.flags.c_contiguous
     finally:
         monkeypatch.delenv("DITHERZAM_DISABLE_NATIVE")
         importlib.reload(native)
@@ -38,6 +48,21 @@ def test_differential_input_and_digest_conventions():
     assert set((0, 1, 127, 128, 254, 255)).issubset(set(first.reshape(-1)))
     assert output_digest(first) == output_digest(second)
     assert output_digest(first) != output_digest(first[..., :3])
+
+
+def test_reference_and_native_array_seams_obey_exact_output_contract():
+    from ditherzam import _native
+
+    for shape in ((1, 1, 4), (3, 5, 4), (7, 2, 4)):
+        source = deterministic_u8(shape)
+        comparison = compare_exact_outputs(
+            _native.smoke_copy_u8_reference,
+            _native.smoke_copy_u8_native,
+            source,
+        )
+        assert comparison["shape"] == shape
+        assert comparison["dtype"] == np.dtype(np.uint8).str
+        assert comparison["digest"] == output_digest(source)
 
 
 def test_benchmark_convention_excludes_warmup_and_reports_required_fields():
