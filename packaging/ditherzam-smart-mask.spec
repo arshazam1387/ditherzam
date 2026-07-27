@@ -13,7 +13,8 @@ binaries = [(str(bundle[f"ort:{name}"]), "onnxruntime/capi") for name in
             ("onnxruntime.dll", "onnxruntime_providers_shared.dll")]
 
 a = Analysis([str(ROOT / "ditherzam" / "app.py")], pathex=[str(ROOT)],
-             binaries=binaries, datas=datas, hiddenimports=["onnxruntime"],
+             binaries=binaries, datas=datas,
+             hiddenimports=["onnxruntime", "ditherzam._native._smoke"],
              hookspath=[], runtime_hooks=[], excludes=[])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ditherzam",
