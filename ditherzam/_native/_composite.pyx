@@ -152,8 +152,9 @@ def blend_transition_scalar_u8(object first, object second, double weight):
     cdef unsigned char* output = <unsigned char*>output_array.data
     cdef Py_ssize_t pixel
     cdef Py_ssize_t pixels = height * width
+    cdef int thread_budget = _thread_budget
     with nogil:
-        for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
+        for pixel in prange(pixels, schedule="static", num_threads=thread_budget):
             transition_pixel(a, b, output, pixel * 4, weight)
     return output_array
 
@@ -183,8 +184,9 @@ def blend_transition_plane_u8(object first, object second, object weight_plane):
     cdef unsigned char* output = <unsigned char*>output_array.data
     cdef Py_ssize_t pixel
     cdef Py_ssize_t pixels = height * width
+    cdef int thread_budget = _thread_budget
     with nogil:
-        for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
+        for pixel in prange(pixels, schedule="static", num_threads=thread_budget):
             transition_pixel(a, b, output, pixel * 4, weights[pixel])
     return output_array
 
@@ -224,13 +226,14 @@ def blend_layer_u8(object backdrop, object source, int mode, int opacity):
     cdef unsigned char* output = <unsigned char*>output_array.data
     cdef Py_ssize_t pixel, offset, channel
     cdef Py_ssize_t pixels = height * width
+    cdef int thread_budget = _thread_budget
     cdef double opacity_factor = opacity / 100.0
     cdef double source_alpha, ass, ab, cb, cs, blended
     cdef double one_minus_ass, ao
 
     with nogil:
         if mode == 0:
-            for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
+            for pixel in prange(pixels, schedule="static", num_threads=thread_budget):
                 offset = pixel * 4
                 source_alpha = floor(src[offset + 3] * opacity_factor + 0.5)
                 ass = source_alpha / 255.0
@@ -246,7 +249,7 @@ def blend_layer_u8(object backdrop, object source, int mode, int opacity):
                     )
                 output[offset + 3] = quantize(ao * 255.0)
         elif mode == 3:
-            for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
+            for pixel in prange(pixels, schedule="static", num_threads=thread_budget):
                 offset = pixel * 4
                 source_alpha = floor(src[offset + 3] * opacity_factor + 0.5)
                 ass = source_alpha / 255.0
@@ -264,7 +267,7 @@ def blend_layer_u8(object backdrop, object source, int mode, int opacity):
                     )
                 output[offset + 3] = quantize(ao * 255.0)
         else:
-            for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
+            for pixel in prange(pixels, schedule="static", num_threads=thread_budget):
                 offset = pixel * 4
                 source_alpha = floor(src[offset + 3] * opacity_factor + 0.5)
                 ass = source_alpha / 255.0

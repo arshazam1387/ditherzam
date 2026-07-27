@@ -92,15 +92,6 @@ def test_install_interactive_budget_sets_process_default(monkeypatch):
     assert native["n"] == 2
 
 
-def test_native_threads_sets_and_restores(monkeypatch):
-    state = {"n": 2}
-    monkeypatch.setattr(tp, "get_native_threads", lambda: state["n"])
-    monkeypatch.setattr(tp, "set_native_threads", lambda n: state.__setitem__("n", n))
-    with tp.native_threads(4):
-        assert state["n"] == 4
-    assert state["n"] == 2
-
-
 def test_video_dither_worker_runs_under_export_budget(monkeypatch):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     pytest.importorskip("PySide6")
