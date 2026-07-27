@@ -89,3 +89,16 @@ def test_frozen_spec_collects_native_smoke_extension():
         / "ditherzam-smart-mask.spec"
     ).read_text(encoding="utf-8")
     assert '"ditherzam._native._smoke"' in spec
+
+
+def test_windows_build_script_checks_every_external_exit_and_pins_pytest():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "tools" / "build_windows_release.ps1").read_text(encoding="utf-8")
+    requirements = (
+        root / "packaging" / "requirements-windows-build.txt"
+    ).read_text(encoding="utf-8")
+    assert script.count("& $FilePath @ArgumentList") == 1
+    assert "& $Python" not in script
+    assert "if ($LASTEXITCODE -ne 0)" in script
+    assert script.count("Invoke-External $Python") == 6
+    assert "pytest==9.1.1" in requirements
