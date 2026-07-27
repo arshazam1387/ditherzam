@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import statistics
 import time
 from collections.abc import Callable, Iterable
@@ -104,3 +105,74 @@ def shapes(include_full_frame: bool = False) -> Iterable[tuple[int, int, int]]:
     if include_full_frame:
         return (*base, (1080, 1920, 4), (2160, 3840, 4))
     return base
+
+
+def benchmark_compositor(*, warmup: int = 1, samples: int = 7) -> list[dict[str, object]]:
+    """Benchmark exact reference/native normal and overlay full-frame blends."""
+    from ditherzam.layers.blend import _blend_layer_native, _blend_layer_reference
+
+    rows: list[dict[str, object]] = []
+    for height, width, channels in ((1080, 1920, 4), (2160, 3840, 4)):
+        backdrop = deterministic_u8(
+            (height, width, channels), seed=DEFAULT_SEED + height
+        )
+        source = deterministic_u8(
+            (height, width, channels), seed=DEFAULT_SEED + width
+        )
+        for mode in ("normal", "overlay"):
+            reference = measure(
+                lambda: _blend_layer_reference(backdrop, source, mode, 73),
+                warmup=warmup,
+                samples=samples,
+            )
+            native = measure(
+                lambda: _blend_layer_native(backdrop, source, mode, 73),
+                warmup=warmup,
+                samples=samples,
+            )
+            if reference["digest"] != native["digest"]:
+                raise AssertionError(
+                    f"{width}x{height} {mode}: native digest differs from reference"
+                )
+            rows.append(
+                {
+                    "operation": "blend_layer",
+                    "resolution": f"{width}x{height}",
+                    "mode": mode,
+                    "opacity": 73,
+                    "samples": samples,
+                    "reference_median_ms": reference["median_ms"],
+                    "reference_p95_ms": reference["p95_ms"],
+                    "native_median_ms": native["median_ms"],
+                    "native_p95_ms": native["p95_ms"],
+                    "speedup": speedup(
+                        float(reference["median_ms"]), float(native["median_ms"])
+                    ),
+                    "digest": native["digest"],
+                }
+            )
+    return rows
+
+
+if __name__ == "__main__":
+    import argparse
+    import sys
+    from pathlib import Path
+
+    # Direct-script execution otherwise resolves whichever editable checkout is
+    # installed in the interpreter instead of the repository being benchmarked.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--samples", type=int, default=7)
+    arguments = parser.parse_args()
+    print(
+        json.dumps(
+            benchmark_compositor(
+                warmup=arguments.warmup,
+                samples=arguments.samples,
+            ),
+            indent=2,
+        )
+    )
