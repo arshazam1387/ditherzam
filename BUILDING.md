@@ -40,10 +40,13 @@ never download or invent those assets.
 ## Native fallback and threads
 
 Set `DITHERZAM_DISABLE_NATIVE=1` before process startup to force the Python
-fallbacks. Compositor and transitions share an explicit OpenMP budget exposed by
-`ditherzam.threading_policy`; the measured default is two threads. Selection and
-brush remain single-threaded. The native budget is independent of Numba's
-process-global setting.
+fallbacks. Compositor and transitions share an explicit process-wide OpenMP
+configuration setter exposed by `ditherzam.threading_policy`; the measured
+default is two threads. Each operation snapshots the setting before releasing
+the GIL, so a concurrent setter affects the next operation rather than an active
+loop. There is intentionally no temporary save/restore context, which would race
+between overlapping callers. Selection and brush remain single-threaded. The
+native budget is independent of Numba's process-global setting.
 
 Reproduce the 1/2/4/8 scaling and digest matrix with:
 

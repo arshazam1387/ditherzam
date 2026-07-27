@@ -111,20 +111,6 @@ def numba_threads(n: int):
         nb.set_num_threads(prev)
 
 
-@contextmanager
-def native_threads(n: int):
-    """Temporarily bound native OpenMP loops, independently of Numba."""
-    previous = get_native_threads()
-    if previous is None:
-        yield
-        return
-    try:
-        set_native_threads(n)
-        yield
-    finally:
-        set_native_threads(previous)
-
-
 def install_interactive_budget() -> int | None:
     """Set the process-default numba thread count to the interactive budget.
 

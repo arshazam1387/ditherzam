@@ -47,4 +47,5 @@ if (-not $SkipPyInstaller) {
             throw "Frozen release did not collect ditherzam._native.$Module"
         }
     }
+    Invoke-External (Join-Path $ProjectRoot "dist\ditherzam\ditherzam.exe") @("--native-smoke")
 }
