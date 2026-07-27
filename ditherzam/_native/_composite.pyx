@@ -13,6 +13,21 @@ cimport numpy as cnp
 cnp.import_array()
 
 cdef double _overlay_lut[65536]
+cdef int _thread_budget = 2
+
+
+def get_thread_budget():
+    """Return the OpenMP worker budget used by compositor operations."""
+    return _thread_budget
+
+
+def set_thread_budget(int threads):
+    """Set the compositor OpenMP worker budget, returning the applied value."""
+    global _thread_budget
+    if threads < 1 or threads > 8:
+        raise ValueError("native thread budget must be within 1..8")
+    _thread_budget = threads
+    return _thread_budget
 
 
 cdef void initialize_overlay_lut() noexcept:
@@ -138,7 +153,7 @@ def blend_transition_scalar_u8(object first, object second, double weight):
     cdef Py_ssize_t pixel
     cdef Py_ssize_t pixels = height * width
     with nogil:
-        for pixel in prange(pixels, schedule="static", num_threads=2):
+        for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
             transition_pixel(a, b, output, pixel * 4, weight)
     return output_array
 
@@ -169,7 +184,7 @@ def blend_transition_plane_u8(object first, object second, object weight_plane):
     cdef Py_ssize_t pixel
     cdef Py_ssize_t pixels = height * width
     with nogil:
-        for pixel in prange(pixels, schedule="static", num_threads=2):
+        for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
             transition_pixel(a, b, output, pixel * 4, weights[pixel])
     return output_array
 
@@ -215,7 +230,7 @@ def blend_layer_u8(object backdrop, object source, int mode, int opacity):
 
     with nogil:
         if mode == 0:
-            for pixel in prange(pixels, schedule="static", num_threads=2):
+            for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
                 offset = pixel * 4
                 source_alpha = floor(src[offset + 3] * opacity_factor + 0.5)
                 ass = source_alpha / 255.0
@@ -231,7 +246,7 @@ def blend_layer_u8(object backdrop, object source, int mode, int opacity):
                     )
                 output[offset + 3] = quantize(ao * 255.0)
         elif mode == 3:
-            for pixel in prange(pixels, schedule="static", num_threads=2):
+            for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
                 offset = pixel * 4
                 source_alpha = floor(src[offset + 3] * opacity_factor + 0.5)
                 ass = source_alpha / 255.0
@@ -249,7 +264,7 @@ def blend_layer_u8(object backdrop, object source, int mode, int opacity):
                     )
                 output[offset + 3] = quantize(ao * 255.0)
         else:
-            for pixel in prange(pixels, schedule="static", num_threads=2):
+            for pixel in prange(pixels, schedule="static", num_threads=_thread_budget):
                 offset = pixel * 4
                 source_alpha = floor(src[offset + 3] * opacity_factor + 0.5)
                 ass = source_alpha / 255.0

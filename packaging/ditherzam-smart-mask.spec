@@ -1,7 +1,7 @@
 """Minimal Windows/Python 3.12 PyInstaller recipe; run via build_smart_mask_release.py."""
 from pathlib import Path
 
-ROOT = Path(SPECPATH).parent.parent
+ROOT = Path.cwd()
 LOCK = ROOT / "packaging" / "smart-mask-release.lock.json"
 from ditherzam.masking.release_gate import verify_release_bundle
 
@@ -14,7 +14,10 @@ binaries = [(str(bundle[f"ort:{name}"]), "onnxruntime/capi") for name in
 
 a = Analysis([str(ROOT / "ditherzam" / "app.py")], pathex=[str(ROOT)],
              binaries=binaries, datas=datas,
-             hiddenimports=["onnxruntime", "ditherzam._native._smoke"],
+             hiddenimports=["onnxruntime", "ditherzam._native._smoke",
+                            "ditherzam._native._composite",
+                            "ditherzam._native._selection",
+                            "ditherzam._native._brush"],
              hookspath=[], runtime_hooks=[], excludes=[])
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="ditherzam",

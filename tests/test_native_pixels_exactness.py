@@ -100,5 +100,5 @@ def test_windows_build_script_checks_every_external_exit_and_pins_pytest():
     assert script.count("& $FilePath @ArgumentList") == 1
     assert "& $Python" not in script
     assert "if ($LASTEXITCODE -ne 0)" in script
-    assert script.count("Invoke-External $Python") == 6
+    assert script.count("Invoke-External $Python") == 7
     assert "pytest==9.1.1" in requirements

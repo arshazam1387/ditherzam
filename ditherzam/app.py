@@ -5,6 +5,9 @@ from pathlib import Path
 
 
 def main() -> int:
+    if "--native-smoke" in sys.argv:
+        from ditherzam.native_smoke import run
+        return run()
     if "--offline-smoke" in sys.argv:
         from ditherzam.offline_smoke import run
         root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
