@@ -54,7 +54,7 @@ def cga_engine() -> ColorEngine:
 def heavy_effects() -> EffectStack:
     s = EffectStack()
     s.add("Chromatic Aberration", shift=2)
-    s.add("Epsilon Glow", radius=4.0, strength=0.5)
+    s.add("Epsilon Glow", radius=4.0, intensity=0.5)
     return s
 
 
