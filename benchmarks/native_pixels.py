@@ -28,6 +28,39 @@ def output_digest(value: object) -> str:
     return hashlib.sha256(metadata + array.tobytes()).hexdigest()
 
 
+def compare_exact_outputs(
+    reference_call: Callable[..., np.ndarray],
+    native_call: Callable[..., np.ndarray],
+    *args: object,
+    **kwargs: object,
+) -> dict[str, object]:
+    """Run independent seams and enforce the complete native output contract."""
+    reference = reference_call(*args, **kwargs)
+    native = native_call(*args, **kwargs)
+    for label, value in (("reference", reference), ("native", native)):
+        if not isinstance(value, np.ndarray):
+            raise AssertionError(f"{label} output is not a NumPy array")
+        if not value.flags.owndata:
+            raise AssertionError(f"{label} output does not own its buffer")
+        if not value.flags.c_contiguous:
+            raise AssertionError(f"{label} output is not C-contiguous")
+    if native.dtype != reference.dtype:
+        raise AssertionError(f"dtype differs: {native.dtype} != {reference.dtype}")
+    if native.shape != reference.shape:
+        raise AssertionError(f"shape differs: {native.shape} != {reference.shape}")
+    if not np.array_equal(native, reference):
+        raise AssertionError("native bytes differ from the reference")
+    reference_digest = output_digest(reference)
+    native_digest = output_digest(native)
+    if native_digest != reference_digest:
+        raise AssertionError("native digest differs from the reference")
+    return {
+        "dtype": native.dtype.str,
+        "shape": native.shape,
+        "digest": native_digest,
+    }
+
+
 def measure(
     function: Callable[[], object],
     *,
@@ -62,6 +95,11 @@ def speedup(reference_ms: float, native_ms: float) -> float:
 
 
 def shapes(include_full_frame: bool = False) -> Iterable[tuple[int, int, int]]:
+    """Return small test shapes, plus full-frame benchmark descriptors on request.
+
+    Unit tests intentionally use only the base shapes. Consumers opt into 1080p
+    and 4K descriptors when running benchmarks, avoiding large test allocations.
+    """
     base = ((1, 1, 4), (3, 5, 4), (7, 2, 4))
     if include_full_frame:
         return (*base, (1080, 1920, 4), (2160, 3840, 4))
