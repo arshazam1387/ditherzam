@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+import ditherzam.layers.mask_brush as mask_brush_module
 from ditherzam.layers import BrushTip
 from ditherzam.layers.mask_brush import (
     BrushMode, BrushSettings, BrushStroke, DirtyRect, stamp_mask_brush,
@@ -62,6 +63,29 @@ def test_texture_is_repeatable_seed_sensitive_and_binary_when_hard():
     assert not np.array_equal(first, changed)
     assert 0 < np.count_nonzero(first) < first.size
     assert set(np.unique(first)).issubset({0, 255})
+
+
+@pytest.mark.parametrize(
+    "tip", [BrushTip.SQUARE, BrushTip.DIAMOND, BrushTip.TEXTURE]
+)
+def test_creative_tips_do_not_enter_round_only_native_seam(monkeypatch, tip):
+    monkeypatch.setattr(mask_brush_module, "_brush", object())
+
+    def reject_native(*_args, **_kwargs):
+        raise AssertionError("creative brush tip entered round-only native seam")
+
+    monkeypatch.setattr(
+        mask_brush_module, "_stamp_mask_brush_native", reject_native
+    )
+    pixels = np.zeros((9, 9), dtype=np.uint8)
+    dirty = stamp_mask_brush(
+        pixels,
+        4.5,
+        4.5,
+        BrushSettings(7, 100, 100, BrushMode.REVEAL, tip=tip),
+    )
+    assert dirty is not None
+    assert pixels.any()
 
 
 def test_seeded_texture_stroke_is_event_segmentation_independent():

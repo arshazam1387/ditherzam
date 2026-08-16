@@ -261,6 +261,8 @@ def _stamp_mask_brush_native(
     work = _validate_buffer(buffer)
     if not isinstance(settings, BrushSettings):
         raise ValueError("settings must be BrushSettings")
+    if settings.tip is not BrushTip.ROUND:
+        raise ValueError("native brush supports only the round tip")
     document_to_mask_point(
         document_x, document_y, layer_x=layer_x, layer_y=layer_y,
         scale_x=scale_x, scale_y=scale_y,
@@ -307,16 +309,18 @@ def stamp_mask_brush(
     flip_x: bool = False,
     flip_y: bool = False,
 ) -> DirtyRect | None:
-    """Apply one circular stamp, preferring the exact native backend."""
+    """Apply one shaped stamp, using the exact native backend for round tips."""
     kwargs = dict(
         layer_x=layer_x, layer_y=layer_y, scale_x=scale_x, scale_y=scale_y,
         rotation_degrees=rotation_degrees, flip_x=flip_x, flip_y=flip_y,
     )
-    implementation = (
-        _stamp_mask_brush_reference
-        if _brush is None or os.environ.get("DITHERZAM_DISABLE_NATIVE") == "1"
-        else _stamp_mask_brush_native
+    use_native = (
+        _brush is not None
+        and os.environ.get("DITHERZAM_DISABLE_NATIVE") != "1"
+        and isinstance(settings, BrushSettings)
+        and settings.tip is BrushTip.ROUND
     )
+    implementation = _stamp_mask_brush_native if use_native else _stamp_mask_brush_reference
     return implementation(
         buffer, document_x, document_y, settings, **kwargs
     )
