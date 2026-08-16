@@ -15,6 +15,7 @@ from PySide6.QtCore import QThreadPool, QTimer
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFileDialog, QMenu, QMessageBox, QProgressDialog
 
+from ditherzam.diagnostics import log_action
 from ditherzam.video.ffmpeg import check_video_limits, probe_duration, probe_fps
 from ditherzam.video.frames import detect_preview_frame
 from ditherzam.video.workers import (
@@ -166,15 +167,18 @@ class VideoController:
         path, _ = QFileDialog.getOpenFileName(self.win, "Import Video", "", _VIDEO_FILTER)
         if not path:
             return
+        log_action("video.import_started", path=path)
         expert = bool(self._expert_provider())
         try:
             fps = probe_fps(path)
             duration = probe_duration(path)
         except Exception as e:  # noqa: BLE001
+            log_action("video.import_failed", error=str(e), path=path)
             self._error(str(e))
             return
         limit_msg = check_video_limits(fps, duration, expert=expert)
         if limit_msg is not None:
+            log_action("video.import_failed", reason="limit", path=path)
             self._error(limit_msg)
             return
 
@@ -188,7 +192,13 @@ class VideoController:
         dlg.show()
 
         worker = VideoImportWorker(path, str(self.temp_dir / "original_frames"))
-        worker.signals.error.connect(lambda m: (dlg.close(), self._error(m)))
+        worker.signals.error.connect(
+            lambda m: (
+                dlg.close(),
+                log_action("video.import_failed", error=m, path=path),
+                self._error(m),
+            )
+        )
         worker.signals.finished.connect(lambda _fd: self._on_imported(dlg))
         self._start_worker(worker)
 
@@ -197,9 +207,12 @@ class VideoController:
         assert self.temp_dir is not None
         preview = detect_preview_frame(self.temp_dir / "original_frames")
         if preview is None:
+            log_action("video.import_failed", reason="no_preview", path=self.input_file)
             self._error("Could not detect a non-black frame for preview.")
         else:
             self._show_frame(np.asarray(Image.open(preview).convert("RGB"), np.uint8))
+            log_action("video.import_succeeded", fps=self.framerate,
+                       path=self.input_file)
         self._export_action.setEnabled(True)
         self.refresh_mask_scope()
 
@@ -212,6 +225,7 @@ class VideoController:
         out, _ = QFileDialog.getSaveFileName(self.win, "Export Video", "", _MP4_FILTER)
         if not out:
             return
+        log_action("video.export_started", path=out)
         in_dir = self.temp_dir / "original_frames"
         out_dir = self.temp_dir / "dithered_frames"
 
@@ -239,15 +253,28 @@ class VideoController:
             assemble = VideoAssembleWorker(
                 str(out_dir), self.framerate, self.input_file, out
             )
-            assemble.signals.error.connect(lambda m: (reasm.close(), self._error(m)))
+            assemble.signals.error.connect(
+                lambda m: (
+                    reasm.close(),
+                    log_action("video.export_failed", error=m, path=out),
+                    self._error(m),
+                )
+            )
             assemble.signals.finished.connect(
                 lambda _o: (reasm.close(),
+                            log_action("video.export_succeeded", path=out),
                             QMessageBox.information(self.win, "Video",
                                                     "Video export complete!"))
             )
             self._start_worker(assemble)
 
         dither.signals.progress.connect(on_dither_progress)
-        dither.signals.error.connect(lambda m: (prog.close(), self._error(m)))
+        dither.signals.error.connect(
+            lambda m: (
+                prog.close(),
+                log_action("video.export_failed", error=m, path=out),
+                self._error(m),
+            )
+        )
         dither.signals.finished.connect(on_dither_done)
         self._start_worker(dither)

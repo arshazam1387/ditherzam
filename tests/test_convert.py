@@ -2,7 +2,11 @@ import numpy as np
 import pytest
 
 pytest.importorskip("PySide6")
-from ditherzam.ui.convert import numpy_to_qimage, qimage_to_numpy
+from ditherzam.ui.convert import (
+    numpy_to_qimage,
+    qimage_to_numpy,
+    qimage_to_numpy_rgba,
+)
 
 
 def test_roundtrip_rgb():
@@ -30,3 +34,12 @@ def test_non_contiguous_input_is_handled():
     q = numpy_to_qimage(sliced)
     b = qimage_to_numpy(q)
     np.testing.assert_array_equal(sliced, b)
+
+
+def test_rgba_roundtrip_preserves_alpha():
+    rgba = np.array(
+        [[[10, 20, 30, 0], [40, 50, 60, 127], [70, 80, 90, 255]]],
+        np.uint8,
+    )
+    np.testing.assert_array_equal(
+        qimage_to_numpy_rgba(numpy_to_qimage(rgba)), rgba)

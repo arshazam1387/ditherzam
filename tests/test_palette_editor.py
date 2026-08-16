@@ -91,6 +91,21 @@ def test_move_swatch_noop_same_index(qapp_fixture):
     np.testing.assert_array_equal(s.palette().colors, before)
 
 
+def test_extracted_coverage_is_shown_in_swatch_tooltip(qapp_fixture):
+    from ditherzam.color.palette import Palette
+    from ditherzam.ui.palette_editor import SwatchStrip
+
+    strip = SwatchStrip()
+    strip.set_palette(Palette(
+        name="from image",
+        colors=np.array([[10, 20, 30], [200, 210, 220]], np.float32),
+        coverages=np.array([0.625, 0.375], np.float32),
+    ))
+
+    assert "62.5% of image" in strip._buttons[0].toolTip()
+    assert "37.5% of image" in strip._buttons[1].toolTip()
+
+
 def test_set_palette_preserves_category(qapp_fixture):
     from ditherzam.ui.palette_editor import SwatchStrip
     s = SwatchStrip()

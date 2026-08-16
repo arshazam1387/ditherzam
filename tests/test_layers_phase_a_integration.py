@@ -160,6 +160,27 @@ def test_drag_target_syncs_before_async_preview_finishes(qapp_fixture):
     assert editor.viewport._layer_drag_rect == QRectF(7, -3, 12, 10)
 
 
+def test_transform_takes_canvas_input_from_masking_tools(qapp_fixture):
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor()
+    gray = np.zeros((10, 12), np.float32)
+    rgba = np.zeros((10, 12, 4), np.uint8)
+    rgba[..., 3] = 255
+    editor.layers_controller.open_document(gray, rgba)
+    editor.viewport.set_mask_brush_mode(True, 32)
+    editor.viewport.set_selection_tool("rectangle")
+    editor.viewport.set_gradient_tool("linear")
+
+    editor._start_layer_transform(0)
+
+    assert editor._layer_transform_active()
+    assert editor.viewport._mask_brush_mode is False
+    assert editor.viewport._selection_tool is None
+    assert editor.viewport._gradient_tool is None
+    assert editor.viewport._layer_drag_rect is not None
+
+
 def test_transform_mode_cancel_restores_geometry_and_confirm_keeps_it(
         qapp_fixture):
     from ditherzam.ui.main_window import ImageEditor
@@ -186,6 +207,35 @@ def test_transform_mode_cancel_restores_geometry_and_confirm_keeps_it(
     editor._confirm_layer_transform()
     assert editor.layers_controller.active_geometry() == (3, -2, 12, 10)
     assert editor.viewport._layer_drag_rect is None
+
+
+def test_main_raster_export_uses_complete_layer_stack(
+        qapp_fixture, monkeypatch, tmp_path):
+    from PySide6.QtWidgets import QFileDialog
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor()
+    gray = np.zeros((10, 12), np.float32)
+    rgba = np.zeros((10, 12, 4), np.uint8)
+    rgba[..., 3] = 255
+    editor.layers_controller.open_document(gray, rgba)
+    editor.layers_controller.new_blank_layer()
+    destination = tmp_path / "stack.png"
+    exported = []
+    monkeypatch.setattr(
+        QFileDialog, "getSaveFileName",
+        staticmethod(lambda *_args: (str(destination), "")))
+    monkeypatch.setattr(
+        editor.layers_controller, "export_current",
+        lambda path: exported.append(path) or destination)
+    monkeypatch.setattr(
+        editor, "_rendered_rgb",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("active-layer renderer must not export a stack")))
+
+    editor._on_export_raster("PNG Images (*.png)", ".png")
+
+    assert exported == [str(destination)]
 
 
 def test_active_layer_mask_overlay_changes_document_owned_preview(

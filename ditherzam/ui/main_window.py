@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 import sys
+import time
 
 import numpy as np
 from PIL import Image
@@ -30,7 +33,7 @@ from ditherzam.masking.settings import MaskTarget, SmartMaskSettings
 from ditherzam.masking.render import derive_render_mask, render_with_mask
 
 from .controls import ControlPanel
-from .convert import numpy_to_qimage
+from .convert import numpy_to_qimage, qimage_to_numpy_rgba
 from .preview import auto_preview_resolution, preview_cap, render_preview, zoom_preview_bucket
 from .preview_preferences import (
     PREVIEW_RESOLUTIONS,
@@ -51,6 +54,10 @@ from ..presets import PresetManager, settings_to_preset, preset_to_settings
 from ..export.raster import save_raster
 from ..export.vector import raster_to_svg
 from ..batch import batch_process
+from ..diagnostics import default_log_path, log_action, log_duration
+
+
+_LOG = logging.getLogger(__name__)
 
 
 # Default parameters for post-effects added from the Effects panel (which stores
@@ -91,6 +98,7 @@ class _RenderWorker(QRunnable):
         # scheduler's `_busy` flag would stick True and freeze all future renders.
         # Always report an outcome (finished, failed, OR cancelled) so the
         # scheduler recovers -- exactly one terminal signal per run.
+        started = time.perf_counter()
         try:
             # Isolate the request's context from later GUI reassignment and
             # synchronous renders on the live editor pipeline.
@@ -149,10 +157,20 @@ class _RenderWorker(QRunnable):
             self.signals.cancelled.emit(self._request)
             return
         except Exception:
-            import traceback
-            traceback.print_exc()
+            _LOG.exception(
+                "render_failed generation=%s kind=%s mode=%s source_shape=%s",
+                self._request.generation, self._request.kind.value,
+                self._request.mode, tuple(self._base_gray.shape),
+            )
             self.signals.failed.emit(self._request)
             return
+        log_duration(
+            _LOG, "render_complete", started,
+            generation=self._request.generation,
+            kind=self._request.kind.value,
+            mode=self._request.mode,
+            output=f"{qimg.width()}x{qimg.height()}",
+        )
         self.signals.finished.emit(qimg, self._request)
 
 
@@ -170,6 +188,7 @@ class _DecodeWorker(QRunnable):
 
     def run(self) -> None:
         from PIL import Image
+        started = time.perf_counter()
         try:
             with Image.open(self._path) as img:
                 # RGBA is the canonical decoded source.  PIL's RGBA conversion
@@ -182,7 +201,12 @@ class _DecodeWorker(QRunnable):
             gray = np.array(Image.fromarray(rgb, "RGB").convert("L"), dtype=np.float32)
             rgba.setflags(write=False)
         except Exception:
-            return  # swallow decode failures, same as the old synchronous path
+            _LOG.exception("image_decode_failed path=%s", self._path)
+            return
+        log_duration(
+            _LOG, "image_decode_complete", started,
+            path=self._path, size=f"{rgba.shape[1]}x{rgba.shape[0]}",
+        )
         self.signals.finished.emit(gray, rgb, rgba)
 
 
@@ -191,7 +215,8 @@ class ImageEditor(QMainWindow):
                  debounce_ms: int = 20, settle_ms: int = 160, zoom_debounce_ms: int = 150,
                  proxy_max_side: int = 640, parent=None, preference_store=None,
                  mask_adapter=None, mask_model: ModelIdentity | None = None,
-                 mask_preprocessing_version: str = PREPROCESSING_VERSION):
+                 mask_preprocessing_version: str = PREPROCESSING_VERSION,
+                 diagnostic_log_path: str | Path | None = None):
         super().__init__(parent)
         self.setWindowTitle("ditherzam")
         self._registry = registry or _dither_registry
@@ -208,6 +233,12 @@ class ImageEditor(QMainWindow):
         self._mask_model = mask_model
         self._mask_preprocessing_version = mask_preprocessing_version
         self._mask_scheduler = InferenceScheduler()
+        # QThreadPool owns the C++ QRunnable, not the Python wrapper or its
+        # Python-owned signal object.  Keep every inference worker alive until
+        # its queued terminal signal reaches the GUI thread.  Dropping the last
+        # wrapper reference while ONNX Runtime is executing can tear down
+        # Shiboken/Python state underneath the native call.
+        self._mask_workers: set[InferenceWorker] = set()
         self._mask_closing = False
         self._mask_close_finalizing = False
         self._mask_close_timer: QTimer | None = None
@@ -215,6 +246,11 @@ class ImageEditor(QMainWindow):
         self._mask_probability: ProbabilityMap | None = None
         self._decode_generation = 0
         self._decode_workers: set[_DecodeWorker] = set()
+        # QThreadPool does not retain the Python QRunnable wrapper reliably
+        # through queued signal delivery.  Keep editor preview workers (and
+        # their QObject signal sources) alive until a terminal signal arrives.
+        self._render_workers: set[_RenderWorker] = set()
+        self._render_closing = False
         self._base_gray: np.ndarray | None = None
         self._base_rgb: np.ndarray | None = None
         self._base_rgba: np.ndarray | None = None
@@ -230,6 +266,9 @@ class ImageEditor(QMainWindow):
         self._proxy_max_side = proxy_max_side
         self._scheduler = RenderScheduler()
         self._preference_store = preference_store or QSettings()
+        self._diagnostic_log_path = Path(
+            diagnostic_log_path or default_log_path()
+        )
         self.preview_preferences = load_preview_preferences(self._preference_store)
         # Set by the Full Quality Preview action; makes the next settle tick
         # exact/uncapped, then any further edit resets it via schedule_render().
@@ -312,7 +351,58 @@ class ImageEditor(QMainWindow):
         self._wire_animation()
         self._wire_composition()
         self._wire_layers()
+        self._wire_debug_menu()
         self._refresh_mask_scope_actions()
+        self._action_settings_snapshot = self._control_action_snapshot()
+
+    def _control_action_snapshot(self) -> dict[str, object]:
+        """Return bounded semantic control state, never pixels or payloads."""
+        state = self.panel.state
+        scalar_keys = (
+            "style", "scale", "contrast", "midtones", "highlights",
+            "luminance_threshold", "blur", "preview_disabled", "invert",
+            "palette", "color_mode", "source_dither",
+            "source_dither_brighten", "color_mapping", "depth", "saturation",
+        )
+        snapshot = {key: state.get(key) for key in scalar_keys}
+        snapshot["params"] = tuple(sorted(
+            (str(key), int(value))
+            for key, value in state.get("params", {}).items()
+        ))
+        snapshot["effects"] = tuple(str(value) for value in state.get("effects", ()))
+        snapshot["glow"] = tuple(sorted(
+            (str(key), value) for key, value in self.glow_panel.state.items()
+        ))
+        mask = self.panel.smart_mask_panel.settings
+        snapshot["smart_mask"] = (
+            mask.enabled, mask.target.value, mask.sensitivity, mask.feather_px,
+            mask.expansion_px, mask.invert, mask.outside.value, mask.bake_fill,
+        )
+        return snapshot
+
+    def _log_settled_control_changes(self) -> None:
+        """Coalesce a burst of UI changes into one settled semantic action."""
+        current = self._control_action_snapshot()
+        previous = self._action_settings_snapshot
+        changes = {
+            key: {"from": previous.get(key), "to": value}
+            for key, value in current.items()
+            if previous.get(key) != value
+        }
+        if changes:
+            log_action("controls.settled_change", changes=changes)
+            self._action_settings_snapshot = current
+
+    def _wire_debug_menu(self) -> None:
+        self.debug_menu = self.menuBar().addMenu("&Debug")
+        self.debug_log_action = QAction("Program Notes…", self)
+        self.debug_log_action.setObjectName("program_notes_action")
+        self.debug_log_action.triggered.connect(self._show_program_notes)
+        self.debug_menu.addAction(self.debug_log_action)
+
+    def _show_program_notes(self) -> None:
+        from .diagnostics_dialog import DiagnosticsDialog
+        DiagnosticsDialog(self._diagnostic_log_path, self).exec()
 
     def _mask_dependencies_available(self) -> bool:
         return (callable(getattr(self._mask_adapter, "infer", None))
@@ -382,6 +472,13 @@ class ImageEditor(QMainWindow):
         )
         launch = self._mask_scheduler.request(request)
         self.panel.smart_mask_panel.set_status(MaskPanelStatus.DETECTING)
+        log_action(
+            "smart_mask.detect_requested",
+            source_width=request.source.width,
+            source_height=request.source.height,
+            model=request.model.model_id,
+            queued=launch is None,
+        )
         if launch is not None:
             self._launch_mask_worker(launch)
 
@@ -390,13 +487,19 @@ class ImageEditor(QMainWindow):
         panel = self.panel.smart_mask_panel
         if panel.status is MaskPanelStatus.DETECTING:
             panel.set_status(MaskPanelStatus.CANCELLED)
+            log_action("smart_mask.detect_cancelled")
 
     def _launch_mask_worker(self, request: InferenceRequest) -> None:
         worker = InferenceWorker(request, self._mask_adapter)
+        self._mask_workers.add(worker)
         for signal in (worker.signals.succeeded, worker.signals.no_subject,
                        worker.signals.cancelled, worker.signals.model_unavailable,
                        worker.signals.failed):
             signal.connect(self._on_mask_terminal)
+            signal.connect(
+                lambda _outcome, retained=worker:
+                self._mask_workers.discard(retained)
+            )
         worker.signals.progress.connect(self._on_mask_progress)
         self._mask_pool.start(worker)
 
@@ -412,6 +515,14 @@ class ImageEditor(QMainWindow):
             self._mask_scheduler.on_terminal(outcome)
             return
         current = self._mask_scheduler.is_current(outcome.request)
+        log_action(
+            "smart_mask.detect_terminal",
+            terminal=outcome.terminal.value,
+            current=current,
+            source_width=outcome.request.source.width,
+            source_height=outcome.request.source.height,
+            error=None if outcome.error is None else type(outcome.error).__name__,
+        )
         if current and outcome.request.source == self._mask_source:
             panel = self.panel.smart_mask_panel
             if outcome.terminal is InferenceTerminal.SUCCESS:
@@ -467,11 +578,25 @@ class ImageEditor(QMainWindow):
         if self._mask_close_finalizing:
             super().closeEvent(event)
             return
+        self._render_closing = True
+        self._debounce.stop()
+        self._settle.stop()
+        self._zoom_debounce.stop()
+        self._scheduler.invalidate()
+        log_action(
+            "app.close_requested",
+            mask_workers=self._mask_pool.activeThreadCount(),
+            render_workers=len(self._render_workers),
+        )
         self._mask_closing = True
         self._mask_scheduler.invalidate_source(None)
         self._mask_pool.clear()
-        if self._mask_pool.activeThreadCount() == 0:
+        if (
+            self._mask_pool.activeThreadCount() == 0
+            and not self._render_workers
+        ):
             self._mask_close_finalizing = True
+            log_action("app.close_completed", deferred=False)
             super().closeEvent(event)
             return
         event.ignore()
@@ -482,11 +607,15 @@ class ImageEditor(QMainWindow):
         self._mask_close_timer.start()
 
     def _poll_mask_pool_close(self) -> None:
-        if self._mask_pool.activeThreadCount() != 0:
+        if (
+            self._mask_pool.activeThreadCount() != 0
+            or self._render_workers
+        ):
             return
         if self._mask_close_timer is not None:
             self._mask_close_timer.stop()
         self._mask_close_finalizing = True
+        log_action("app.close_completed", deferred=True)
         self.close()
 
     def _current_mask_context(self) -> MaskContext | None:
@@ -536,12 +665,14 @@ class ImageEditor(QMainWindow):
         self.preview_preferences = PreviewPreferences(
             resolution, self.preview_preferences.rerender_on_zoom
         )
+        log_action("preview.resolution_changed", resolution=resolution)
         self._save_preview_preferences_and_schedule()
 
     def _set_rerender_on_zoom(self, enabled: bool) -> None:
         self.preview_preferences = PreviewPreferences(
             self.preview_preferences.resolution, enabled
         )
+        log_action("preview.zoom_rerender_changed", enabled=bool(enabled))
         self._save_preview_preferences_and_schedule()
 
     def _save_preview_preferences_and_schedule(self) -> None:
@@ -738,13 +869,31 @@ class ImageEditor(QMainWindow):
         self.layers_panel.export_mask_requested.connect(
             self._export_active_raster_mask)
         self.layers_panel.selection_tool_requested.connect(
-            self.viewport.set_selection_tool)
+            self._arm_selection_tool)
         self.layers_panel.selection_clear_requested.connect(
             self._clear_temporary_selection)
         self.layers_panel.selection_from_mask_requested.connect(
             self.layers_controller.create_mask_from_selection)
+        self.layers_panel.selection_refine_requested.connect(
+            self.layers_controller.refine_temporary_selection)
+        self.layers_panel.color_range_pick_requested.connect(
+            lambda: self._arm_selection_tool("color_range"))
+        self.layers_panel.color_range_changed.connect(
+            self.layers_controller.update_color_range_selection)
+        self.layers_panel.color_range_confirmed.connect(
+            self._confirm_color_range_selection)
+        self.layers_panel.color_range_cancelled.connect(
+            self._cancel_color_range_selection)
+        self.layers_panel.brush_settings_changed.connect(
+            self._set_mask_brush_settings)
+        self.layers_panel.brush_mode_changed.connect(
+            self._set_mask_brush_mode)
+        self.layers_panel.mask_paint_requested.connect(
+            self._set_mask_paint_enabled)
+        self.layers_panel.pointer_requested.connect(
+            self._activate_pointer_tool)
         self.layers_panel.gradient_tool_requested.connect(
-            lambda kind: self.viewport.set_gradient_tool(kind or None))
+            self._arm_gradient_tool)
         self.viewport.layer_drag_started.connect(self._begin_layer_drag)
         self.viewport.layer_dragged.connect(self._drag_active_layer)
         self.viewport.layer_drag_finished.connect(self._finish_layer_drag)
@@ -775,6 +924,12 @@ class ImageEditor(QMainWindow):
             self._swap_mask_brush_mode)
         self.viewport.selection_dragged.connect(
             self._apply_temporary_selection_drag)
+        self.viewport.selection_path_completed.connect(
+            self._apply_temporary_selection_path)
+        self.viewport.color_range_picked.connect(
+            self._pick_color_range_selection)
+        self.viewport.selection_cancel_requested.connect(
+            self._cancel_color_range_selection)
         self.viewport.gradient_dragged.connect(
             self._apply_gradient_drag)
         if hasattr(self.layers_panel, "edit_target_requested"):
@@ -805,9 +960,59 @@ class ImageEditor(QMainWindow):
         self._layer_resize_id: str | None = None
 
     def _set_viewport_edit_target(self, _layer_id: str, kind: str) -> None:
-        enabled = kind == "mask" and not self._layer_transform_active()
+        mask = None
+        document = self.layers_controller.document
+        index = self.layers_controller.active_index
+        if document is not None and index is not None:
+            mask = document.layers[index].raster_mask
+        enabled = (
+            kind == "mask"
+            and not self._layer_transform_active()
+            and mask is not None
+            and mask.enabled
+        )
         self.viewport.set_mask_brush_mode(
             enabled, self._mask_brush_settings.size)
+        self.layers_panel.set_mask_paint_active(enabled)
+
+    def _activate_pointer_tool(self) -> None:
+        self.layers_controller.cancel_color_range_selection()
+        self.layers_controller.cancel_pending_selection_work()
+        self.viewport.set_pointer_tool()
+        self.layers_panel.set_mask_paint_active(False)
+        self.layers_panel.set_status("Pointer ready.")
+
+    def _set_mask_paint_enabled(self, enabled: bool) -> None:
+        enabled = bool(enabled) and not self._layer_transform_active()
+        if enabled:
+            self.layers_controller.cancel_color_range_selection()
+            self.layers_controller.cancel_pending_selection_work()
+            layer_id = self._active_layer_id()
+            if layer_id is None or not self.layers_controller.set_edit_target(
+                layer_id, "mask"
+            ):
+                self.layers_panel.set_mask_paint_active(False)
+                return
+        self.viewport.set_mask_brush_mode(
+            enabled, self._mask_brush_settings.size)
+        self.layers_panel.set_mask_paint_active(enabled)
+        if enabled:
+            self.layers_panel.set_status(
+                f"Paint Mask · {self._mask_brush_settings.mode.value.capitalize()}.")
+
+    def _arm_selection_tool(self, shape: str) -> None:
+        self.layers_controller.cancel_color_range_selection()
+        self.layers_controller.cancel_pending_selection_work()
+        self.layers_panel.set_mask_paint_active(False)
+        self.viewport.set_selection_tool(shape)
+        self.layers_panel.set_status(
+            f"{shape.replace('_', ' ').title()} selection · draw on canvas.")
+
+    def _arm_gradient_tool(self, kind: str) -> None:
+        self.layers_controller.cancel_color_range_selection()
+        self.layers_controller.cancel_pending_selection_work()
+        self.layers_panel.set_mask_paint_active(False)
+        self.viewport.set_gradient_tool(kind or None)
 
     def _begin_mask_brush_stroke(self, x: float, y: float) -> None:
         if not self.layers_controller.begin_mask_brush_stroke(
@@ -828,6 +1033,65 @@ class ImageEditor(QMainWindow):
         operation = SelectionOperation(operation_text.lower())
         self.layers_controller.update_temporary_selection(
             SelectionShape(shape), (x0, y0, x1, y1), operation)
+
+    def _apply_temporary_selection_path(self, kind: str, points) -> None:
+        from ditherzam.layers.selection import SelectionOperation
+
+        operation = SelectionOperation(
+            self.layers_panel.selection_operation_text().lower())
+        self.layers_controller.update_path_selection(
+            kind, points, operation,
+            diameter=float(self.layers_panel.selection_radius_spin.value() * 2),
+        )
+
+    def _pick_color_range_selection(self, x: float, y: float) -> None:
+        from ditherzam.layers.selection import SelectionOperation
+        operation = SelectionOperation(
+            self.layers_panel.selection_operation_text().lower())
+        if not self.layers_controller.begin_color_range_selection(
+            x, y, operation,
+            tolerance=self.layers_panel.color_range_tolerance_spin.value(),
+            softness=self.layers_panel.color_range_softness_spin.value(),
+        ):
+            self.layers_panel.set_status(
+                "Pick a visible point inside the selected image layer.", True)
+
+    def _confirm_color_range_selection(self) -> None:
+        if self.layers_controller.confirm_color_range_selection():
+            self.viewport.set_selection_tool(None)
+            self.layers_panel.set_status(
+                "Confirming exact Color Range…"
+                if self.layers_controller.selection_work_pending
+                else "Color Range selection confirmed.")
+
+    def _cancel_color_range_selection(self) -> None:
+        cancelled = self.layers_controller.cancel_color_range_selection()
+        self.viewport.set_selection_tool(None)
+        if cancelled:
+            self.layers_panel.set_status("Color Range selection cancelled.")
+
+    def _set_mask_brush_settings(
+        self, tip: str, size: int, hardness: int,
+        strength: int, spacing_percent: int,
+    ) -> None:
+        from dataclasses import replace
+        from ditherzam.layers import BrushTip
+
+        self._mask_brush_settings = replace(
+            self._mask_brush_settings,
+            tip=BrushTip(tip), size=float(size), hardness=hardness,
+            strength=strength, spacing_percent=spacing_percent,
+        )
+        self.viewport.set_mask_brush_size(float(size))
+
+    def _set_mask_brush_mode(self, mode: str) -> None:
+        from dataclasses import replace
+        from ditherzam.layers import BrushMode
+
+        self._mask_brush_settings = replace(
+            self._mask_brush_settings, mode=BrushMode(str(mode).lower()))
+        self.layers_panel.set_status(
+            f"Mask brush: {self._mask_brush_settings.mode.value.capitalize()}.")
 
     def _clear_temporary_selection(self) -> None:
         self.layers_controller.clear_temporary_selection()
@@ -864,6 +1128,8 @@ class ImageEditor(QMainWindow):
             else BrushMode.REVEAL)
         self._mask_brush_settings = replace(
             self._mask_brush_settings, mode=mode)
+        self.layers_panel.brush_mode_combo.setCurrentText(
+            mode.value.capitalize())
         self.layers_panel.set_status(
             f"Mask brush: {mode.value.capitalize()}.")
 
@@ -1002,8 +1268,10 @@ class ImageEditor(QMainWindow):
 
     def _show_layer_frame(self, rgb_or_rgba_u8) -> None:
         """Publish a document composite using document, not active-layer, geometry."""
-        self._debounce.stop()
-        self._settle.stop()
+        # Do not stop the editor timers here. Layer edits intentionally use the
+        # same two-stage lifecycle as the single-image editor: the proxy frame
+        # published by the debounce tick must leave the pending settle tick
+        # alive so it can replace the proxy with the policy-quality composite.
         self._zoom_debounce.stop()
         self._scheduler.invalidate()
         from ditherzam.layers import InspectionMode
@@ -1179,8 +1447,20 @@ class ImageEditor(QMainWindow):
         layer_id = self._active_layer_id()
         if geometry is None or layer_id is None:
             return
+        if not self.layers_controller.begin_transform_transaction():
+            self.layers_panel.set_status(
+                "Layer transform could not be started.", error=True)
+            return
+        # Transform owns pointer and keyboard input until Confirm/Cancel.
+        # Masking tools otherwise win the viewport's mouse-event priority and
+        # make the transform handles appear unresponsive.
+        self.viewport.set_mask_brush_mode(False)
+        self.layers_panel.set_mask_paint_active(False)
+        self.layers_controller.cancel_color_range_selection()
+        self.layers_controller.cancel_pending_selection_work()
+        self.viewport.set_selection_tool(None)
+        self.viewport.set_gradient_tool(None)
         self._layer_transform_session = (layer_id, geometry)
-        self.layers_controller.begin_transform_transaction()
         self.layers_panel.set_transform_mode(True)
         self._set_layer_transform_ui_locked(True)
         self._sync_layer_drag_target()
@@ -1342,7 +1622,8 @@ class ImageEditor(QMainWindow):
             "PNG Images (*.png);;JPEG Images (*.jpg *.jpeg)",
         )
         if path:
-            self.layers_controller.export_current(path)
+            result = self.layers_controller.export_current(path)
+            log_action("layers.exported", path=path, success=result is not None)
 
     # ---- video (Phase 7, UI layer only) -------------------------------------
     def _wire_video(self) -> None:
@@ -1405,7 +1686,21 @@ class ImageEditor(QMainWindow):
         from ..color.palette import generate_palette
         unit = str(self.panel.state.get("extract_unit", "k"))
         value = int(self.panel.extract_slider.value())
-        palette = generate_palette(self._base_rgb, unit, value)
+        algorithm = str(
+            self.panel.state.get("extract_algorithm", "balanced"))
+        palette = generate_palette(
+            self._base_rgb,
+            unit,
+            value,
+            algorithm=algorithm,
+            min_coverage=(
+                int(self.panel.state.get("extract_min_coverage", 5)) / 1000.0
+            ),
+            diversity=int(self.panel.state.get("extract_diversity", 100)),
+        )
+        self.panel.set_extraction_result(value, palette.colors.shape[0])
+        if palette.colors.shape[0] == 0:
+            return
         self.panel.set_working_palette(palette)
         self.panel.mode_combo.setCurrentText("source")
 
@@ -1569,6 +1864,7 @@ class ImageEditor(QMainWindow):
             self._applying_preset = False
         if smart_mask is not None:
             self._apply_mask_settings_lifecycle(smart_mask)
+        self._action_settings_snapshot = self._control_action_snapshot()
         self._refresh_mask_scope_actions()
         if render_result and self._base_gray is not None:
             self.render_now()
@@ -1590,6 +1886,7 @@ class ImageEditor(QMainWindow):
                 self.panel.state.get("source_dither_brighten", False)),
         )
         self._preset_manager.save(name, preset)
+        log_action("preset.saved", name=name)
         QMessageBox.information(self, "Presets", f"Preset '{name}' saved successfully!")
 
     def _on_load_preset(self):
@@ -1612,6 +1909,7 @@ class ImageEditor(QMainWindow):
             source_dither=contents.source_dither,
             source_dither_brighten=contents.source_dither_brighten,
         )
+        log_action("preset.loaded", name=name)
 
     def _on_import_preset(self):
         if not self._guard_layer_transform():
@@ -1624,8 +1922,10 @@ class ImageEditor(QMainWindow):
         try:
             name = self._preset_manager.import_file(path)
         except ValueError:
+            log_action("preset.import_failed", path=path, error="invalid")
             QMessageBox.warning(self, "Presets", "Not a valid preset file.")
             return
+        log_action("preset.imported", path=path, name=name)
         QMessageBox.information(self, "Presets", f"Imported preset '{name}'.")
 
     def _on_export_preset(self):
@@ -1647,6 +1947,7 @@ class ImageEditor(QMainWindow):
         )
         with open(path, "w", encoding="utf-8") as f:
             yaml.safe_dump(preset, f, sort_keys=False, allow_unicode=True)
+        log_action("preset.exported", path=path)
 
     def _on_export_raster(self, file_filter, ext):
         if not self._guard_layer_transform():
@@ -1658,6 +1959,29 @@ class ImageEditor(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, "Save Image", "", file_filter)
         if not path:
             return
+        document = self.layers_controller.document
+        if document is not None and len(document.layers) > 1:
+            selected_ext = Path(path).suffix.lower()
+            if (
+                selected_ext in (".jpg", ".jpeg")
+                and not getattr(self, "_jpeg_flatten_notice_shown", False)
+            ):
+                self.statusBar().showMessage(
+                    "JPEG does not support transparency; transparent pixels are flattened onto white.",
+                    8000,
+                )
+                self._jpeg_flatten_notice_shown = True
+            # The legacy editor renderer represents only the active layer.
+            # Once a stack exists, every still-image export must use the exact
+            # LayerDocument compositor.
+            result = self.layers_controller.export_current(path)
+            log_action(
+                "image.exported" if result is not None else "image.export_failed",
+                path=path,
+                format=selected_ext.lstrip("."),
+                layer_count=len(document.layers),
+            )
+            return
         rendered = self._rendered_rgb()
         selected_ext = Path(path).suffix.lower()
         if selected_ext in (".jpg", ".jpeg") and rendered.ndim == 3 and rendered.shape[2] == 4:
@@ -1668,6 +1992,13 @@ class ImageEditor(QMainWindow):
                 )
                 self._jpeg_flatten_notice_shown = True
         save_raster(rendered, path)
+        log_action(
+            "image.exported",
+            path=path,
+            format=selected_ext.lstrip("."),
+            width=rendered.shape[1],
+            height=rendered.shape[0],
+        )
 
     def _on_export_preview(self):
         """Save the preview raster exactly as displayed.
@@ -1687,7 +2018,15 @@ class ImageEditor(QMainWindow):
         if not path:
             return
         if not image.save(path):
+            log_action("preview.export_failed", path=path)
             self.statusBar().showMessage(f"Could not save preview to {path}", 8000)
+        else:
+            log_action(
+                "preview.exported",
+                path=path,
+                width=image.width(),
+                height=image.height(),
+            )
 
     def _on_export_svg(self):
         if not self._guard_layer_transform():
@@ -1716,6 +2055,7 @@ class ImageEditor(QMainWindow):
                             bool(settings.invert))
         with open(path, "w", encoding="utf-8") as f:
             f.write(svg)
+        log_action("image.svg_exported", path=path)
 
     def _on_batch_folder(self):
         if not self._guard_layer_transform():
@@ -1731,6 +2071,12 @@ class ImageEditor(QMainWindow):
         processed, skipped = batch_process(
             folder, out, self._collect_settings(),
             self._export_pipeline(), self._reference_size(),
+        )
+        log_action(
+            "batch.completed",
+            folder=folder,
+            processed=processed,
+            skipped=skipped,
         )
         QMessageBox.information(
             self, "Batch",
@@ -1879,16 +2225,17 @@ class ImageEditor(QMainWindow):
             layers_controller is not None
             and getattr(layers_controller, "document", None) is not None
         ):
-            self._debounce.stop()
-            self._settle.stop()
             self._zoom_debounce.stop()
-            self._scheduler.invalidate()
             self._full_preview_requested = False
             self._last_zoom_bucket = None
-            if layers_controller.has_active_layer:
-                layers_controller.update_active_from_editor()
-            else:
-                layers_controller.request_preview()
+            # Layer documents retain the normal two-stage editor preview:
+            # a fast capped composite shortly after input, followed by the
+            # settled policy-quality composite. Rendering the full stack on
+            # every slider event starves publication through cancellation and
+            # makes controls appear to jump straight to their final result.
+            if not self._debounce.isActive():
+                self._debounce.start(self._debounce_ms)
+            self._settle.start(self._settle_ms)
             return
         self._full_preview_requested = False       # any edit returns to the cap
         self._last_zoom_bucket = None               # a normal edit re-settles the baseline
@@ -1920,7 +2267,13 @@ class ImageEditor(QMainWindow):
             return auto_preview_resolution((h, w), (vw, vh), dpr)
         return preview_cap(resolution, source_longest)
 
-    def _build_request(self, kind: RenderKind, target_max_side: int | None = None) -> RenderRequest:
+    def _build_request(
+        self,
+        kind: RenderKind,
+        target_max_side: int | None = None,
+        *,
+        layer_preview_context=None,
+    ) -> RenderRequest:
         """Snapshot current UI state into an immutable request. ``generation``
         is a placeholder here -- the scheduler stamps the real value in
         ``request()``/``on_finished()``. A non-``None`` ``target_max_side``
@@ -1941,7 +2294,10 @@ class ImageEditor(QMainWindow):
         mask_context = self._current_mask_context()
         color_engine = self.pipeline.color_engine
         effect_stack = self.pipeline.effect_stack
-        show_overlay = self.panel.smart_mask_panel.overlay_check.isChecked()
+        show_overlay = (
+            layer_preview_context is None
+            and self.panel.smart_mask_panel.overlay_check.isChecked()
+        )
         return RenderRequest(
             generation=0,
             kind=kind,
@@ -1954,6 +2310,7 @@ class ImageEditor(QMainWindow):
             mask_context=mask_context,
             source_gray=source_gray,
             show_mask_overlay=(show_overlay and mask_context is not None),
+            layer_preview_context=layer_preview_context,
         )
 
     def _mask_media_allowed(self, kind: str) -> bool:
@@ -2002,6 +2359,29 @@ class ImageEditor(QMainWindow):
         """Debounce tick: request a fast proxy render."""
         if self._base_gray is None:
             return
+        layers_controller = getattr(self, "layers_controller", None)
+        if (
+            layers_controller is not None
+            and getattr(layers_controller, "document", None) is not None
+        ):
+            if layers_controller.has_active_layer:
+                layers_controller.update_active_from_editor(
+                    request_preview=False,
+                )
+                # While controls move, preview only the selected source through
+                # the editor's lightweight pipeline. The full layer graph is
+                # intentionally absent from this path and is recomposited by
+                # the settle tick below.
+                cap = min(self._proxy_max_side, self._layer_policy_cap())
+                authority = layers_controller.freeze_interactive_preview(cap)
+                req = self._scheduler.request(self._build_request(
+                    RenderKind.DRAG,
+                    target_max_side=cap,
+                    layer_preview_context=authority,
+                ))
+                if req is not None:
+                    self._launch_worker(req)
+            return
         req = self._scheduler.request(self._build_request(RenderKind.DRAG))
         if req is not None:
             self._launch_worker(req)
@@ -2010,6 +2390,25 @@ class ImageEditor(QMainWindow):
         """Settle tick: request the settled (policy-capped) render, or an exact
         full render if Full Quality Preview was requested."""
         if self._base_gray is None:
+            return
+        self._log_settled_control_changes()
+        layers_controller = getattr(self, "layers_controller", None)
+        if (
+            layers_controller is not None
+            and getattr(layers_controller, "document", None) is not None
+        ):
+            # Keep an in-flight selected-layer proxy publishable while the
+            # settled document composite renders.  The proxy may take longer
+            # than the settle interval and is still the freshest frame ready
+            # for display.  ``_show_layer_frame`` invalidates it only when the
+            # replacement composite has actually arrived, preventing the
+            # viewport from going visually silent if layer rendering stalls.
+            cap = (
+                max(self._layer_reference_size())
+                if self._full_preview_requested
+                else self._layer_policy_cap()
+            )
+            layers_controller.request_preview(cap)
             return
         kind = RenderKind.FULL if self._full_preview_requested else RenderKind.SETTLE
         req = self._scheduler.request(self._build_request(kind))
@@ -2021,6 +2420,14 @@ class ImageEditor(QMainWindow):
         if self._base_gray is None:
             return
         self._full_preview_requested = True
+        log_action("preview.full_quality_requested")
+        layers_controller = getattr(self, "layers_controller", None)
+        if (
+            layers_controller is not None
+            and getattr(layers_controller, "document", None) is not None
+        ):
+            layers_controller.request_preview(max(self._layer_reference_size()))
+            return
         req = self._scheduler.request(self._build_request(RenderKind.FULL))
         if req is not None:
             self._launch_worker(req)
@@ -2055,23 +2462,51 @@ class ImageEditor(QMainWindow):
 
     def _launch_worker(self, request: RenderRequest) -> None:
         """Start one background render for an already-stamped request."""
+        if self._render_closing:
+            return
         worker = _RenderWorker(self.pipeline, self._base_gray, request,
                                 is_cancelled=lambda: self._scheduler.should_cancel(request),
                                 mask_caches=self._mask_caches)
+        self._render_workers.add(worker)
         worker.signals.finished.connect(self._on_rendered)
         worker.signals.failed.connect(self._on_render_failed)
         worker.signals.cancelled.connect(self._on_render_cancelled)
+
+        def release(*_args, retained=worker) -> None:
+            self._render_workers.discard(retained)
+
+        worker.signals.finished.connect(release)
+        worker.signals.failed.connect(release)
+        worker.signals.cancelled.connect(release)
         self._pool.start(worker)
 
     def _on_rendered(self, qimg: QImage, request: RenderRequest) -> None:
         # Drop stale/out-of-order results; only the most-recently-started render
         # is painted.
         if self._scheduler.is_current(request):
-            self.last_qimage = qimg
-            refit = self._pending_refit
-            self._pending_refit = False
-            self.viewport.set_pixmap(QPixmap.fromImage(qimg),
-                                     logical_size=request.logical_size, refit=refit)
+            authority = request.layer_preview_context
+            if authority is None:
+                published = qimg
+                logical_size = request.logical_size
+            else:
+                composite = self.layers_controller.compose_interactive_preview(
+                    qimage_to_numpy_rgba(qimg), authority)
+                published = (
+                    None if composite is None else
+                    numpy_to_qimage(self._apply_active_layer_mask_overlay(composite))
+                )
+                logical_size = self._layer_reference_size()
+            if published is not None:
+                self.last_qimage = published
+                refit = self._pending_refit
+                self._pending_refit = False
+                self.viewport.set_pixmap(
+                    QPixmap.fromImage(published),
+                    logical_size=logical_size,
+                    refit=refit,
+                )
+                if authority is not None:
+                    self._sync_layer_drag_target()
         # If state changed while this render was in flight, run one trailing render
         # with the freshest, highest-priority state.
         nxt = self._scheduler.on_finished()
@@ -2105,6 +2540,7 @@ class ImageEditor(QMainWindow):
             raise ValueError("decode intent must be 'open' or 'place'")
         self._decode_generation += 1
         generation = self._decode_generation
+        log_action("image.decode_requested", path=path, intent=intent)
         worker = _DecodeWorker(path)
         self._decode_workers.add(worker)
         worker.signals.finished.connect(

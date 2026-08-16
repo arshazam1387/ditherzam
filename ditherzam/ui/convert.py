@@ -33,3 +33,13 @@ def qimage_to_numpy(qimg: QImage) -> np.ndarray:
     bpl = img.bytesPerLine()
     buf = np.frombuffer(memoryview(img.constBits()), dtype=np.uint8, count=h * bpl)
     return buf.reshape(h, bpl)[:, : w * 3].reshape(h, w, 3).copy()
+
+
+def qimage_to_numpy_rgba(qimg: QImage) -> np.ndarray:
+    """Convert any QImage into a contiguous HxWx4 straight-RGBA array."""
+    img = qimg.convertToFormat(QImage.Format.Format_RGBA8888)
+    w, h = img.width(), img.height()
+    bpl = img.bytesPerLine()
+    buf = np.frombuffer(
+        memoryview(img.constBits()), dtype=np.uint8, count=h * bpl)
+    return buf.reshape(h, bpl)[:, : w * 4].reshape(h, w, 4).copy()

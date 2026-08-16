@@ -9,6 +9,9 @@ from ditherzam.layers import (
     LayerSource,
     LayerStack,
     LayerTransform,
+    composite_active_layer_preview,
+    lower_layer_preview_context,
+    render_layer_document,
     render_layer_document_with_proxy,
     render_layer_stack,
 )
@@ -159,3 +162,36 @@ def test_document_proxy_rejects_unknown_layer_id():
     with pytest.raises(ValueError, match="live document layer"):
         render_layer_document_with_proxy(
             document, object(), layer_id="missing")
+
+
+def test_cached_lower_active_composite_matches_full_stack_for_transform_alpha_blend(
+        monkeypatch):
+    class ProxyRenderer:
+        def __init__(self, registry, gray, rgba, *, probability=None):
+            self.rgba = rgba
+
+        def render(self, look, **kwargs):
+            return self.rgba[..., :3] if look.name == "active" else self.rgba
+
+    monkeypatch.setattr("ditherzam.layers.render.LookRenderer", ProxyRenderer)
+    lower_source = _document_source((180, 120, 60), alpha=220, shape=(3, 4))
+    active_source = _document_source((40, 200, 160), alpha=128, shape=(2, 2))
+    lower = Layer("lower", "Lower", _look("lower"), source=lower_source)
+    active = Layer(
+        "active", "Active", _look("active"),
+        source=active_source,
+        transform=LayerTransform(x=1, y=1, scale_x=1.5, scale_y=1.0),
+        blend_mode="multiply",
+        opacity=47,
+    )
+    document = LayerDocument(
+        CanvasSpec(4, 3), (lower, active), ("active",))
+
+    context = lower_layer_preview_context(
+        document, object(), layer_id="active", target_max_side=4)
+    actual = composite_active_layer_preview(
+        context, active, active_source.rgba[..., :3])
+    expected = render_layer_document(document, object(), target_max_side=4)
+
+    assert np.array_equal(actual, expected)
+    assert not context.lower_rgba.flags.writeable

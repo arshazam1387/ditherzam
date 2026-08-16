@@ -16,6 +16,13 @@ class BrushMode(Enum):
     HIDE = "hide"
 
 
+class BrushTip(Enum):
+    ROUND = "round"
+    SQUARE = "square"
+    DIAMOND = "diamond"
+    TEXTURE = "texture"
+
+
 def _strict_percent(value: int, name: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100:
         raise ValueError(f"{name} must be an integer within 0..100")
@@ -33,12 +40,15 @@ def _finite_number(value: float, name: str) -> float:
 
 @dataclass(frozen=True)
 class BrushSettings:
-    """A circular brush whose ``size`` is its diameter in document units."""
+    """A shaped brush whose ``size`` is its diameter in document units."""
 
     size: float
     hardness: int
     strength: int
     mode: BrushMode
+    tip: BrushTip = BrushTip.ROUND
+    spacing_percent: int = 25
+    texture_seed: int = 0
 
     def __post_init__(self) -> None:
         size = _finite_number(self.size, "size")
@@ -46,14 +56,28 @@ class BrushSettings:
             raise ValueError("size must be positive")
         if not isinstance(self.mode, BrushMode):
             raise ValueError("mode must be a BrushMode")
+        if not isinstance(self.tip, BrushTip):
+            raise ValueError("tip must be a BrushTip")
         _strict_percent(self.hardness, "hardness")
         _strict_percent(self.strength, "strength")
+        if (
+            isinstance(self.spacing_percent, bool)
+            or not isinstance(self.spacing_percent, int)
+            or not 1 <= self.spacing_percent <= 100
+        ):
+            raise ValueError("spacing_percent must be an integer within 1..100")
+        if (
+            isinstance(self.texture_seed, bool)
+            or not isinstance(self.texture_seed, int)
+            or not 0 <= self.texture_seed <= 0xFFFFFFFF
+        ):
+            raise ValueError("texture_seed must be an integer within 0..4294967295")
         object.__setattr__(self, "size", size)
 
     @property
     def spacing(self) -> float:
         """Fixed center-to-center stamp spacing in document units."""
-        return max(1.0, self.size * 0.25)
+        return max(1.0, self.size * self.spacing_percent / 100.0)
 
 
 @dataclass(frozen=True)
@@ -120,7 +144,7 @@ def stamp_mask_brush(
     flip_x: bool = False,
     flip_y: bool = False,
 ) -> DirtyRect | None:
-    """Apply one circular stamp and return its minimal changed-pixel bounds."""
+    """Apply one shaped stamp and return its minimal changed-pixel bounds."""
     work = _validate_buffer(buffer)
     if not isinstance(settings, BrushSettings):
         raise ValueError("settings must be BrushSettings")
@@ -151,14 +175,34 @@ def stamp_mask_brush(
     x_distance_sq = (
         lx + (np.arange(x0, x1, dtype=np.float64) + 0.5) * sx - cx
     ) ** 2
+    x_distance = np.sqrt(x_distance_sq)
     hard_radius = radius * settings.hardness / 100.0
     changed_x0, changed_y0 = width, height
     changed_x1 = changed_y1 = 0
 
     for y in range(y0, y1):
         dy = ly + (y + 0.5) * sy - cy
-        distance = np.sqrt(x_distance_sq + dy * dy)
+        y_distance = abs(dy)
+        if settings.tip is BrushTip.SQUARE:
+            distance = np.maximum(x_distance, y_distance)
+        elif settings.tip is BrushTip.DIAMOND:
+            distance = x_distance + y_distance
+        else:
+            distance = np.sqrt(x_distance_sq + dy * dy)
         inside = distance <= radius
+        if settings.tip is BrushTip.TEXTURE:
+            # Stable source-pixel hash: texture is independent of event timing,
+            # viewport mapping, process hash randomization, and NumPy RNG state.
+            columns = np.arange(x0, x1, dtype=np.uint64)
+            hashed = (
+                columns * np.uint64(0x9E3779B1)
+                + np.uint64(y) * np.uint64(0x85EBCA77)
+                + np.uint64(settings.texture_seed) * np.uint64(0xC2B2AE3D)
+            ) & np.uint64(0xFFFFFFFF)
+            hashed ^= hashed >> np.uint64(16)
+            hashed = (hashed * np.uint64(0x7FEB352D)) & np.uint64(0xFFFFFFFF)
+            hashed ^= hashed >> np.uint64(15)
+            inside &= (hashed & np.uint64(0xFF)) >= np.uint64(96)
         if not np.any(inside):
             continue
         if settings.hardness == 100:
@@ -169,6 +213,8 @@ def stamp_mask_brush(
             )
             if hard_radius > 0:
                 coverage[distance <= hard_radius] = 255
+        # Texture holes must remain empty even within the geometric falloff.
+        coverage[~inside] = 0
         amount = (coverage * settings.strength + 50) // 100
         row = work[y, x0:x1]
         old = row.astype(np.int32)

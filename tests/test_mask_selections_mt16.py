@@ -280,3 +280,54 @@ def test_viewport_gradient_drag_emits_document_geometry(qapp_fixture):
         expected_start.x(), expected_start.y(),
         expected_end.x(), expected_end.y(),
     ), abs=0.75)
+
+
+def test_creative_selection_rasterizers_and_refinements():
+    from ditherzam.layers.selection import (
+        feather_selection, grow_selection, invert_selection,
+        rasterize_freehand_selection, rasterize_polygon_selection,
+        select_all, shrink_selection)
+    points = ((0.25, 0.25), (4.75, 0.25), (2.5, 4.75))
+    polygon = rasterize_polygon_selection((5, 5), points)
+    assert polygon[2, 2] == 255
+    assert np.any((polygon > 0) & (polygon < 255))
+    stroke = rasterize_freehand_selection(
+        (7, 7), ((1, 1), (5, 5)), diameter=2)
+    assert stroke[1, 1] and stroke[3, 3] and stroke[5, 5]
+    assert np.all(select_all((2, 3)).pixels == 255)
+    assert invert_selection(TemporarySelection(
+        np.array([[0, 64, 255]], np.uint8))).pixels.tolist() == [[255, 191, 0]]
+    seed = TemporarySelection(np.pad(
+        np.array([[255]], np.uint8), ((2, 2), (2, 2))))
+    grown = grow_selection(seed, 1)
+    assert np.count_nonzero(grown.pixels == 255) == 9
+    assert np.count_nonzero(shrink_selection(grown, 1).pixels) == 1
+    assert np.array_equal(feather_selection(seed, 0).pixels, seed.pixels)
+    assert 0 < feather_selection(seed, 1).pixels[2, 1] < 255
+
+
+def test_color_range_is_soft_and_respects_source_alpha():
+    from ditherzam.layers.selection import select_color_range
+    rgba = np.array([[
+        [100, 100, 100, 255], [110, 100, 100, 255],
+        [125, 100, 100, 255], [100, 100, 100, 0],
+    ]], np.uint8)
+    selected = select_color_range(
+        rgba, (100, 100, 100), tolerance=10, softness=20)
+    assert selected.pixels[0, 0] == 255
+    assert selected.pixels[0, 1] == 255
+    assert 0 < selected.pixels[0, 2] < 255
+    assert selected.pixels[0, 3] == 0
+
+
+def test_source_selection_maps_to_transformed_document_coordinates():
+    from ditherzam.layers.selection import source_selection_to_document
+
+    source = TemporarySelection(np.array([[255, 0]], np.uint8))
+    mapped = source_selection_to_document(
+        source, (3, 6), layer_x=1, layer_y=1, scale_x=2, scale_y=1)
+    assert mapped.pixels.tolist() == [
+        [0, 0, 0, 0, 0, 0],
+        [0, 255, 191, 64, 0, 0],
+        [0, 0, 0, 0, 0, 0],
+    ]

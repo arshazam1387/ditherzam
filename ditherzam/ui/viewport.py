@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QTransform
 from PySide6.QtWidgets import (
     QApplication,
@@ -45,6 +45,9 @@ class CustomGraphicsView(QGraphicsView):
     mask_brush_size_delta_requested = Signal(int)
     mask_brush_mode_swap_requested = Signal()
     selection_dragged = Signal(str, float, float, float, float)
+    selection_path_completed = Signal(str, object)
+    color_range_picked = Signal(float, float)
+    selection_cancel_requested = Signal()
     gradient_dragged = Signal(str, float, float, float, float)
 
     def __init__(self, bg_color="#1f1f1f", friction=0.95, enable_inertia=True,
@@ -67,6 +70,8 @@ class CustomGraphicsView(QGraphicsView):
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
         self.viewport().setMouseTracking(True)
+        self.viewport().installEventFilter(self)
+        self._pointer_inside = True
 
         self._friction = friction
         self._enable_inertia = enable_inertia
@@ -89,6 +94,7 @@ class CustomGraphicsView(QGraphicsView):
         self._selection_start: QPointF | None = None
         self._selection_end: QPointF | None = None
         self._selection_item: QGraphicsPixmapItem | None = None
+        self._selection_points: list[QPointF] = []
         self._gradient_tool: str | None = None
         self._gradient_start: QPointF | None = None
 
@@ -96,34 +102,44 @@ class CustomGraphicsView(QGraphicsView):
         self._timer.timeout.connect(self._on_inertia_tick)
 
     def set_mask_brush_mode(self, enabled: bool, size: float | None = None) -> None:
-        self._mask_brush_mode = bool(enabled)
+        enabled = bool(enabled)
         if size is not None:
             if isinstance(size, bool) or not isinstance(size, (int, float)) or size <= 0:
                 raise ValueError("brush size must be positive")
             self._mask_brush_size = float(size)
+        if enabled:
+            self._selection_tool = None
+            self._selection_start = None
+            self._selection_end = None
+            self._selection_points = []
+            self._gradient_tool = None
+            self._gradient_start = None
+        self._mask_brush_mode = enabled
         if not enabled:
             self._mask_brush_down = False
             self._brush_scene_pos = None
             self._space_pan = False
-            self.setCursor(Qt.CursorShape.ArrowCursor)
-        else:
-            self.setCursor(Qt.CursorShape.BlankCursor)
+        self._restore_tool_cursor()
         self.viewport().update()
 
     def set_mask_brush_size(self, size: float) -> None:
         self.set_mask_brush_mode(self._mask_brush_mode, size)
 
     def set_selection_tool(self, shape: str | None) -> None:
-        if shape not in {None, "rectangle", "ellipse"}:
-            raise ValueError("selection tool must be rectangle, ellipse, or None")
+        if shape not in {None, "rectangle", "ellipse", "polygon", "freehand", "color_range"}:
+            raise ValueError("selection tool must be rectangle, ellipse, polygon, freehand, color_range, or None")
         self._selection_tool = shape
         self._selection_start = None
         self._selection_end = None
+        self._selection_points = []
         if shape is not None:
-            self.set_mask_brush_mode(False)
-            self.setCursor(Qt.CursorShape.CrossCursor)
-        else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._mask_brush_mode = False
+            self._mask_brush_down = False
+            self._brush_scene_pos = None
+            self._space_pan = False
+            self._gradient_tool = None
+            self._gradient_start = None
+        self._restore_tool_cursor()
         self.viewport().update()
 
     def install_selection_overlay(self, coverage) -> None:
@@ -133,17 +149,25 @@ class CustomGraphicsView(QGraphicsView):
         value = np.asarray(coverage)
         if value.dtype != np.uint8 or value.ndim != 2 or not value.size:
             raise ValueError("selection coverage must be non-empty 2-D uint8")
-        rgba = np.zeros((*value.shape, 4), dtype=np.uint8)
+        source_height, source_width = value.shape
+        stride = max(1, int(np.ceil(max(value.shape) / 1024.0)))
+        display = np.ascontiguousarray(value[::stride, ::stride])
+        rgba = np.zeros((*display.shape, 4), dtype=np.uint8)
         rgba[..., 0] = 47
         rgba[..., 1] = 128
         rgba[..., 2] = 255
-        rgba[..., 3] = (value.astype(np.uint16) * 96 // 255).astype(np.uint8)
+        rgba[..., 3] = (
+            display.astype(np.uint16) * 96 // 255).astype(np.uint8)
         if self._selection_item is None:
             self._selection_item = QGraphicsPixmapItem()
             self._selection_item.setZValue(4.0)
             self._scene.addItem(self._selection_item)
-        self._selection_item.setPixmap(
-            QPixmap.fromImage(numpy_to_qimage(rgba)))
+        pixmap = QPixmap.fromImage(numpy_to_qimage(rgba))
+        self._selection_item.setPixmap(pixmap)
+        self._selection_item.setTransform(QTransform.fromScale(
+            source_width / float(pixmap.width()),
+            source_height / float(pixmap.height()),
+        ))
         self._selection_item.setVisible(True)
 
     def clear_selection_overlay(self) -> None:
@@ -156,8 +180,63 @@ class CustomGraphicsView(QGraphicsView):
         self._gradient_tool = kind
         self._gradient_start = None
         if kind is not None:
-            self.set_selection_tool(None)
-            self.setCursor(Qt.CursorShape.CrossCursor)
+            self._selection_tool = None
+            self._selection_start = None
+            self._selection_end = None
+            self._selection_points = []
+            self._mask_brush_mode = False
+            self._mask_brush_down = False
+            self._brush_scene_pos = None
+            self._space_pan = False
+        self._restore_tool_cursor()
+        self.viewport().update()
+
+    def set_pointer_tool(self) -> None:
+        """Disarm every canvas tool and immediately restore a normal pointer."""
+        self._selection_tool = None
+        self._selection_start = None
+        self._selection_end = None
+        self._selection_points = []
+        self._gradient_tool = None
+        self._gradient_start = None
+        self._mask_brush_mode = False
+        self._mask_brush_down = False
+        self._brush_scene_pos = None
+        self._space_pan = False
+        self._restore_tool_cursor()
+        self.viewport().update()
+
+    def _apply_cursor(self, shape: Qt.CursorShape) -> None:
+        self.setCursor(shape)
+        self.viewport().setCursor(shape)
+
+    def _restore_tool_cursor(self) -> None:
+        if not self._pointer_inside:
+            shape = Qt.CursorShape.ArrowCursor
+        elif self._space_pan:
+            shape = Qt.CursorShape.OpenHandCursor
+        elif self._mask_brush_mode:
+            shape = Qt.CursorShape.BlankCursor
+        elif self._selection_tool is not None or self._gradient_tool is not None:
+            shape = Qt.CursorShape.CrossCursor
+        else:
+            shape = Qt.CursorShape.ArrowCursor
+        self._apply_cursor(shape)
+
+    def eventFilter(self, watched, event) -> bool:
+        # QGraphicsView is an abstract scroll area: its actual canvas is the
+        # viewport child. Tracking the parent widget would mistake movement
+        # from the frame into that child for leaving the canvas.
+        if watched is self.viewport():
+            if event.type() == QEvent.Type.Enter:
+                self._pointer_inside = True
+                self._restore_tool_cursor()
+            elif event.type() == QEvent.Type.Leave:
+                self._pointer_inside = False
+                self._brush_scene_pos = None
+                self._apply_cursor(Qt.CursorShape.ArrowCursor)
+                self.viewport().update()
+        return super().eventFilter(watched, event)
 
     # ---- image / zoom -------------------------------------------------------
     def set_pixmap(self, pixmap: QPixmap, logical_size=None, refit=True) -> None:
@@ -264,7 +343,7 @@ class CustomGraphicsView(QGraphicsView):
             raise ValueError("layer drag target must be a QRectF or None")
         self._layer_drag_rect = None if rect is None else QRectF(rect)
         if rect is None:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._restore_tool_cursor()
         self.viewport().update()
 
     def install_transform_proxy(
@@ -414,20 +493,36 @@ class CustomGraphicsView(QGraphicsView):
         return pixels / (view_scale * dpr)
 
     def _layer_handle_rects(self) -> dict[str, QRectF]:
-        """Eight resize hit targets, each at least 16 physical display pixels."""
-        return self._layer_handle_rects_for_device_size(16.0)
+        """Eight hit targets containing both the visible handle and 16 px floor."""
+        rect = self._layer_drag_rect
+        if rect is None:
+            return {}
+        size = max(
+            self._device_pixels_to_scene(16.0),
+            min(rect.width(), rect.height()) * 0.06,
+        )
+        return self._layer_handle_rects_for_scene_size(size)
 
     def _layer_visible_handle_rects(self) -> dict[str, QRectF]:
-        """Compact visible handles independent of zoom and display scaling."""
-        return self._layer_handle_rects_for_device_size(10.0)
+        """Visible handles sized in proportion to the selected image."""
+        rect = self._layer_drag_rect
+        if rect is None:
+            return {}
+        size = max(1e-6, min(rect.width(), rect.height()) * 0.06)
+        return self._layer_handle_rects_for_scene_size(size)
 
     def _layer_handle_rects_for_device_size(
         self, device_size: float
     ) -> dict[str, QRectF]:
+        size = self._device_pixels_to_scene(device_size)
+        return self._layer_handle_rects_for_scene_size(size)
+
+    def _layer_handle_rects_for_scene_size(
+        self, size: float
+    ) -> dict[str, QRectF]:
         rect = self._layer_drag_rect
         if rect is None:
             return {}
-        size = self._device_pixels_to_scene(device_size)
         half = size / 2.0
         center_x = rect.center().x()
         center_y = rect.center().y()
@@ -475,14 +570,14 @@ class CustomGraphicsView(QGraphicsView):
     def _update_transform_hover_cursor(self, scene_pos: QPointF) -> None:
         handle = self._handle_at(scene_pos)
         if handle is not None:
-            self.setCursor(self._resize_cursor(handle))
+            self._apply_cursor(self._resize_cursor(handle))
         elif (
             self._layer_drag_rect is not None
             and self._layer_drag_rect.contains(scene_pos)
         ):
-            self.setCursor(Qt.CursorShape.SizeAllCursor)
+            self._apply_cursor(Qt.CursorShape.SizeAllCursor)
         else:
-            self.setCursor(Qt.CursorShape.ArrowCursor)
+            self._restore_tool_cursor()
 
     def drawForeground(self, painter: QPainter, rect: QRectF) -> None:
         super().drawForeground(painter, rect)
@@ -517,6 +612,17 @@ class CustomGraphicsView(QGraphicsView):
             else:
                 painter.drawRect(selection_rect)
             painter.restore()
+        if self._selection_points:
+            painter.save()
+            pen = QPen(QColor("#ffffff"))
+            pen.setCosmetic(True)
+            pen.setStyle(Qt.PenStyle.DashLine)
+            painter.setPen(pen)
+            for start, end in zip(
+                self._selection_points, self._selection_points[1:]
+            ):
+                painter.drawLine(start, end)
+            painter.restore()
         target = self._layer_drag_rect
         if target is None:
             return
@@ -542,7 +648,7 @@ class CustomGraphicsView(QGraphicsView):
             self._last_time = time.monotonic()
             self._velocity = QPointF(0.0, 0.0)
             self._timer.stop()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._apply_cursor(Qt.CursorShape.ClosedHandCursor)
             event.accept()
             return
         if (
@@ -557,6 +663,18 @@ class CustomGraphicsView(QGraphicsView):
             and event.button() == Qt.MouseButton.LeftButton
         ):
             scene_pos = self.mapToScene(event.position().toPoint())
+            if self._selection_tool == "color_range":
+                self.color_range_picked.emit(
+                    float(scene_pos.x()), float(scene_pos.y()))
+                event.accept()
+                return
+            if self._selection_tool == "polygon":
+                self._selection_points.append(scene_pos)
+                self.viewport().update()
+                event.accept()
+                return
+            if self._selection_tool == "freehand":
+                self._selection_points = [scene_pos]
             self._selection_start = scene_pos
             self._selection_end = scene_pos
             self.viewport().update()
@@ -584,7 +702,7 @@ class CustomGraphicsView(QGraphicsView):
                 self._layer_dragging = False
                 self._panning = False
                 self._timer.stop()
-                self.setCursor(self._resize_cursor(handle))
+                self._apply_cursor(self._resize_cursor(handle))
                 self.layer_resize_started.emit(handle)
                 event.accept()
                 return
@@ -596,7 +714,7 @@ class CustomGraphicsView(QGraphicsView):
                 self._layer_drag_start_scene = scene_pos
                 self._panning = False
                 self._timer.stop()
-                self.setCursor(Qt.CursorShape.SizeAllCursor)
+                self._apply_cursor(Qt.CursorShape.SizeAllCursor)
                 self.layer_drag_started.emit()
                 event.accept()
                 return
@@ -605,12 +723,14 @@ class CustomGraphicsView(QGraphicsView):
             self._last_time = time.monotonic()
             self._velocity = QPointF(0.0, 0.0)
             self._timer.stop()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            self._apply_cursor(Qt.CursorShape.ClosedHandCursor)
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
         if self._selection_tool is not None and self._selection_start is not None:
             self._selection_end = self.mapToScene(event.position().toPoint())
+            if self._selection_tool == "freehand":
+                self._selection_points.append(self._selection_end)
             self.viewport().update()
             event.accept()
             return
@@ -682,10 +802,18 @@ class CustomGraphicsView(QGraphicsView):
         ):
             end = self.mapToScene(event.position().toPoint())
             start = self._selection_start
-            self._selection_start = None
-            self._selection_end = None
+            if self._selection_tool == "freehand":
+                self._selection_points.append(end)
+                points = [(float(p.x()), float(p.y())) for p in self._selection_points]
+                self.set_selection_tool(None)
+                self.selection_path_completed.emit("freehand", points)
+                self.viewport().update()
+                event.accept()
+                return
+            shape = self._selection_tool
+            self.set_selection_tool(None)
             self.selection_dragged.emit(
-                self._selection_tool,
+                shape,
                 float(start.x()), float(start.y()),
                 float(end.x()), float(end.y()),
             )
@@ -730,10 +858,7 @@ class CustomGraphicsView(QGraphicsView):
             and self._panning
         ):
             self._panning = False
-            self.setCursor(
-                Qt.CursorShape.BlankCursor
-                if self._mask_brush_mode and not self._space_pan
-                else Qt.CursorShape.ArrowCursor)
+            self._restore_tool_cursor()
             if self._enable_inertia:
                 vx = clamp_velocity(self._velocity.x(), self._velocity_scale, self._max_velocity)
                 vy = clamp_velocity(self._velocity.y(), self._velocity_scale, self._max_velocity)
@@ -744,7 +869,36 @@ class CustomGraphicsView(QGraphicsView):
             return
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:
+        if self._selection_tool == "polygon" and event.button() == Qt.MouseButton.LeftButton:
+            point = self.mapToScene(event.position().toPoint())
+            if not self._selection_points or self._selection_points[-1] != point:
+                self._selection_points.append(point)
+            if len(self._selection_points) >= 3:
+                points = [(float(p.x()), float(p.y())) for p in self._selection_points]
+                self.set_selection_tool(None)
+                self.selection_path_completed.emit("polygon", points)
+                self.viewport().update()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def keyPressEvent(self, event) -> None:
+        if self._selection_tool is not None and event.key() == Qt.Key.Key_Escape:
+            self.set_selection_tool(None)
+            self.selection_cancel_requested.emit()
+            self.viewport().update()
+            event.accept()
+            return
+        if self._selection_tool == "polygon":
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                if len(self._selection_points) >= 3:
+                    points = [(float(p.x()), float(p.y())) for p in self._selection_points]
+                    self.set_selection_tool(None)
+                    self.selection_path_completed.emit("polygon", points)
+                    self.viewport().update()
+                event.accept()
+                return
         focus = QApplication.focusWidget()
         if (
             self._mask_brush_mode
@@ -753,7 +907,7 @@ class CustomGraphicsView(QGraphicsView):
             key = event.key()
             if key == Qt.Key.Key_Space and not event.isAutoRepeat():
                 self._space_pan = True
-                self.setCursor(Qt.CursorShape.OpenHandCursor)
+                self._apply_cursor(Qt.CursorShape.OpenHandCursor)
                 event.accept()
                 return
             if key == Qt.Key.Key_Escape:
@@ -811,7 +965,7 @@ class CustomGraphicsView(QGraphicsView):
             and not event.isAutoRepeat()
         ):
             self._space_pan = False
-            self.setCursor(Qt.CursorShape.BlankCursor)
+            self._restore_tool_cursor()
             event.accept()
             return
         super().keyReleaseEvent(event)

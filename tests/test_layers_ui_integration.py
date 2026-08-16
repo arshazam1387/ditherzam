@@ -61,7 +61,7 @@ def test_layer_preset_application_does_not_render_single_look(
     assert rendered == []
 
 
-def test_active_layer_edit_routes_away_from_editor_scheduler(
+def test_active_layer_edit_schedules_proxy_then_settled_layer_previews(
         qapp_fixture, monkeypatch):
     from ditherzam.ui.main_window import ImageEditor
 
@@ -70,16 +70,69 @@ def test_active_layer_edit_routes_away_from_editor_scheduler(
     gray = np.zeros((2, 2), dtype=np.float32)
     rgba = np.zeros((2, 2, 4), dtype=np.uint8)
     editor.layers_controller.open_document(gray, rgba)
-    routed = []
-    ordinary = []
+    timers = []
+    monkeypatch.setattr(editor._debounce, "start",
+                        lambda delay: timers.append(("proxy", delay)))
+    monkeypatch.setattr(editor._settle, "start",
+                        lambda delay: timers.append(("settle", delay)))
+
+    editor.schedule_render()
+
+    assert timers == [
+        ("proxy", editor._debounce_ms),
+        ("settle", editor._settle_ms),
+    ]
+
+
+def test_layer_preview_ticks_use_selected_layer_then_document_composite(
+        qapp_fixture, monkeypatch):
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor(proxy_max_side=640)
+    import numpy as np
+    gray = np.zeros((800, 1200), dtype=np.float32)
+    rgba = np.zeros((800, 1200, 4), dtype=np.uint8)
+    caps = []
     monkeypatch.setattr(
         editor.layers_controller, "update_active_from_editor",
-        lambda: routed.append(True) or True)
+        lambda cap=None, **kwargs:
+        caps.append(("update", cap, kwargs)) or True)
     monkeypatch.setattr(
-        editor._debounce, "start", lambda *_args: ordinary.append(True))
-    editor.schedule_render()
-    assert routed == [True]
-    assert ordinary == []
+        editor.layers_controller, "request_preview",
+        lambda cap=None, **_kwargs: caps.append(("preview", cap)))
+    editor.layers_controller.open_document(gray, rgba)
+    caps.clear()
+    launched = []
+    monkeypatch.setattr(editor, "_launch_worker", launched.append)
+
+    editor._do_render()
+    editor._do_full_render()
+
+    assert caps == [
+        ("update", None, {"request_preview": False}),
+        ("preview", editor._layer_policy_cap()),
+    ]
+    assert len(launched) == 1
+    from ditherzam.ui.render_request import RenderKind
+    assert launched[0].kind is RenderKind.DRAG
+    assert launched[0].target_max_side == 640
+    assert launched[0].layer_preview_context is not None
+
+
+def test_layer_proxy_publication_keeps_settled_preview_timer_alive(
+        qapp_fixture):
+    from ditherzam.ui.main_window import ImageEditor
+
+    editor = ImageEditor()
+    import numpy as np
+    gray = np.zeros((8, 12), dtype=np.float32)
+    rgba = np.zeros((8, 12, 4), dtype=np.uint8)
+    editor.layers_controller.open_document(gray, rgba)
+    editor._settle.start(10_000)
+
+    editor._show_layer_frame(rgba)
+
+    assert editor._settle.isActive()
 
 
 def test_loading_source_creates_one_selected_base_layer(qapp_fixture):

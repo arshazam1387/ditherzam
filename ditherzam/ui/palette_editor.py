@@ -73,6 +73,10 @@ class SwatchStrip(QWidget):
         self._palette = Palette(
             name=palette.name, colors=palette.colors.copy(),
             category=getattr(palette, "category", ""),
+            coverages=(
+                None if getattr(palette, "coverages", None) is None
+                else palette.coverages.copy()
+            ),
         )
         self._locked = set()
         self._rebuild()
@@ -85,6 +89,7 @@ class SwatchStrip(QWidget):
 
     def set_swatch_color(self, i: int, rgb) -> None:
         self._palette.colors[i] = np.asarray(rgb, dtype=np.float32)
+        self._palette.coverages = None
         self._rebuild()
         self.edited.emit(self._palette)
 
@@ -93,6 +98,7 @@ class SwatchStrip(QWidget):
         self._palette = Palette(
             name=self._palette.name,
             colors=np.vstack([self._palette.colors, last]).astype(np.float32),
+            category=self._palette.category,
         )
         self._rebuild()
         self.edited.emit(self._palette)
@@ -103,6 +109,11 @@ class SwatchStrip(QWidget):
         self._palette = Palette(
             name=self._palette.name,
             colors=np.delete(self._palette.colors, i, axis=0).astype(np.float32),
+            category=self._palette.category,
+            coverages=(
+                None if self._palette.coverages is None
+                else np.delete(self._palette.coverages, i).astype(np.float32)
+            ),
         )
         self._locked = {j - 1 if j > i else j for j in self._locked if j != i}
         self._rebuild()
@@ -120,6 +131,10 @@ class SwatchStrip(QWidget):
         self._palette = Palette(
             name=self._palette.name, colors=new_colors,
             category=self._palette.category,
+            coverages=(
+                None if self._palette.coverages is None
+                else self._palette.coverages[order].astype(np.float32)
+            ),
         )
         self._rebuild()
         self.edited.emit(self._palette)
@@ -151,6 +166,11 @@ class SwatchStrip(QWidget):
             btn.setFixedSize(22, 22)
             border = "2px solid #f0d000" if i in self._locked else "1px solid #333"
             btn.setStyleSheet(f"background-color: rgb({r},{g},{b}); border: {border};")
+            if self._palette.coverages is not None:
+                btn.setToolTip(
+                    f"RGB {r}, {g}, {b} — "
+                    f"{float(self._palette.coverages[i]) * 100.0:.1f}% of image"
+                )
             btn.clicked.connect(lambda _=False, idx=i: self._pick_color(idx))
             btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             btn.customContextMenuRequested.connect(

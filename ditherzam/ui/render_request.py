@@ -80,6 +80,10 @@ class RenderRequest:
     mask_context: MaskContext | None = None
     source_gray: object = None     # one-read source reference captured at schedule time
     show_mask_overlay: bool = False
+    # Optional controller-owned cached lower stack for a spatial-layer drag.
+    # The core editor renderer ignores it; publication uses it to composite the
+    # freshly rendered active layer without invoking the full document renderer.
+    layer_preview_context: object = None
 
     @property
     def rendered_identity(self) -> tuple:

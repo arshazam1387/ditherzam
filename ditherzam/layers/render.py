@@ -57,6 +57,145 @@ class LayerDocumentRender:
     proxy: LayerRenderProxy
 
 
+@dataclass(frozen=True)
+class LowerLayerPreviewContext:
+    """Proxy-resolution composite below one active document layer.
+
+    The active layer and every layer above it are deliberately absent.  The
+    context is therefore reusable while only the active layer's Look changes.
+    """
+
+    layer_id: str
+    lower_rgba: np.ndarray
+    canvas_size: tuple[int, int]
+    target_max_side: int
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.layer_id, str) or not self.layer_id:
+            raise ValueError("layer_id must identify a live document layer")
+        lower = np.asarray(self.lower_rgba)
+        if (
+            lower.dtype != np.uint8 or lower.ndim != 3
+            or lower.shape[2] != 4 or not lower.size
+        ):
+            raise ValueError("lower_rgba must be a non-empty uint8 RGBA array")
+        if lower.flags.writeable or not lower.flags.c_contiguous:
+            raise ValueError("lower_rgba must be a read-only C-contiguous array")
+        width, height = self.canvas_size
+        if (
+            isinstance(width, bool) or not isinstance(width, int) or width <= 0
+            or isinstance(height, bool) or not isinstance(height, int) or height <= 0
+        ):
+            raise ValueError("canvas_size must contain positive integers")
+        if (
+            isinstance(self.target_max_side, bool)
+            or not isinstance(self.target_max_side, int)
+            or self.target_max_side <= 0
+        ):
+            raise ValueError("target_max_side must be a positive integer")
+        expected = preview_target_size(height, width, self.target_max_side)
+        if lower.shape[:2] != expected:
+            raise ValueError("lower_rgba does not match the target canvas geometry")
+
+
+def lower_layer_preview_context(
+    document: LayerDocument,
+    registry,
+    *,
+    layer_id: str,
+    target_max_side: int,
+    lower_rgba: np.ndarray | None = None,
+    is_cancelled=None,
+    allow_pending_masks: bool = False,
+    look_cache: LayerLookRenderCache | None = None,
+    mask_caches=None,
+) -> LowerLayerPreviewContext:
+    """Freeze the flattened stack below ``layer_id`` at preview resolution.
+
+    A caller may supply an already-rendered lower prefix from a settled
+    ``LayerRenderProxy``.  Otherwise only the lower subset is rendered.
+    """
+    if not isinstance(document, LayerDocument):
+        raise ValueError("document must be a LayerDocument")
+    if not isinstance(layer_id, str) or not layer_id:
+        raise ValueError("layer_id must identify a live document layer")
+    try:
+        index = next(
+            index for index, layer in enumerate(document.layers)
+            if layer.id == layer_id
+        )
+    except StopIteration as exc:
+        raise ValueError("layer_id must identify a live document layer") from exc
+    target_shape = preview_target_size(
+        document.canvas.height, document.canvas.width, target_max_side)
+    if lower_rgba is None:
+        lower_document = LayerDocument(
+            document.canvas, document.layers[:index], (), document.revision)
+        lower, _proxy = _render_layer_document(
+            lower_document,
+            registry,
+            target_max_side=target_max_side,
+            is_cancelled=is_cancelled,
+            allow_pending_masks=allow_pending_masks,
+            look_cache=look_cache,
+            mask_caches=mask_caches,
+        )
+    else:
+        supplied = np.asarray(lower_rgba)
+        if (
+            supplied.dtype != np.uint8 or supplied.ndim != 3
+            or supplied.shape[2] != 4 or not supplied.size
+        ):
+            raise ValueError("lower_rgba must be a non-empty uint8 RGBA array")
+        lower = _resize_rgba(supplied, target_shape)
+    frozen = np.array(lower, dtype=np.uint8, order="C", copy=True)
+    frozen.flags.writeable = False
+    return LowerLayerPreviewContext(
+        layer_id,
+        frozen,
+        (document.canvas.width, document.canvas.height),
+        target_max_side,
+    )
+
+
+def composite_active_layer_preview(
+    context: LowerLayerPreviewContext,
+    layer,
+    rendered,
+    *,
+    is_cancelled=None,
+) -> np.ndarray:
+    """Composite one freshly rendered active layer over its cached lower stack."""
+    if not isinstance(context, LowerLayerPreviewContext):
+        raise ValueError("context must be a LowerLayerPreviewContext")
+    if layer.id != context.layer_id:
+        raise ValueError("layer does not match the preview context")
+    source = layer.source
+    if source is None:
+        raise ValueError("document layers must own sources")
+    _cancel(is_cancelled)
+    canvas_h, canvas_w = context.lower_rgba.shape[:2]
+    source_canvas_w, source_canvas_h = context.canvas_size
+    scale_x = canvas_w / float(source_canvas_w)
+    scale_y = canvas_h / float(source_canvas_h)
+    source_h, source_w = source.gray.shape
+    target_shape = (
+        max(1, int(round(source_h * layer.transform.scale_y * scale_y))),
+        max(1, int(round(source_w * layer.transform.scale_x * scale_x))),
+    )
+    normalized = _normalize_layer_alpha(rendered, source.rgba, target_shape)
+    masked = _apply_raster_mask(
+        normalized, layer.raster_mask, target_shape,
+        is_cancelled=is_cancelled)
+    _cancel(is_cancelled)
+    if not layer.visible or layer.opacity == 0:
+        return np.array(context.lower_rgba, copy=True, order="C")
+    x = int(round(layer.transform.x * scale_x))
+    y = int(round(layer.transform.y * scale_y))
+    return _place_layer(
+        context.lower_rgba, masked, x, y, layer.blend_mode, layer.opacity)
+
+
 def composite_mask_stroke_roi(
     proxy: LayerRenderProxy,
     mask_pixels: np.ndarray,

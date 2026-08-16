@@ -61,6 +61,8 @@ class ControlPanel(QWidget):
             "source_dither": 100, "source_dither_brighten": False,
             "depth": 2, "color_mapping": "match",
             "palette_autosave": False, "extract_unit": "k",
+            "extract_algorithm": "balanced",
+            "extract_min_coverage": 5, "extract_diversity": 100,
             "palette_preview": True, "palette_wheel_cycle": False,
         }
         self._sliders: dict[str, ResettableGlowSlider] = {}
@@ -113,13 +115,13 @@ class ControlPanel(QWidget):
         layout.addWidget(self.dither_search)
 
         self.scale_slider = ResettableGlowSlider(default=5, glow_color="#5e89ed")
-        self.scale_slider.setRange(1, 20)
-        self.scale_spin = InvisibleSpinBox(max_display=20)
-        self.scale_spin.setValue(round(5 / 20 * 100))
+        self.scale_slider.setRange(1, 50)
+        self.scale_spin = InvisibleSpinBox(max_display=50)
+        self.scale_spin.setValue(round(5 / 50 * 100))
         self.scale_slider.valueChanged.connect(self._on_scale_changed)
-        # Scale slider is 1..20; the 0..100 spin displays that value directly.
+        # Scale slider is 1..50; the 0..100 spin displays that value directly.
         self.scale_slider.valueChanged.connect(
-            lambda v: self.scale_spin.setValue(round(v / 20 * 100)))
+            lambda v: self.scale_spin.setValue(round(v / 50 * 100)))
         self._spins["scale"] = self.scale_spin
         layout.addWidget(_labeled("Scale", self.scale_slider, self.scale_spin))
 
@@ -190,10 +192,50 @@ class ControlPanel(QWidget):
         self.extract_slider.setRange(2, 64)
         layout.addWidget(_labeled("From-Image Colors", self.extract_slider))
 
+        self.extract_algorithm_combo = NoScrollComboBox()
+        self.extract_algorithm_combo.addItems(["Balanced", "Distinct Colors"])
+        self.extract_algorithm_combo.currentTextChanged.connect(
+            self._on_extract_algorithm_changed)
+        layout.addWidget(_labeled("From-Image Algorithm", self.extract_algorithm_combo))
+
         self.extract_unit_combo = NoScrollComboBox()
         self.extract_unit_combo.addItems(["k", "%"])
         self.extract_unit_combo.currentTextChanged.connect(self._on_extract_unit_changed)
-        layout.addWidget(_labeled("From-Image Unit", self.extract_unit_combo))
+        self.extract_unit_row = _labeled("From-Image Unit", self.extract_unit_combo)
+        layout.addWidget(self.extract_unit_row)
+
+        self.extract_min_coverage_slider = ResettableGlowSlider(
+            default=5, glow_color="#5e89ed")
+        self.extract_min_coverage_slider.setRange(0, 100)
+        self.extract_min_coverage_value = QLabel("0.5%")
+        self.extract_min_coverage_slider.valueChanged.connect(
+            self._on_extract_min_coverage_changed)
+        self.extract_min_coverage_row = _labeled(
+            "Minimum Coverage",
+            self.extract_min_coverage_slider,
+            self.extract_min_coverage_value,
+        )
+        self.extract_min_coverage_row.setVisible(False)
+        layout.addWidget(self.extract_min_coverage_row)
+
+        self.extract_diversity_slider = ResettableGlowSlider(
+            default=100, glow_color="#5e89ed")
+        self.extract_diversity_slider.setRange(0, 100)
+        self.extract_diversity_value = QLabel("100")
+        self.extract_diversity_slider.valueChanged.connect(
+            self._on_extract_diversity_changed)
+        self.extract_diversity_row = _labeled(
+            "Diversity",
+            self.extract_diversity_slider,
+            self.extract_diversity_value,
+        )
+        self.extract_diversity_row.setVisible(False)
+        layout.addWidget(self.extract_diversity_row)
+
+        self.extract_result_label = QLabel("")
+        self.extract_result_label.setWordWrap(True)
+        self.extract_result_label.setVisible(False)
+        layout.addWidget(self.extract_result_label)
 
         self.autosave_toggle = QCheckBox("Autosave palette")
         self.autosave_toggle.toggled.connect(self._on_autosave_toggled)
@@ -457,6 +499,41 @@ class ControlPanel(QWidget):
         else:
             self.extract_slider.setRange(2, 64)
             self.extract_slider.setValue(8)
+
+    def _on_extract_algorithm_changed(self, text: str) -> None:
+        distinct = text == "Distinct Colors"
+        self.state["extract_algorithm"] = "distinct" if distinct else "balanced"
+        self.extract_min_coverage_row.setVisible(distinct)
+        self.extract_diversity_row.setVisible(distinct)
+        self.extract_unit_row.setVisible(not distinct)
+        if distinct and self.state.get("extract_unit") != "k":
+            self.extract_unit_combo.setCurrentText("k")
+
+    def _on_extract_min_coverage_changed(self, value: int) -> None:
+        self.state["extract_min_coverage"] = int(value)
+        self.extract_min_coverage_value.setText(f"{value / 10.0:.1f}%")
+
+    def _on_extract_diversity_changed(self, value: int) -> None:
+        self.state["extract_diversity"] = int(value)
+        self.extract_diversity_value.setText(str(value))
+
+    def set_extraction_result(self, requested: int, returned: int) -> None:
+        if self.state.get("extract_algorithm") != "distinct":
+            self.extract_result_label.setVisible(False)
+            return
+        minimum = int(self.state.get("extract_min_coverage", 5)) / 10.0
+        if returned < requested:
+            text = (
+                f"{returned} of {requested} colors meet the "
+                f"{minimum:.1f}% minimum coverage."
+            )
+        else:
+            text = (
+                f"{returned} colors selected. Hover a swatch to see "
+                "its image coverage."
+            )
+        self.extract_result_label.setText(text)
+        self.extract_result_label.setVisible(True)
 
     def _on_save_palette(self) -> None:
         self.working_palette.category = self.category_combo.currentText().strip()

@@ -5,8 +5,17 @@ import time
 from PySide6.QtCore import QRunnable, QTimer
 
 from ditherzam.masking.adapter import InferenceResult
-from ditherzam.masking.contracts import InferenceIdentity, ModelIdentity, ProbabilityMap
-from ditherzam.masking.inference_request import InferenceOutcome, InferenceTerminal
+from ditherzam.masking.contracts import (
+    InferenceIdentity,
+    ModelIdentity,
+    ProbabilityMap,
+    source_identity,
+)
+from ditherzam.masking.inference_request import (
+    InferenceOutcome,
+    InferenceRequest,
+    InferenceTerminal,
+)
 from ditherzam.masking.settings import MaskTarget, SmartMaskSettings
 from ditherzam.masking.cache import MaskCaches
 from ditherzam.render_cache import MIB
@@ -42,6 +51,31 @@ def success(request):
     result = InferenceResult("primary", ProbabilityMap(identity,
         np.full((request.source.height, request.source.width), .75, np.float32)))
     return InferenceOutcome(request, InferenceTerminal.SUCCESS, result=result)
+
+
+def test_add_mask_target_opens_mask_tools_without_arming_invalid_brush(
+    qapp_fixture,
+):
+    window, _launched = editor()
+    window.load_array(*source())
+    layer = window.layers_controller.document.layers[0]
+
+    window.layers_panel._row_targets[layer.id][1].click()
+    qapp_fixture.processEvents()
+
+    assert window.layers_panel.editor_tabs.currentIndex() == 1
+    assert window.layers_controller.edit_target.kind == "mask"
+    assert not window.viewport._mask_brush_mode
+    assert not window.layers_panel.paint_mask_btn.isEnabled()
+
+    assert window.layers_controller.reveal_all_raster_mask(
+        replace_existing=False)
+    qapp_fixture.processEvents()
+    assert window.layers_panel.paint_mask_btn.isEnabled()
+
+    window.layers_panel._row_targets[layer.id][1].click()
+    qapp_fixture.processEvents()
+    assert window.viewport._mask_brush_mode
 
 
 def test_disabled_load_and_whole_image_do_not_infer(qapp_fixture, monkeypatch):
@@ -185,6 +219,30 @@ def test_inference_uses_editor_owned_serial_pool(qapp_fixture):
     window, _ = editor()
     assert window._mask_pool is not window._pool
     assert window._mask_pool.maxThreadCount() == 1
+
+
+def test_real_mask_worker_is_retained_until_queued_terminal(qapp_fixture, monkeypatch):
+    window = ImageEditor(mask_adapter=Adapter(), mask_model=MODEL)
+    captured = []
+    monkeypatch.setattr(window._mask_pool, "start", captured.append)
+    rgba = source()[2]
+    request = window._mask_scheduler.request(
+        InferenceRequest(
+            source_identity(rgba),
+            MODEL,
+            window._mask_preprocessing_version,
+            rgba,
+        )
+    )
+
+    window._launch_mask_worker(request)
+
+    assert captured == [next(iter(window._mask_workers))]
+    worker = captured[0]
+    worker.signals.cancelled.emit(
+        InferenceOutcome(request, InferenceTerminal.CANCELLED)
+    )
+    assert worker not in window._mask_workers
 
 
 def test_cache_rejection_never_publishes_direct_probability(qapp_fixture):
