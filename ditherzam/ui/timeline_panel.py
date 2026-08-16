@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ditherzam.diagnostics import log_action
 from ..animation.temporal import PATTERNS, temporal_noise
 from ..render import RenderCancelled
 from .preview import render_preview
@@ -79,8 +80,7 @@ class TimelinePanel(QWidget):
         self.length_spin.valueChanged.connect(self._on_length)
         self.frame_slider.valueChanged.connect(self.frame_changed.emit)
         self.play_btn.toggled.connect(self._on_play)
-        self.key_btn.clicked.connect(
-            lambda: self.keyframe_requested.emit(self.frame_slider.value()))
+        self.key_btn.clicked.connect(self._request_keyframe)
         self.export_btn.clicked.connect(self.export_requested.emit)
         self._timer.timeout.connect(self._advance)
 
@@ -93,7 +93,16 @@ class TimelinePanel(QWidget):
             self._timer.start()
         else:
             self._timer.stop()
+        log_action(
+            "animation.playback_started" if on else "animation.playback_stopped",
+            frame=self.frame_slider.value(),
+        )
         self.play_toggled.emit(on)
+
+    def _request_keyframe(self) -> None:
+        frame = self.frame_slider.value()
+        log_action("animation.keyframe_requested", frame=frame)
+        self.keyframe_requested.emit(frame)
 
     def _advance(self) -> None:
         n = max(1, self.length_spin.value())
@@ -262,16 +271,24 @@ class AnimationController:
 
     def export(self, out_path: str, fps: int = 24) -> "str | None":
         from ..animation import export_animation
+        log_action("animation.export_started", path=out_path, fps=fps)
         base = self.provide_base()
         if base is None:
+            log_action("animation.export_failed", reason="no_source", path=out_path)
             return None
         gray, settings = base
         pipeline = (self.export_pipeline_provider() if self.export_pipeline_provider
                     else self.pipeline)
-        return export_animation(
-            pipeline, gray, settings, self.timeline,
-            self.panel.pattern(), self.panel.amplitude(),
-            out_path, fps=fps, seed=self.seed)
+        try:
+            result = export_animation(
+                pipeline, gray, settings, self.timeline,
+                self.panel.pattern(), self.panel.amplitude(),
+                out_path, fps=fps, seed=self.seed)
+        except Exception as exc:
+            log_action("animation.export_failed", error=str(exc), path=out_path)
+            raise
+        log_action("animation.export_succeeded", path=result, fps=fps)
+        return result
 
     def _on_export(self) -> None:
         # Actual file dialog + worker is wired by the main window; this default is a

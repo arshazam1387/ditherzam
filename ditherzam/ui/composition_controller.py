@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 
+from ditherzam.diagnostics import log_action
 from ditherzam.composition import (
     Composition,
     Compositor,
@@ -209,6 +210,7 @@ class CompositionController(QObject):
             look = Look(f"Look {len(self._looks) + 1}", preset)
         except Exception as exc:  # noqa: BLE001 - provider/UI boundary
             self.panel.set_status(str(exc), error=True)
+            log_action("composition.capture_failed", error=str(exc))
             return
         self._looks.append(look)
         self._durations.append(_DEFAULT_DURATION)
@@ -218,17 +220,21 @@ class CompositionController(QObject):
         )
         self._rebuild(len(self._looks) - 1)
         self.panel.set_status(f"Captured {look.name}.")
+        log_action("composition.look_captured", look=look.name, look_count=len(self._looks))
 
     @Slot(int)
     def remove_look(self, index: int) -> None:
         if isinstance(index, bool) or not 0 <= index < len(self._looks):
             return
+        removed = self._looks[index]
         del self._looks[index]
         del self._durations[index]
         del self._transitions[index]
         selected = min(index, len(self._looks) - 1) if self._looks else None
         self._rebuild(selected)
         self.panel.set_status("Look removed.")
+        log_action("composition.look_removed", index=index, look=removed.name,
+                   look_count=len(self._looks))
 
     @Slot(int, int)
     def set_clip_duration(self, index: int, duration: int) -> None:
@@ -237,6 +243,8 @@ class CompositionController(QObject):
             return
         self._durations[index] = min(3600, max(1, int(duration)))
         self._rebuild(index)
+        log_action("composition.clip_duration_changed", index=index,
+                   duration=self._durations[index])
 
     @Slot(int, str, int)
     def set_transition(self, index: int, kind: str, duration: int) -> None:
@@ -247,6 +255,8 @@ class CompositionController(QObject):
         duration = min(maximum, max(1, int(duration)))
         self._transitions[index] = TransitionSpec(kind, duration)
         self._rebuild(index)
+        log_action("composition.transition_changed", index=index, kind=kind,
+                   duration=duration)
 
     @Slot(bool)
     def set_playing(self, playing: bool) -> None:
@@ -334,14 +344,17 @@ class CompositionController(QObject):
 
     def export_current(self, path) -> Path | None:
         if self._closing:
+            log_action("composition.export_failed", reason="closing")
             return None
         if self._composition is None:
             self.panel.set_status("Capture a Look before exporting.", error=True)
+            log_action("composition.export_failed", reason="no_composition")
             return None
         source = self._source_provider()
         if source is None:
             self.panel.set_status(
                 "Open an image before exporting a composition.", error=True)
+            log_action("composition.export_failed", reason="no_source")
             return None
         frame = min(
             max(0, int(self.panel.frame_slider.value())),
@@ -355,8 +368,10 @@ class CompositionController(QObject):
             destination = export_frame(result, path)
         except Exception as exc:  # noqa: BLE001 - export/UI boundary
             self.panel.set_status(str(exc), error=True)
+            log_action("composition.export_failed", error=str(exc), path=path)
             return None
         self.panel.set_status(f"Exported {destination.name}.")
+        log_action("composition.export_succeeded", frame=frame, path=destination)
         return destination
 
     @Slot()

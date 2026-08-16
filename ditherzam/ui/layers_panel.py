@@ -11,6 +11,8 @@ from PySide6.QtWidgets import (
     QComboBox,
     QApplication,
     QFormLayout,
+    QGridLayout,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -18,9 +20,12 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QSlider,
     QSpinBox,
     QToolButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -92,6 +97,15 @@ class LayersPanel(QWidget):
     selection_tool_requested = Signal(str)
     selection_clear_requested = Signal()
     selection_from_mask_requested = Signal()
+    selection_refine_requested = Signal(str, int)
+    color_range_pick_requested = Signal()
+    color_range_changed = Signal(int, int)
+    color_range_confirmed = Signal()
+    color_range_cancelled = Signal()
+    brush_settings_changed = Signal(str, int, int, int, int)
+    brush_mode_changed = Signal(str)
+    mask_paint_requested = Signal(bool)
+    pointer_requested = Signal()
 
     _EMPTY_TEXT = "No layers. Place an image or create a blank layer."
     _BLENDS = (
@@ -155,6 +169,9 @@ class LayersPanel(QWidget):
         self.opacity_label.setAccessibleName("Selected layer opacity value")
 
         self.mask_state_label = QLabel("No raster mask")
+        self.mask_state_label.setWordWrap(True)
+        self.mask_state_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.mask_state_label.setAccessibleName("Selected layer raster mask state")
         self.mask_combination_combo = QComboBox()
         self.mask_combination_combo.addItems(
@@ -225,13 +242,14 @@ class LayersPanel(QWidget):
         self.mask_density_label.setAccessibleName(
             "Selected layer raster mask density value")
         self.selection_shape_combo = QComboBox()
-        self.selection_shape_combo.addItems(("Rectangle", "Ellipse"))
+        self.selection_shape_combo.addItems(("Rectangle", "Ellipse", "Polygon", "Freehand"))
         self.selection_shape_combo.setAccessibleName("Temporary selection shape")
         self.selection_operation_combo = QComboBox()
         self.selection_operation_combo.addItems(("Replace", "Add", "Subtract"))
         self.selection_operation_combo.setAccessibleName(
             "Temporary selection operation")
         self.selection_draw_btn = QPushButton("Draw")
+        self.selection_draw_btn.setText("Select on Canvas")
         self.selection_draw_btn.setAccessibleName(
             "Draw temporary selection on canvas")
         self.selection_clear_btn = QPushButton("Clear")
@@ -239,12 +257,84 @@ class LayersPanel(QWidget):
         self.from_selection_btn = QPushButton("From Selection")
         self.from_selection_btn.setAccessibleName(
             "Create raster mask from temporary selection")
+        self.selection_radius_spin = QSpinBox()
+        self.selection_radius_spin.setRange(1, 64)
+        self.selection_radius_spin.setValue(4)
+        self.selection_radius_spin.setSuffix(" px")
+        self.selection_radius_spin.setAccessibleName("Selection refinement radius")
+        self.selection_all_btn = QPushButton("All")
+        self.selection_invert_btn = QPushButton("Invert")
+        self.selection_grow_btn = QPushButton("Grow")
+        self.selection_shrink_btn = QPushButton("Shrink")
+        self.selection_feather_btn = QPushButton("Feather")
+        for widget, name in (
+            (self.selection_all_btn, "Select entire canvas"),
+            (self.selection_invert_btn, "Invert temporary selection"),
+            (self.selection_grow_btn, "Grow temporary selection"),
+            (self.selection_shrink_btn, "Shrink temporary selection"),
+            (self.selection_feather_btn, "Feather temporary selection"),
+        ):
+            widget.setAccessibleName(name)
+
+        self.color_range_btn = QPushButton("Color Range")
+        self.color_range_btn.setAccessibleName("Pick selection color from canvas")
+        self.color_range_tolerance_spin = QSpinBox()
+        self.color_range_tolerance_spin.setRange(0, 441)
+        self.color_range_tolerance_spin.setValue(24)
+        self.color_range_tolerance_spin.setAccessibleName("Color range tolerance")
+        self.color_range_softness_spin = QSpinBox()
+        self.color_range_softness_spin.setRange(0, 441)
+        self.color_range_softness_spin.setValue(16)
+        self.color_range_softness_spin.setAccessibleName("Color range softness")
+        self.color_range_confirm_btn = QPushButton("Confirm")
+        self.color_range_confirm_btn.setAccessibleName("Confirm color range selection")
+        self.color_range_cancel_btn = QPushButton("Cancel")
+        self.color_range_cancel_btn.setAccessibleName("Cancel color range selection")
+
+        self.pointer_btn = QPushButton("Pointer")
+        self.pointer_btn.setAccessibleName("Return to the normal pointer")
+        self.pointer_btn.setToolTip("Leave canvas tools and restore the normal pointer")
+        self.paint_mask_btn = QPushButton("Paint Mask")
+        self.paint_mask_btn.setCheckable(True)
+        self.paint_mask_btn.setAccessibleName("Paint the selected layer mask")
+        self.paint_mask_btn.setToolTip(
+            "Arm the mask brush. Pointer / Done exits painting.")
+        self.brush_mode_combo = QComboBox()
+        self.brush_mode_combo.addItems(("Reveal", "Hide"))
+        self.brush_mode_combo.setAccessibleName("Mask brush paint mode")
+        self.brush_mode_combo.setToolTip(
+            "Reveal makes painted areas visible; Hide conceals them.")
+
+        self.brush_tip_combo = QComboBox()
+        self.brush_tip_combo.addItems(("Round", "Square", "Diamond", "Texture"))
+        self.brush_tip_combo.setAccessibleName("Mask brush tip")
+        self.brush_size_spin = QSpinBox()
+        self.brush_size_spin.setRange(1, 2048)
+        self.brush_size_spin.setValue(32)
+        self.brush_size_spin.setSuffix(" px")
+        self.brush_size_spin.setAccessibleName("Mask brush size")
+        self.brush_hardness_spin = QSpinBox()
+        self.brush_hardness_spin.setRange(0, 100)
+        self.brush_hardness_spin.setValue(100)
+        self.brush_hardness_spin.setSuffix("%")
+        self.brush_hardness_spin.setAccessibleName("Mask brush hardness")
+        self.brush_strength_spin = QSpinBox()
+        self.brush_strength_spin.setRange(0, 100)
+        self.brush_strength_spin.setValue(100)
+        self.brush_strength_spin.setSuffix("%")
+        self.brush_strength_spin.setAccessibleName("Mask brush strength")
+        self.brush_spacing_spin = QSpinBox()
+        self.brush_spacing_spin.setRange(1, 100)
+        self.brush_spacing_spin.setValue(25)
+        self.brush_spacing_spin.setSuffix("%")
+        self.brush_spacing_spin.setAccessibleName("Mask brush stamp spacing")
         self._mask_present = False
+        self._selection_pending = False
         self._edit_target: tuple[str, str] | None = None
         self._row_targets: dict[str, tuple[QToolButton, QToolButton]] = {}
 
         self.mask_confirmation = QWidget()
-        confirmation_layout = QHBoxLayout(self.mask_confirmation)
+        confirmation_layout = QVBoxLayout(self.mask_confirmation)
         confirmation_layout.setContentsMargins(0, 0, 0, 0)
         self.mask_confirmation_label = QLabel("Replace the existing raster mask?")
         self.mask_confirmation_label.setWordWrap(True)
@@ -255,45 +345,45 @@ class LayersPanel(QWidget):
         self.cancel_replace_mask_btn = QPushButton("Cancel")
         self.cancel_replace_mask_btn.setAccessibleName(
             "Cancel raster mask replacement")
-        confirmation_layout.addWidget(self.mask_confirmation_label, 1)
-        confirmation_layout.addWidget(self.replace_mask_btn)
-        confirmation_layout.addWidget(self.cancel_replace_mask_btn)
+        confirmation_layout.addWidget(self.mask_confirmation_label)
+        confirmation_actions = QHBoxLayout()
+        confirmation_actions.addWidget(self.replace_mask_btn)
+        confirmation_actions.addWidget(self.cancel_replace_mask_btn)
+        confirmation_layout.addLayout(confirmation_actions)
         self._replacement_token: str | None = None
 
         self.smart_refinement = QWidget()
         refinement = QVBoxLayout(self.smart_refinement)
         refinement.setContentsMargins(0, 0, 0, 0)
         refinement.setSpacing(4)
-        threshold_row = QHBoxLayout()
-        threshold_row.addWidget(QLabel("Threshold"))
+        refinement_form = QFormLayout()
+        refinement_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.smart_threshold = QSpinBox()
         self.smart_threshold.setRange(0, 100)
         self.smart_threshold.setAccessibleName("Smart mask threshold")
-        threshold_row.addWidget(self.smart_threshold)
         self.smart_refine_kind = QComboBox()
         self.smart_refine_kind.addItems(("None", "Grow", "Shrink"))
         self.smart_refine_kind.setAccessibleName("Smart mask morphology")
-        threshold_row.addWidget(self.smart_refine_kind, 1)
         self.smart_refine_radius = QSpinBox()
         self.smart_refine_radius.setRange(0, 64)
         self.smart_refine_radius.setAccessibleName(
             "Smart mask morphology radius in source pixels")
-        threshold_row.addWidget(self.smart_refine_radius)
-        refinement.addLayout(threshold_row)
-        feather_row = QHBoxLayout()
-        feather_row.addWidget(QLabel("Feather"))
         self.smart_feather_radius = QSpinBox()
         self.smart_feather_radius.setRange(0, 64)
         self.smart_feather_radius.setAccessibleName(
             "Smart mask feather radius in source pixels")
-        feather_row.addWidget(self.smart_feather_radius)
-        feather_row.addStretch(1)
-        refinement.addLayout(feather_row)
+        refinement_form.addRow("Threshold", self.smart_threshold)
+        refinement_form.addRow("Morphology", self.smart_refine_kind)
+        refinement_form.addRow("Radius", self.smart_refine_radius)
+        refinement_form.addRow("Feather", self.smart_feather_radius)
+        refinement.addLayout(refinement_form)
         options = QHBoxLayout()
         self.smart_refine_invert = QCheckBox("Invert")
         self.smart_refine_invert.setAccessibleName(
             "Invert frozen Smart mask")
         self.smart_refine_note = QLabel("Preview only · exact on Confirm")
+        self.smart_refine_note.setWordWrap(True)
         self.smart_refine_note.setAccessibleName(
             "Smart refinement preview accuracy notice")
         options.addWidget(self.smart_refine_invert)
@@ -326,16 +416,21 @@ class LayersPanel(QWidget):
             "Drag on canvas or enter normalized geometry.")
         self.gradient_note.setWordWrap(True)
         gradient_layout.addWidget(self.gradient_note)
-        geometry = QHBoxLayout()
+        geometry = QGridLayout()
+        geometry.setHorizontalSpacing(4)
+        geometry.setVerticalSpacing(4)
         self.gradient_spins = []
-        for label, value in (("X1", 0), ("Y1", 0), ("X2", 100), ("Y2", 0)):
-            geometry.addWidget(QLabel(label))
+        for index, (label, value) in enumerate(
+            (("X1", 0), ("Y1", 0), ("X2", 100), ("Y2", 0))
+        ):
+            row, pair = divmod(index, 2)
+            geometry.addWidget(QLabel(label), row, pair * 2)
             spin = QSpinBox()
             spin.setRange(0, 100)
             spin.setSuffix("%")
             spin.setValue(value)
             spin.setAccessibleName(f"Gradient {label} source coordinate")
-            geometry.addWidget(spin)
+            geometry.addWidget(spin, row, pair * 2 + 1)
             self.gradient_spins.append(spin)
         gradient_layout.addLayout(geometry)
         gradient_actions = QHBoxLayout()
@@ -352,25 +447,28 @@ class LayersPanel(QWidget):
         pattern_layout = QVBoxLayout(self.pattern_editor)
         pattern_layout.setContentsMargins(0, 0, 0, 0)
         pattern_layout.setSpacing(4)
-        primary = QHBoxLayout()
+        pattern_form = QFormLayout()
+        pattern_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.pattern_family = QComboBox()
         for label, value in (
             ("Bayer", "bayer"), ("Lines", "lines"), ("Noise", "noise")
         ):
             self.pattern_family.addItem(label, value)
         self.pattern_family.setAccessibleName("Mask pattern family")
-        primary.addWidget(self.pattern_family, 1)
         self.pattern_scale = QSpinBox()
         self.pattern_scale.setRange(1, 4096)
         self.pattern_scale.setValue(1)
         self.pattern_scale.setAccessibleName("Mask pattern scale in source pixels")
-        primary.addWidget(QLabel("Scale"))
-        primary.addWidget(self.pattern_scale)
         self.pattern_orientation = QComboBox()
         self.pattern_orientation.setAccessibleName("Mask pattern orientation")
-        primary.addWidget(self.pattern_orientation)
-        pattern_layout.addLayout(primary)
-        offsets = QHBoxLayout()
+        pattern_form.addRow("Family", self.pattern_family)
+        pattern_form.addRow("Scale", self.pattern_scale)
+        pattern_form.addRow("Direction", self.pattern_orientation)
+        pattern_layout.addLayout(pattern_form)
+        offsets = QFormLayout()
+        offsets.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.pattern_offset_x = QSpinBox()
         self.pattern_offset_y = QSpinBox()
         for axis, spin in (
@@ -378,13 +476,11 @@ class LayersPanel(QWidget):
         ):
             spin.setRange(-1_000_000, 1_000_000)
             spin.setAccessibleName(f"Mask pattern {axis} offset")
-            offsets.addWidget(QLabel(f"{axis} offset"))
-            offsets.addWidget(spin)
+            offsets.addRow(f"{axis} offset", spin)
         self.pattern_seed = QSpinBox()
         self.pattern_seed.setRange(-(2 ** 31), 2 ** 31 - 1)
         self.pattern_seed.setAccessibleName("Seeded noise pattern seed")
-        offsets.addWidget(QLabel("Seed"))
-        offsets.addWidget(self.pattern_seed)
+        offsets.addRow("Seed", self.pattern_seed)
         pattern_layout.addLayout(offsets)
         mix_row = QHBoxLayout()
         self.pattern_mix_label = QLabel("Dither mix")
@@ -416,12 +512,16 @@ class LayersPanel(QWidget):
         for label, spin in (("Layer X position", self.x_spin),
                             ("Layer Y position", self.y_spin)):
             spin.setRange(-100000, 100000)
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             spin.setAccessibleName(label)
         self.width_spin = QSpinBox()
         self.height_spin = QSpinBox()
         for label, spin in (("Layer width", self.width_spin),
                             ("Layer height", self.height_spin)):
             spin.setRange(1, 100000)
+            spin.setSizePolicy(
+                QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
             spin.setAccessibleName(label)
         self.lock_aspect_check = QCheckBox("Lock aspect")
         self.lock_aspect_check.setChecked(True)
@@ -458,90 +558,184 @@ class LayersPanel(QWidget):
         self._refresh_state()
 
     def _build_layout(self) -> None:
-        actions = QHBoxLayout()
-        actions.addWidget(self.new_blank_btn)
-        actions.addWidget(self.place_image_btn)
-        actions.addWidget(self.duplicate_btn)
-        actions.addWidget(self.delete_btn)
+        actions = QGridLayout()
+        actions.setHorizontalSpacing(4)
+        actions.setVerticalSpacing(4)
+        actions.addWidget(self.new_blank_btn, 0, 0)
+        actions.addWidget(self.place_image_btn, 0, 1)
+        actions.addWidget(self.duplicate_btn, 1, 0)
+        actions.addWidget(self.delete_btn, 1, 1)
 
         ordering = QHBoxLayout()
         ordering.addWidget(self.up_btn)
         ordering.addWidget(self.down_btn)
         ordering.addStretch(1)
 
-        form = QFormLayout()
-        form.addRow(self.visibility_check)
+        layer_form = QFormLayout()
+        layer_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        layer_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        layer_form.addRow(self.visibility_check)
         name_label = QLabel("Name")
         name_label.setBuddy(self.name_edit)
-        form.addRow(name_label, self.name_edit)
+        layer_form.addRow(name_label, self.name_edit)
         blend_label = QLabel("Blend")
         blend_label.setBuddy(self.blend_combo)
-        form.addRow(blend_label, self.blend_combo)
+        layer_form.addRow(blend_label, self.blend_combo)
 
         opacity_row = QHBoxLayout()
         opacity_row.addWidget(self.opacity_slider, 1)
         opacity_row.addWidget(self.opacity_label)
         opacity_label = QLabel("Opacity")
         opacity_label.setBuddy(self.opacity_slider)
-        form.addRow(opacity_label, opacity_row)
+        layer_form.addRow(opacity_label, opacity_row)
 
-        mask_actions = QHBoxLayout()
-        mask_actions.addWidget(self.create_mask_btn)
-        mask_actions.addWidget(self.edit_mask_btn)
-        mask_actions.addWidget(self.import_mask_btn)
-        mask_actions.addWidget(self.export_mask_btn)
-        form.addRow("Mask", mask_actions)
-        form.addRow(self.mask_state_label)
-        form.addRow("Combine", self.mask_combination_combo)
-        mask_density_row = QHBoxLayout()
-        mask_density_row.addWidget(self.mask_enabled_check)
-        mask_density_row.addWidget(self.mask_density_slider, 1)
-        mask_density_row.addWidget(self.mask_density_label)
-        form.addRow("Density", mask_density_row)
-        selection_row = QHBoxLayout()
-        selection_row.addWidget(self.selection_shape_combo)
-        selection_row.addWidget(self.selection_operation_combo)
-        selection_row.addWidget(self.selection_draw_btn)
-        selection_row.addWidget(self.selection_clear_btn)
-        form.addRow("Selection", selection_row)
-        form.addRow(self.from_selection_btn)
-        form.addRow(self.mask_confirmation)
-        form.addRow(self.smart_refinement)
-        form.addRow(self.gradient_editor)
-        form.addRow(self.pattern_editor)
-        inspection_label = QLabel("Inspect")
-        inspection_label.setBuddy(self.inspection_combo)
-        form.addRow(inspection_label, self.inspection_combo)
-
-        position_row = QHBoxLayout()
-        position_row.addWidget(QLabel("X"))
-        position_row.addWidget(self.x_spin)
-        position_row.addWidget(QLabel("Y"))
-        position_row.addWidget(self.y_spin)
-        form.addRow("Position", position_row)
-
-        size_row = QHBoxLayout()
-        size_row.addWidget(QLabel("W"))
-        size_row.addWidget(self.width_spin)
-        size_row.addWidget(QLabel("H"))
-        size_row.addWidget(self.height_spin)
-        form.addRow("Size", size_row)
+        layer_form.addRow("Position X", self.x_spin)
+        layer_form.addRow("Position Y", self.y_spin)
+        layer_form.addRow("Width", self.width_spin)
+        layer_form.addRow("Height", self.height_spin)
 
         transform_actions = QHBoxLayout()
-        transform_actions.addWidget(self.lock_aspect_check)
-        transform_actions.addStretch(1)
         transform_actions.addWidget(self.center_btn)
         transform_actions.addWidget(self.fit_btn)
-        form.addRow(transform_actions)
+        layer_form.addRow(self.lock_aspect_check)
+        layer_form.addRow(transform_actions)
 
         canvas_transform_actions = QHBoxLayout()
         canvas_transform_actions.addWidget(self.transform_btn)
         canvas_transform_actions.addWidget(self.confirm_transform_btn)
         canvas_transform_actions.addWidget(self.cancel_transform_btn)
-        form.addRow("Canvas", canvas_transform_actions)
+        layer_form.addRow("Canvas", canvas_transform_actions)
 
-        finishing = QHBoxLayout()
-        finishing.addWidget(self.export_btn)
+        layer_page = QWidget()
+        self.layer_page = layer_page
+        layer_page_layout = QVBoxLayout(layer_page)
+        layer_page_layout.setContentsMargins(6, 6, 6, 6)
+        layer_page_layout.setSpacing(6)
+        layer_page_layout.addLayout(layer_form)
+        layer_page_layout.addWidget(self.export_btn)
+        layer_page_layout.addStretch(1)
+
+        mask_content = QWidget()
+        self.mask_content = mask_content
+        mask_content.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        mask_root = QVBoxLayout(mask_content)
+        mask_root.setContentsMargins(6, 6, 6, 6)
+        mask_root.setSpacing(8)
+
+        tool_row = QHBoxLayout()
+        tool_row.addWidget(self.pointer_btn)
+        tool_row.addWidget(self.paint_mask_btn)
+        mask_root.addLayout(tool_row)
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("Brush action")
+        mode_label.setBuddy(self.brush_mode_combo)
+        mode_row.addWidget(mode_label)
+        mode_row.addWidget(self.brush_mode_combo, 1)
+        mask_root.addLayout(mode_row)
+
+        mask_actions = QHBoxLayout()
+        mask_actions.addWidget(self.create_mask_btn)
+        mask_actions.addWidget(self.edit_mask_btn)
+        mask_io_actions = QHBoxLayout()
+        mask_io_actions.addWidget(self.import_mask_btn)
+        mask_io_actions.addWidget(self.export_mask_btn)
+        mask_setup = QGroupBox("Mask")
+        mask_setup_layout = QVBoxLayout(mask_setup)
+        mask_setup_layout.setContentsMargins(6, 8, 6, 6)
+        mask_setup_layout.setSpacing(4)
+        mask_setup_layout.addWidget(self.mask_state_label)
+        mask_setup_layout.addLayout(mask_actions)
+        mask_setup_layout.addLayout(mask_io_actions)
+        combine_row = QHBoxLayout()
+        combine_row.addWidget(QLabel("New masks"))
+        combine_row.addWidget(self.mask_combination_combo, 1)
+        mask_setup_layout.addLayout(combine_row)
+        mask_density_row = QHBoxLayout()
+        mask_density_row.addWidget(self.mask_enabled_check)
+        mask_density_row.addWidget(self.mask_density_slider, 1)
+        mask_density_row.addWidget(self.mask_density_label)
+        mask_setup_layout.addLayout(mask_density_row)
+        inspection_label = QLabel("Inspect")
+        inspection_label.setBuddy(self.inspection_combo)
+        inspection_row = QHBoxLayout()
+        inspection_row.addWidget(inspection_label)
+        inspection_row.addWidget(self.inspection_combo, 1)
+        mask_setup_layout.addLayout(inspection_row)
+        mask_root.addWidget(mask_setup)
+
+        brush_group = QGroupBox("Brush")
+        brush_form = QFormLayout(brush_group)
+        brush_form.setContentsMargins(6, 8, 6, 6)
+        brush_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        brush_form.addRow("Tip", self.brush_tip_combo)
+        brush_form.addRow("Size", self.brush_size_spin)
+        brush_form.addRow("Hardness", self.brush_hardness_spin)
+        brush_form.addRow("Strength", self.brush_strength_spin)
+        brush_form.addRow("Spacing", self.brush_spacing_spin)
+        mask_root.addWidget(brush_group)
+
+        selection_group = QGroupBox("Selection")
+        selection_layout = QVBoxLayout(selection_group)
+        selection_layout.setContentsMargins(6, 8, 6, 6)
+        selection_layout.setSpacing(4)
+        selection_form = QFormLayout()
+        selection_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        selection_form.addRow("Shape", self.selection_shape_combo)
+        selection_form.addRow("Mode", self.selection_operation_combo)
+        selection_layout.addLayout(selection_form)
+        selection_primary = QVBoxLayout()
+        selection_primary.setSpacing(4)
+        selection_primary.addWidget(self.selection_draw_btn)
+        selection_primary.addWidget(self.selection_clear_btn)
+        selection_layout.addLayout(selection_primary)
+        refine_grid = QGridLayout()
+        refine_grid.setHorizontalSpacing(4)
+        refine_grid.setVerticalSpacing(4)
+        refine_grid.addWidget(QLabel("Radius"), 0, 0)
+        refine_grid.addWidget(self.selection_radius_spin, 0, 1)
+        refine_grid.addWidget(self.selection_all_btn, 1, 0)
+        refine_grid.addWidget(self.selection_invert_btn, 1, 1)
+        refine_grid.addWidget(self.selection_grow_btn, 2, 0)
+        refine_grid.addWidget(self.selection_shrink_btn, 2, 1)
+        refine_grid.addWidget(self.selection_feather_btn, 3, 0, 1, 2)
+        selection_layout.addLayout(refine_grid)
+        selection_layout.addWidget(self.color_range_btn)
+        range_form = QFormLayout()
+        range_form.setFieldGrowthPolicy(
+            QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        range_form.addRow("Tolerance", self.color_range_tolerance_spin)
+        range_form.addRow("Softness", self.color_range_softness_spin)
+        selection_layout.addLayout(range_form)
+        range_actions = QHBoxLayout()
+        range_actions.addWidget(self.color_range_confirm_btn)
+        range_actions.addWidget(self.color_range_cancel_btn)
+        selection_layout.addLayout(range_actions)
+        selection_layout.addWidget(self.from_selection_btn)
+        mask_root.addWidget(selection_group)
+        mask_root.addWidget(self.mask_confirmation)
+        mask_root.addWidget(self.smart_refinement)
+        mask_root.addWidget(self.gradient_editor)
+        mask_root.addWidget(self.pattern_editor)
+        mask_root.addStretch(1)
+
+        self.mask_scroll = QScrollArea()
+        self.mask_scroll.setWidgetResizable(True)
+        self.mask_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.mask_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.mask_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.mask_scroll.setWidget(mask_content)
+
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.setAccessibleName("Layer and mask editing tools")
+        self.editor_tabs.addTab(layer_page, "Layer")
+        self.editor_tabs.addTab(self.mask_scroll, "Mask")
+        self.editor_tabs.setMinimumHeight(250)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(8, 8, 8, 8)
@@ -550,8 +744,7 @@ class LayersPanel(QWidget):
         root.addLayout(actions)
         root.addWidget(self.layer_list, 1)
         root.addLayout(ordering)
-        root.addLayout(form)
-        root.addLayout(finishing)
+        root.addWidget(self.editor_tabs, 2)
         root.addWidget(self.transform_guidance_label)
         root.addWidget(self.status_label)
 
@@ -671,6 +864,38 @@ class LayersPanel(QWidget):
             self.selection_clear_requested.emit)
         self.from_selection_btn.clicked.connect(
             self.selection_from_mask_requested.emit)
+        self.color_range_btn.clicked.connect(self.color_range_pick_requested.emit)
+        self.color_range_tolerance_spin.valueChanged.connect(
+            lambda value: self.color_range_changed.emit(
+                value, self.color_range_softness_spin.value()))
+        self.color_range_softness_spin.valueChanged.connect(
+            lambda value: self.color_range_changed.emit(
+                self.color_range_tolerance_spin.value(), value))
+        self.color_range_confirm_btn.clicked.connect(
+            self.color_range_confirmed.emit)
+        self.color_range_cancel_btn.clicked.connect(
+            self.color_range_cancelled.emit)
+        self.pointer_btn.clicked.connect(self._request_pointer)
+        self.paint_mask_btn.toggled.connect(self.mask_paint_requested.emit)
+        self.brush_mode_combo.currentTextChanged.connect(
+            lambda text: self.brush_mode_changed.emit(text.lower()))
+        for button, operation in (
+            (self.selection_all_btn, "all"),
+            (self.selection_invert_btn, "invert"),
+            (self.selection_grow_btn, "grow"),
+            (self.selection_shrink_btn, "shrink"),
+            (self.selection_feather_btn, "feather"),
+        ):
+            button.clicked.connect(
+                lambda _checked=False, op=operation:
+                self.selection_refine_requested.emit(
+                    op, self.selection_radius_spin.value()))
+        self.brush_tip_combo.currentTextChanged.connect(self._emit_brush_settings)
+        for control in (
+            self.brush_size_spin, self.brush_hardness_spin,
+            self.brush_strength_spin, self.brush_spacing_spin,
+        ):
+            control.valueChanged.connect(self._emit_brush_settings)
         self.replace_mask_btn.clicked.connect(self._confirm_mask_replacement)
         self.cancel_replace_mask_btn.clicked.connect(
             self._cancel_mask_replacement)
@@ -719,13 +944,32 @@ class LayersPanel(QWidget):
         self._gradient_kind = kind
         self.gradient_editor.setVisible(kind is not None)
         self.gradient_tool_requested.emit("" if kind is None else kind)
-
-    def selection_operation_text(self) -> str:
-        return self.selection_operation_combo.currentText()
         if kind is not None:
             self.gradient_note.setText(
                 f"{kind.title()} gradient · drag on canvas or enter geometry.")
             self.gradient_spins[0].setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def selection_operation_text(self) -> str:
+        return self.selection_operation_combo.currentText()
+
+    def _emit_brush_settings(self, *_args) -> None:
+        self.brush_settings_changed.emit(
+            self.brush_tip_combo.currentText().lower(),
+            self.brush_size_spin.value(),
+            self.brush_hardness_spin.value(),
+            self.brush_strength_spin.value(),
+            self.brush_spacing_spin.value(),
+        )
+
+    def _request_pointer(self) -> None:
+        self.pointer_requested.emit()
+        if self.paint_mask_btn.isChecked():
+            self.paint_mask_btn.setChecked(False)
+
+    def set_mask_paint_active(self, active: bool) -> None:
+        """Mirror the viewport tool without feeding the request signal back."""
+        with QSignalBlocker(self.paint_mask_btn):
+            self.paint_mask_btn.setChecked(bool(active))
 
     def set_gradient_geometry(
         self, start_x: float, start_y: float, end_x: float, end_y: float
@@ -792,6 +1036,28 @@ class LayersPanel(QWidget):
         self.show_pattern_editor(None)
 
     def set_layers(
+        self,
+        layers: Iterable[tuple[str, str, bool, int, str]],
+        selected: int | None,
+    ) -> None:
+        """Replace displayed state without emitting user-edit signals.
+
+        Clearing the list destroys its row widgets.  Qt may synchronously move
+        focus while doing that, which can route an editor refresh back into
+        this method.  Ignore that nested publication: the outer publication
+        already represents the controller's authoritative document, and
+        allowing both rebuilds leaves the outer call holding deleted item
+        wrappers.
+        """
+        if getattr(self, "_setting_layers", False):
+            return
+        self._setting_layers = True
+        try:
+            self._set_layers_once(layers, selected)
+        finally:
+            self._setting_layers = False
+
+    def _set_layers_once(
         self,
         layers: Iterable[tuple[str, str, bool, int, str]],
         selected: int | None,
@@ -871,10 +1137,10 @@ class LayersPanel(QWidget):
                 layer_target.setToolTip(f"{name} layer pixels")
                 mask_target = _TargetButton()
                 mask_target.setCheckable(True)
-                mask_target.setText("M·L" if mask_present else "M+")
+                mask_target.setText("Mask" if mask_present else "Add Mask")
                 mask_target.setToolButtonStyle(
                     Qt.ToolButtonStyle.ToolButtonTextOnly)
-                mask_target.setFixedSize(36, 48)
+                mask_target.setFixedSize(64, 48)
                 mask_target.setAccessibleName(f"Edit raster mask for {name}")
                 mask_target.setAccessibleDescription(
                     "Raster mask thumbnail linked to the layer transform. "
@@ -958,6 +1224,7 @@ class LayersPanel(QWidget):
         self, item: QListWidgetItem, layer_id: str, kind: str
     ) -> None:
         self.layer_list.setCurrentItem(item)
+        self.editor_tabs.setCurrentIndex(1 if kind == "mask" else 0)
         self.edit_target_requested.emit(layer_id, kind)
         buttons = self._row_targets.get(layer_id)
         if buttons is not None:
@@ -1057,6 +1324,10 @@ class LayersPanel(QWidget):
     def set_mask_state(
         self, present: bool, enabled: bool = False, density: int = 100
     ) -> None:
+        disarm_paint = (
+            self.paint_mask_btn.isChecked()
+            and (not bool(present) or not bool(enabled))
+        )
         self._mask_present = bool(present)
         self._mask_enabled = bool(enabled)
         with QSignalBlocker(self.mask_enabled_check):
@@ -1070,6 +1341,18 @@ class LayersPanel(QWidget):
             state = "enabled" if enabled else "disabled"
             text = f"Raster mask {state} · {int(density)}%"
         self.mask_state_label.setText(text)
+        self._refresh_state()
+        if disarm_paint:
+            self.set_mask_paint_active(False)
+            self.mask_paint_requested.emit(False)
+
+    def set_selection_pending(self, pending: bool) -> None:
+        """Show immediate feedback while exact selection math runs off-thread."""
+        self._selection_pending = bool(pending)
+        self.color_range_confirm_btn.setText(
+            "Working…" if pending else "Confirm")
+        self.from_selection_btn.setEnabled(
+            not pending and self.from_selection_btn.isEnabled())
         self._refresh_state()
 
     def set_inspection_mode(self, mode: str) -> None:
@@ -1130,6 +1413,36 @@ class LayersPanel(QWidget):
         self.blend_combo.setEnabled(has_selection and not self._transform_mode)
         self.opacity_slider.setEnabled(has_selection and not self._transform_mode)
         can_mutate_mask = has_selection and not self._transform_mode and not refining
+        self.pointer_btn.setEnabled(not self._transform_mode)
+        for widget in (
+            self.paint_mask_btn, self.brush_mode_combo,
+            self.brush_tip_combo, self.brush_size_spin,
+            self.brush_hardness_spin, self.brush_strength_spin,
+            self.brush_spacing_spin, self.selection_shape_combo,
+            self.selection_operation_combo, self.selection_draw_btn,
+            self.selection_clear_btn, self.from_selection_btn,
+            self.selection_radius_spin, self.selection_all_btn,
+            self.selection_invert_btn, self.selection_grow_btn,
+            self.selection_shrink_btn, self.selection_feather_btn,
+            self.color_range_btn, self.color_range_tolerance_spin,
+            self.color_range_softness_spin, self.color_range_confirm_btn,
+            self.color_range_cancel_btn,
+        ):
+            widget.setEnabled(can_mutate_mask)
+        can_paint_mask = (
+            can_mutate_mask and self._mask_present and self._mask_enabled)
+        self.paint_mask_btn.setEnabled(can_paint_mask)
+        if not self._mask_present:
+            self.paint_mask_btn.setToolTip(
+                "Create or import a raster mask before painting.")
+        elif not self._mask_enabled:
+            self.paint_mask_btn.setToolTip(
+                "Enable the raster mask before painting.")
+        else:
+            self.paint_mask_btn.setToolTip(
+                "Arm the mask brush. Pointer / Done exits painting.")
+        self.from_selection_btn.setEnabled(
+            can_mutate_mask and not self._selection_pending)
         for widget in (
             self.reveal_mask_btn, self.hide_mask_btn,
             self.transparency_mask_btn,

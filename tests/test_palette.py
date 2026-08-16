@@ -212,6 +212,79 @@ def test_generate_palette_bad_unit_raises():
         generate_palette(img, "nonsense", 4)
 
 
+def test_distinct_palette_rejects_colors_below_minimum_coverage():
+    from ditherzam.color.palette import distinct_palette
+
+    img = np.zeros((100, 100, 3), np.uint8)
+    img[:60] = [230, 20, 20]
+    img[60:90] = [20, 210, 30]
+    img[90:99] = [20, 40, 230]
+    img[99:] = [250, 240, 20]
+
+    palette = distinct_palette(img, k=5, min_coverage=0.10, diversity=1.0)
+
+    assert palette.colors.shape == (2, 3)
+    assert palette.coverages is not None
+    assert np.all(palette.coverages >= 0.10)
+    assert float(palette.coverages.sum()) == pytest.approx(0.9, abs=0.03)
+
+
+def test_distinct_palette_prefers_visually_separated_colors():
+    from ditherzam.color.palette import distinct_palette
+
+    colors = np.array([
+        [120, 0, 0], [140, 0, 0], [160, 0, 0],
+        [0, 0, 255], [255, 255, 0],
+    ], np.uint8)
+    img = np.repeat(colors[:, None, :], 100, axis=1)
+
+    palette = distinct_palette(img, k=3, min_coverage=0.0, diversity=1.0)
+    rounded = np.rint(palette.colors).astype(np.uint8)
+
+    assert rounded.shape == (3, 3)
+    assert np.any(rounded[:, 2] > 180)
+    assert np.any((rounded[:, 0] > 180) & (rounded[:, 1] > 150))
+
+
+def test_distinct_palette_is_deterministic_and_coverage_matches_swatches():
+    from ditherzam.color.palette import distinct_palette
+
+    img = np.random.default_rng(44).integers(0, 256, (80, 90, 3), dtype=np.uint8)
+    first = distinct_palette(img, k=5, min_coverage=0.01, diversity=0.7)
+    second = distinct_palette(img, k=5, min_coverage=0.01, diversity=0.7)
+
+    np.testing.assert_array_equal(first.colors, second.colors)
+    np.testing.assert_array_equal(first.coverages, second.coverages)
+    assert first.coverages.shape == (first.colors.shape[0],)
+
+
+def test_distinct_palette_returns_no_rejected_fallback_color():
+    from ditherzam.color.palette import distinct_palette
+
+    img = np.zeros((30, 30, 3), np.uint8)
+    img[:10] = [255, 0, 0]
+    img[10:20] = [0, 255, 0]
+    img[20:] = [0, 0, 255]
+
+    palette = distinct_palette(img, k=5, min_coverage=0.40)
+
+    assert palette.colors.shape == (0, 3)
+    assert palette.coverages.shape == (0,)
+
+
+def test_generate_palette_distinct_dispatches_new_algorithm():
+    from ditherzam.color.palette import generate_palette
+
+    img = np.zeros((20, 20, 3), np.uint8)
+    img[:10] = [255, 0, 0]
+    img[10:] = [0, 0, 255]
+    palette = generate_palette(
+        img, "k", 5, algorithm="distinct", min_coverage=0.10, diversity=100)
+
+    assert palette.colors.shape == (2, 3)
+    assert palette.coverages is not None
+
+
 def test_category_defaults_empty():
     from ditherzam.color.palette import Palette
     p = Palette.from_list("x", [[1, 2, 3]])

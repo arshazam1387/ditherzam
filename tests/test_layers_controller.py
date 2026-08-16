@@ -1,4 +1,5 @@
 import numpy as np
+from dataclasses import replace
 
 
 def _preset(contrast=50):
@@ -216,6 +217,115 @@ def test_update_without_active_layer_does_not_capture_editor(qapp_fixture):
     assert controller.update_active_from_editor() is False
 
 
+def test_interactive_lower_context_reuses_active_look_and_invalidates_dependencies(
+        qapp_fixture, monkeypatch):
+    from ditherzam.composition import Look
+    from ditherzam.layers import LowerLayerPreviewContext
+    from ditherzam.ui.layers_panel import LayersPanel
+    import ditherzam.ui.layers_controller as module
+
+    controller = _controller(LayersPanel())
+    monkeypatch.setattr(controller, "request_preview", lambda *_args: None)
+    controller.initialize_source_layer()
+    controller.add_layer()
+    controller.add_layer()
+    calls = []
+
+    def build(document, registry, *, layer_id, target_max_side, **kwargs):
+        calls.append((layer_id, target_max_side))
+        rgba = np.zeros((4, 4, 4), np.uint8)
+        rgba.flags.writeable = False
+        return LowerLayerPreviewContext(
+            layer_id, rgba, (4, 4), target_max_side)
+
+    monkeypatch.setattr(module, "lower_layer_preview_context", build)
+    first = controller.freeze_interactive_preview(4)
+    again = controller.freeze_interactive_preview(4)
+    assert first.context is again.context
+    assert calls == [(controller.document.layers[2].id, 4)]
+
+    active = controller.document.layers[2]
+    controller._document = controller.document.replace(
+        2, replace(active, look=Look(
+            "changed", {"dither": {"style": "None"}}))).select(2)
+    changed_look = controller.freeze_interactive_preview(4)
+    assert changed_look.context is first.context
+    assert len(calls) == 1
+
+    lower = controller.document.layers[0]
+    controller._document = controller.document.replace(
+        0, replace(lower, look=Look(
+            "lower changed", {"dither": {"style": "None"}}))).select(2)
+    lower_changed = controller.freeze_interactive_preview(4)
+    assert lower_changed.context is not first.context
+    assert len(calls) == 2
+
+    controller._document = controller.document.move(0, 1)
+    reordered = controller.freeze_interactive_preview(4)
+    assert reordered.context is not lower_changed.context
+    assert len(calls) == 3
+
+    controller._document = controller.document.select(1)
+    selected = controller.freeze_interactive_preview(4)
+    assert selected.context is not reordered.context
+    assert len(calls) == 4
+
+
+def test_interactive_publication_rejects_source_mask_and_graph_mutations(
+        qapp_fixture, monkeypatch):
+    from ditherzam.layers import (
+        LayerSource,
+        LowerLayerPreviewContext,
+        RasterLayerMask,
+    )
+    from ditherzam.ui.layers_panel import LayersPanel
+    import ditherzam.ui.layers_controller as module
+
+    controller = _controller(LayersPanel())
+    monkeypatch.setattr(controller, "request_preview", lambda *_args: None)
+    controller.initialize_source_layer()
+    controller.add_layer()
+    controller.add_layer()
+    controller._document = controller.document.select(1)
+    builds = []
+
+    def build(document, registry, *, layer_id, target_max_side, **kwargs):
+        builds.append(layer_id)
+        rgba = np.zeros((4, 4, 4), np.uint8)
+        rgba.flags.writeable = False
+        return LowerLayerPreviewContext(
+            layer_id, rgba, (4, 4), target_max_side)
+
+    monkeypatch.setattr(module, "lower_layer_preview_context", build)
+    rendered = np.full((4, 4, 4), 100, np.uint8)
+    authority = controller.freeze_interactive_preview(4)
+
+    active = controller.document.layers[1]
+    rgba = np.array(active.source.rgba, copy=True)
+    rgba[0, 0, 0] = 99
+    source = LayerSource(active.source.gray, rgba)
+    controller._document = controller.document.replace(
+        1, replace(active, source=source)).select(1)
+    assert controller.compose_interactive_preview(rendered, authority) is None
+    after_source = controller.freeze_interactive_preview(4)
+    assert after_source.context is authority.context
+
+    active = controller.document.layers[1]
+    mask = RasterLayerMask(np.full((4, 4), 200, np.uint8))
+    controller._document = controller.document.replace(
+        1, replace(active, raster_mask=mask)).select(1)
+    assert controller.compose_interactive_preview(
+        rendered, after_source) is None
+    after_mask = controller.freeze_interactive_preview(4)
+    assert after_mask.context is authority.context
+
+    above = controller.document.layers[2]
+    controller._document = controller.document.replace(
+        2, replace(above, visible=False)).select(1)
+    assert controller.compose_interactive_preview(rendered, after_mask) is None
+    assert len(builds) == 1
+
+
 def test_delete_activates_the_new_selected_layer(qapp_fixture):
     from ditherzam.ui.layers_panel import LayersPanel
 
@@ -290,6 +400,40 @@ def test_shutdown_is_idempotent_and_blocks_mutation(qapp_fixture):
     controller.shutdown()
     controller.add_layer()
     assert not controller.stack.layers
+
+
+def test_shutdown_retains_active_preview_worker_until_terminal_signal(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.ui.layers_panel import LayersPanel
+    import ditherzam.ui.layers_controller as module
+    from shiboken6 import delete
+
+    panel = LayersPanel()
+    controller = _controller(panel)
+    captured = []
+    monkeypatch.setattr(controller._pool, "start", captured.append)
+    controller.initialize_source_layer()
+
+    worker = captured[-1]
+    assert worker in controller._workers
+
+    controller.shutdown()
+
+    assert worker in module._SHUTDOWN_LAYER_WORKERS
+    delete(controller)
+    worker.signals.cancelled.emit(worker.generation)
+    qapp_fixture.processEvents()
+    assert worker not in module._SHUTDOWN_LAYER_WORKERS
+
+    # Completion and failure can win the race with shutdown cancellation;
+    # every terminal path must release the independent teardown root.
+    module._SHUTDOWN_LAYER_WORKERS.add(worker)
+    worker.signals.failed.emit("stopped", worker.generation)
+    assert worker not in module._SHUTDOWN_LAYER_WORKERS
+    module._SHUTDOWN_LAYER_WORKERS.add(worker)
+    worker.signals.finished.emit((None, ()), worker.generation)
+    assert worker not in module._SHUTDOWN_LAYER_WORKERS
 
 
 def test_mutation_guard_blocks_graph_changes_but_allows_geometry(

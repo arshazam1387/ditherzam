@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import logging
+import time
 
 
 def main() -> int:
@@ -13,10 +15,15 @@ def main() -> int:
         root = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent.parent
         return run(root / "packaging" / "smart-mask-release.lock.json")
     from PySide6.QtWidgets import QApplication
+    from ditherzam.diagnostics import configure_logging, install_exception_hooks
 
     from ditherzam.ui.main_window import ImageEditor
     from ditherzam.ui.theme import find_themes, load_theme
 
+    log_path = configure_logging()
+    install_exception_hooks()
+    logger = logging.getLogger(__name__)
+    startup_started = time.perf_counter()
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     app.setApplicationName("ditherzam")
@@ -29,12 +36,25 @@ def main() -> int:
     # Fail-closed: with no staged model this returns None and Smart Mask stays
     # cleanly disabled (no network fetch ever happens here).
     from ditherzam.masking.ort_adapter import load_default_segmentation_adapter
+    model_started = time.perf_counter()
     mask_adapter = load_default_segmentation_adapter()
     mask_model = mask_adapter.model_identity if mask_adapter is not None else None
+    logger.info(
+        "mask_adapter_load duration_ms=%.1f available=%s",
+        (time.perf_counter() - model_started) * 1000.0,
+        mask_adapter is not None,
+    )
 
-    window = ImageEditor(mask_adapter=mask_adapter, mask_model=mask_model)
+    window = ImageEditor(
+        mask_adapter=mask_adapter, mask_model=mask_model,
+        diagnostic_log_path=log_path,
+    )
     window.resize(1100, 720)
     window.show()
+    logger.info(
+        "window_ready duration_ms=%.1f",
+        (time.perf_counter() - startup_started) * 1000.0,
+    )
 
     # Bound interactive renders to the measured thread budget before warming, so
     # the kernels compile at the same thread count they will run at.

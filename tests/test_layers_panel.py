@@ -40,6 +40,28 @@ def test_layer_row_selection_and_visibility_publish_core_index(qapp_fixture):
     assert visible == [(1, True)]
 
 
+def test_layer_rebuild_ignores_synchronous_reentrant_refresh(qapp_fixture):
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    panel = LayersPanel()
+    original = [("old", "Old layer", True, 100, "normal")]
+    replacement = [("new", "New layer", True, 100, "normal")]
+    panel.set_layers(original, 0)
+    set_layers_once = panel._set_layers_once
+
+    def reentrant_rebuild(layers, selected):
+        panel.set_layers(original, 0)
+        set_layers_once(layers, selected)
+
+    panel._set_layers_once = reentrant_rebuild
+
+    panel.set_layers(replacement, 0)
+
+    assert panel.layer_list.count() == 1
+    assert panel.layer_list.item(0).text() == "New layer"
+    assert panel.layer_list.currentItem() is panel.layer_list.item(0)
+
+
 def test_transform_controls_publish_selected_layer_geometry(qapp_fixture):
     from ditherzam.ui.layers_panel import LayersPanel
 

@@ -11,6 +11,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal, Slot
 from PySide6.QtGui import QPixmap
 
 from ditherzam.composition import Look, export_frame
+from ditherzam.diagnostics import log_action
 from ditherzam.layers import (
     BrushMode,
     BrushSettings,
@@ -23,6 +24,7 @@ from ditherzam.layers import (
     LayerStack,
     LayerTransform,
     LayerLookRenderCache,
+    LowerLayerPreviewContext,
     InspectionMode,
     RasterLayerMask,
     RasterMaskIOError,
@@ -53,11 +55,15 @@ from ditherzam.layers import (
     freeze_smart_mask,
     import_raster_mask_png,
     invert_raster_mask,
+    composite_active_layer_preview,
+    lower_layer_preview_context,
     render_layer_document,
     render_layer_document_with_proxy,
     composite_mask_stroke_roi,
     inspect_mask,
 )
+
+
 from ditherzam.layers.mask_contracts import MaskObjectIdentity, MaskPublicationKey
 from ditherzam.layers.selection import (
     SelectionOperation,
@@ -65,11 +71,29 @@ from ditherzam.layers.selection import (
     TemporarySelection,
     combine_selection,
     rasterize_selection,
+    rasterize_polygon_selection,
+    rasterize_freehand_selection,
+    select_all,
+    invert_selection,
+    grow_selection,
+    shrink_selection,
+    feather_selection,
     restrict_mask_edit,
     selection_to_source,
+    select_color_range,
+    source_selection_to_document,
 )
 from ditherzam.render import RenderCancelled
 from ditherzam.ui.convert import numpy_to_qimage
+
+
+# Window teardown destroys the controller QObject before global-pool runnables
+# necessarily reach a cancellation checkpoint. Keep those runnables rooted
+# independently of the window until their terminal signal has been emitted.
+_SHUTDOWN_LAYER_WORKERS: set["_LayerWorker"] = set()
+_SHUTDOWN_SELECTION_WORKERS: set["_SelectionWorker"] = set()
+
+_ASYNC_SELECTION_PIXELS = 512 * 512
 
 
 @dataclass(frozen=True)
@@ -135,6 +159,98 @@ class MaskCombinationAuthority:
     candidate: MaskCandidate
     mode: MaskCombinationMode
     preview: np.ndarray
+
+
+@dataclass(frozen=True)
+class InteractiveLayerPreviewAuthority:
+    """Frozen active-layer publication bound to one reusable lower context."""
+
+    context: LowerLayerPreviewContext
+    active_layer: Layer
+    graph_guard: tuple
+    lower_key: tuple
+
+
+@dataclass(frozen=True)
+class _SelectionTask:
+    """One exact selection calculation frozen against a document object."""
+
+    generation: int
+    document: LayerDocument
+    kind: str
+    base: TemporarySelection | None
+    payload: tuple
+
+
+def _compute_selection_task(task: _SelectionTask) -> TemporarySelection:
+    """Run only Qt-free selection primitives for a frozen worker request."""
+    shape = (task.document.canvas.height, task.document.canvas.width)
+    if task.kind == "shape":
+        selection_shape, bounds, operation = task.payload
+        pixels = rasterize_selection(shape, selection_shape, bounds)
+        return combine_selection(task.base, pixels, operation)
+    if task.kind == "path":
+        path_kind, points, operation, diameter = task.payload
+        if path_kind == "polygon":
+            pixels = rasterize_polygon_selection(shape, points)
+        elif path_kind == "freehand":
+            pixels = rasterize_freehand_selection(
+                shape, points, diameter=diameter)
+        else:
+            raise ValueError("selection path must be polygon or freehand")
+        return combine_selection(task.base, pixels, operation)
+    if task.kind == "refine":
+        operation, radius = task.payload
+        if operation == "all":
+            return select_all(shape)
+        if task.base is None:
+            raise ValueError("selection refinement needs an active selection")
+        if operation == "invert":
+            return invert_selection(task.base)
+        if operation == "grow":
+            return grow_selection(task.base, radius)
+        if operation == "shrink":
+            return shrink_selection(task.base, radius)
+        if operation == "feather":
+            return feather_selection(task.base, radius)
+        raise ValueError("unknown selection refinement")
+    if task.kind == "color_range":
+        (
+            rgba, target, tolerance, softness, transform, operation,
+        ) = task.payload
+        source_candidate = select_color_range(
+            rgba, target, tolerance=tolerance, softness=softness)
+        document_candidate = source_selection_to_document(
+            source_candidate, shape,
+            layer_x=transform.x, layer_y=transform.y,
+            scale_x=transform.scale_x, scale_y=transform.scale_y,
+        )
+        return combine_selection(task.base, document_candidate.pixels, operation)
+    raise ValueError("unknown selection worker task")
+
+
+class _SelectionSignals(QObject):
+    finished = Signal(object, object, str)
+    failed = Signal(str, object, str)
+
+
+class _SelectionWorker(QRunnable):
+    """Bounded exact selection worker; publication remains controller-owned."""
+
+    def __init__(self, task: _SelectionTask):
+        super().__init__()
+        self.task = task
+        self.request_id = str(uuid4())
+        self.signals = _SelectionSignals()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            result = _compute_selection_task(self.task)
+        except Exception as exc:  # noqa: BLE001 - worker/UI boundary
+            self.signals.failed.emit(str(exc), self.task, self.request_id)
+        else:
+            self.signals.finished.emit(result, self.task, self.request_id)
 
 
 class _WorkerSignals(QObject):
@@ -317,6 +433,76 @@ def _publication_key(layer, document, cap, generation):
     )
 
 
+def _raster_mask_key(layer: Layer) -> tuple:
+    mask = layer.raster_mask
+    return (
+        None if mask is None else MaskObjectIdentity(mask),
+        0 if mask is None else mask.revision,
+        False if mask is None else mask.enabled,
+        0 if mask is None else mask.density,
+    )
+
+
+def _layer_visual_key(layer: Layer) -> tuple:
+    source = layer.source
+    if source is None:
+        raise ValueError("document layers must own sources")
+    return (
+        layer.id,
+        source.source_identity,
+        None if source.probability is None else source.probability.identity,
+        layer.look.signature,
+        layer.mask_revision,
+        _raster_mask_key(layer),
+        layer.transform,
+        layer.visible,
+        layer.opacity,
+        layer.blend_mode,
+    )
+
+
+def _active_layer_guard(layer: Layer) -> tuple:
+    """Everything except the active Look, which may advance during a drag."""
+    source = layer.source
+    if source is None:
+        raise ValueError("document layers must own sources")
+    return (
+        layer.id,
+        source.source_identity,
+        None if source.probability is None else source.probability.identity,
+        layer.mask_revision,
+        _raster_mask_key(layer),
+        layer.transform,
+        layer.visible,
+        layer.opacity,
+        layer.blend_mode,
+    )
+
+
+def _lower_preview_key(document: LayerDocument, index: int) -> tuple:
+    active = document.layers[index]
+    return (
+        (document.canvas.width, document.canvas.height),
+        active.id,
+        index,
+        tuple(_layer_visual_key(layer) for layer in document.layers[:index]),
+    )
+
+
+def _interactive_graph_guard(document: LayerDocument, index: int) -> tuple:
+    return (
+        (document.canvas.width, document.canvas.height),
+        document.selected_ids,
+        index,
+        tuple(
+            _active_layer_guard(layer)
+            if layer.id == document.layers[index].id
+            else _layer_visual_key(layer)
+            for layer in document.layers
+        ),
+    )
+
+
 class LayersController(QObject):
     active_geometry_changed = Signal()
     history_changed = Signal()
@@ -394,6 +580,9 @@ class LayersController(QObject):
         self._transform_gesture: tuple[str, tuple] | None = None
         self._transform_transaction: LayerDocument | None = None
         self._latest_proxy = None
+        self._latest_proxy_lower_key = None
+        self._interactive_lower_key = None
+        self._interactive_lower_context = None
         self._edit_target: LayerEditTarget | None = None
         self._mask_replacement: MaskReplacementProposal | None = None
         self._mask_combination: MaskCombinationAuthority | None = None
@@ -414,6 +603,15 @@ class LayersController(QObject):
         # Selection is intentionally controller-session state, not document
         # state: it is neither serialized nor recorded by layer history.
         self._selection: TemporarySelection | None = None
+        self._color_range_session = None
+        self._color_range_preview: TemporarySelection | None = None
+        self._color_range_confirm_pending = False
+        self._selection_generation = 0
+        self._selection_pool = QThreadPool(self)
+        self._selection_pool.setMaxThreadCount(1)
+        self._selection_worker: _SelectionWorker | None = None
+        self._selection_workers: dict[str, _SelectionWorker] = {}
+        self._selection_pending_task: _SelectionTask | None = None
 
         if hasattr(panel, "new_blank_requested"):
             panel.new_blank_requested.connect(self.new_blank_layer)
@@ -488,6 +686,19 @@ class LayersController(QObject):
             self.panel.set_status(
                 "Finish or cancel the active mask brush stroke first.", True)
         return allowed
+
+    @staticmethod
+    def _log_layer_action(action: str, layer: Layer, **fields) -> None:
+        """Record metadata-only semantic layer actions."""
+        source = layer.source
+        if source is not None:
+            fields.setdefault("source_width", int(source.rgba.shape[1]))
+            fields.setdefault("source_height", int(source.rgba.shape[0]))
+        log_action(
+            f"layer.{action}",
+            layer_id=layer.id,
+            **fields,
+        )
 
     @property
     def smart_refinement_active(self) -> bool:
@@ -947,9 +1158,16 @@ class LayersController(QObject):
     def cancel_mask_brush_stroke(self) -> bool:
         if self._mask_stroke is None:
             return False
+        authority, stroke, _original = self._mask_stroke
         self._mask_stroke = None
         self._mask_stroke_clear()
         self.panel.set_status("Mask brush stroke cancelled.")
+        dirty = stroke.dirty_rect
+        log_action(
+            "mask.brush_stroke_cancelled",
+            layer_id=authority.layer_id,
+            changed=dirty is not None,
+        )
         return True
 
     def finish_mask_brush_stroke(self) -> bool:
@@ -980,6 +1198,17 @@ class LayersController(QObject):
         self._mask_stroke_overlay_pending_exact = True
         self._replace(
             index, replace(layer, raster_mask=new_mask), "Brush Layer Mask")
+        dirty = stroke.dirty_rect
+        log_action(
+            "mask.brush_stroke_completed",
+            layer_id=layer.id,
+            mode=stroke.settings.mode.value,
+            size=float(stroke.settings.size),
+            hardness=int(stroke.settings.hardness),
+            strength=int(stroke.settings.strength),
+            dirty_width=int(dirty.x1 - dirty.x0),
+            dirty_height=int(dirty.y1 - dirty.y0),
+        )
         return True
 
     @property
@@ -1000,6 +1229,73 @@ class LayersController(QObject):
     def has_active_layer(self) -> bool:
         return self.active_index is not None
 
+    def freeze_interactive_preview(
+        self, target_max_side: int
+    ) -> InteractiveLayerPreviewAuthority | None:
+        """Capture active-layer metadata plus a cached lower-stack composite."""
+        document = self._document
+        index = self.active_index
+        if document is None or index is None:
+            return None
+        if (
+            isinstance(target_max_side, bool)
+            or not isinstance(target_max_side, int)
+            or target_max_side <= 0
+        ):
+            raise ValueError("Preview cap must be a positive integer.")
+        lower_key = _lower_preview_key(document, index)
+        cache_key = (lower_key, target_max_side)
+        if (
+            self._interactive_lower_context is None
+            or self._interactive_lower_key != cache_key
+        ):
+            prefix = None
+            proxy = self._latest_proxy
+            if (
+                proxy is not None
+                and proxy.layer_id == document.layers[index].id
+                and self._latest_proxy_lower_key == lower_key
+                and proxy.prefix_rgba is not None
+            ):
+                prefix = proxy.prefix_rgba
+            context = lower_layer_preview_context(
+                document,
+                self.registry,
+                layer_id=document.layers[index].id,
+                target_max_side=target_max_side,
+                lower_rgba=prefix,
+                allow_pending_masks=True,
+                look_cache=self._look_cache,
+                mask_caches=self._mask_caches_provider(),
+            )
+            self._interactive_lower_key = cache_key
+            self._interactive_lower_context = context
+        return InteractiveLayerPreviewAuthority(
+            self._interactive_lower_context,
+            document.layers[index],
+            _interactive_graph_guard(document, index),
+            lower_key,
+        )
+
+    def compose_interactive_preview(
+        self, rendered, authority: InteractiveLayerPreviewAuthority
+    ) -> np.ndarray | None:
+        """Accept and composite a worker result only if cheap graph state is live."""
+        if not isinstance(authority, InteractiveLayerPreviewAuthority):
+            raise ValueError(
+                "authority must be an InteractiveLayerPreviewAuthority")
+        document = self._document
+        index = self.active_index
+        if (
+            document is None
+            or index is None
+            or _lower_preview_key(document, index) != authority.lower_key
+            or _interactive_graph_guard(document, index) != authority.graph_guard
+        ):
+            return None
+        return composite_active_layer_preview(
+            authority.context, authority.active_layer, rendered)
+
     @property
     def edit_target(self) -> LayerEditTarget | None:
         return self._edit_target
@@ -1016,11 +1312,240 @@ class LayersController(QObject):
     def temporary_selection(self) -> TemporarySelection | None:
         return self._selection
 
+    @property
+    def selection_work_pending(self) -> bool:
+        return (
+            self._selection_worker is not None
+            or self._selection_pending_task is not None)
+
+    def _set_selection_pending_ui(self, pending: bool) -> None:
+        if hasattr(self.panel, "set_selection_pending"):
+            self.panel.set_selection_pending(bool(pending))
+
+    def _next_selection_task(
+        self, kind: str, base: TemporarySelection | None, payload: tuple
+    ) -> _SelectionTask:
+        assert self._document is not None
+        self._selection_generation += 1
+        return _SelectionTask(
+            self._selection_generation, self._document, kind, base, payload)
+
+    @staticmethod
+    def _selection_task_is_heavy(task: _SelectionTask) -> bool:
+        document_pixels = task.document.canvas.width * task.document.canvas.height
+        if task.kind == "color_range":
+            source_pixels = int(task.payload[0].shape[0] * task.payload[0].shape[1])
+            return max(document_pixels, source_pixels) > _ASYNC_SELECTION_PIXELS
+        return document_pixels > _ASYNC_SELECTION_PIXELS
+
+    def _publish_selection_result(
+        self, result: TemporarySelection, task: _SelectionTask
+    ) -> None:
+        if task.kind == "color_range":
+            if self._color_range_session is None:
+                return
+            self._color_range_preview = result
+            self._selection_overlay_sink(result.pixels)
+            if self._color_range_confirm_pending:
+                self._selection = result
+                self._color_range_session = None
+                self._color_range_preview = None
+                self._color_range_confirm_pending = False
+                log_action("selection.color_range_confirmed")
+                self.panel.set_status("Color Range selection confirmed.")
+            return
+        self._selection = result
+        self._selection_overlay_sink(result.pixels)
+        operation = task.payload[0] if task.kind == "refine" else task.kind
+        log_action("selection.published", operation=str(operation))
+
+    def _dispatch_selection_task(self, task: _SelectionTask) -> bool:
+        self._selection_pending_task = None
+        if not self._selection_task_is_heavy(task):
+            try:
+                result = _compute_selection_task(task)
+            except (TypeError, ValueError):
+                return False
+            if self._document is task.document and task.generation == self._selection_generation:
+                self._publish_selection_result(result, task)
+                return True
+            return False
+        self._set_selection_pending_ui(True)
+        self.panel.set_status("Computing exact selection…")
+        if self._selection_worker is not None:
+            # One active calculation plus one replaceable trailing request keeps
+            # slider/button bursts bounded while guaranteeing latest-wins.
+            self._selection_pending_task = task
+            return True
+        self._start_selection_worker(task)
+        return True
+
+    def _start_selection_worker(self, task: _SelectionTask) -> None:
+        worker = _SelectionWorker(task)
+        self._selection_worker = worker
+        self._selection_workers[worker.request_id] = worker
+        worker.signals.finished.connect(self._selection_finished)
+        worker.signals.failed.connect(self._selection_failed)
+        release = lambda *_args, retained=worker: (
+            _SHUTDOWN_SELECTION_WORKERS.discard(retained))
+        worker.signals.finished.connect(release)
+        worker.signals.failed.connect(release)
+        self._selection_pool.start(worker)
+
+    def _retire_selection_worker(self, request_id: str) -> bool:
+        worker = self._selection_workers.pop(request_id, None)
+        if worker is None or worker is not self._selection_worker:
+            return False
+        self._selection_worker = None
+        return True
+
+    def _advance_selection_queue(self) -> None:
+        task = self._selection_pending_task
+        self._selection_pending_task = None
+        if task is not None and not self._closing:
+            if (
+                task.document is self._document
+                and task.generation == self._selection_generation
+            ):
+                self._start_selection_worker(task)
+                return
+        self._set_selection_pending_ui(False)
+
+    @Slot(object, object, str)
+    def _selection_finished(self, result, task, request_id: str) -> None:
+        if not self._retire_selection_worker(request_id):
+            return
+        if (
+            not self._closing
+            and task.document is self._document
+            and task.generation == self._selection_generation
+        ):
+            self._publish_selection_result(result, task)
+            if task.kind != "color_range" or self._color_range_session is not None:
+                self.panel.set_status("Selection ready.")
+        self._advance_selection_queue()
+
+    @Slot(str, object, str)
+    def _selection_failed(self, message: str, task, request_id: str) -> None:
+        if not self._retire_selection_worker(request_id):
+            return
+        if task.generation == self._selection_generation and not self._closing:
+            self.panel.set_status(message, True)
+        self._advance_selection_queue()
+
+    def cancel_pending_selection_work(self) -> None:
+        self._selection_generation += 1
+        self._selection_pending_task = None
+        self._color_range_confirm_pending = False
+        self._set_selection_pending_ui(False)
+
+    def _invalidate_selection_for_document_change(self) -> None:
+        if self._color_range_session is not None:
+            self.cancel_color_range_selection()
+        else:
+            self.cancel_pending_selection_work()
+
     def clear_temporary_selection(self) -> bool:
+        self.cancel_pending_selection_work()
+        self._color_range_session = None
+        self._color_range_preview = None
         changed = self._selection is not None
         self._selection = None
         self._selection_overlay_clear()
+        if changed:
+            log_action("selection.cleared")
         return changed
+
+    def begin_color_range_selection(
+        self, document_x: float, document_y: float,
+        operation: SelectionOperation, *, tolerance: int, softness: int,
+    ) -> bool:
+        index = self.active_index
+        if index is None or self._document is None:
+            return False
+        layer = self._document.layers[index]
+        source = layer.source
+        if source is None or not isinstance(operation, SelectionOperation):
+            return False
+        transform = layer.transform
+        sx = int(np.floor((float(document_x) - transform.x) / transform.scale_x))
+        sy = int(np.floor((float(document_y) - transform.y) / transform.scale_y))
+        if not (0 <= sx < source.rgba.shape[1] and 0 <= sy < source.rgba.shape[0]):
+            return False
+        self.cancel_pending_selection_work()
+        target = tuple(int(value) for value in source.rgba[sy, sx, :3])
+        self._color_range_session = (
+            layer.id, self._selection, operation, target,
+            int(tolerance), int(softness),
+        )
+        return self._preview_color_range()
+
+    def _preview_color_range(self) -> bool:
+        if self._color_range_session is None or self._document is None:
+            return False
+        layer_id, base, operation, target, tolerance, softness = self._color_range_session
+        index = self.active_index
+        if index is None or self._document.layers[index].id != layer_id:
+            self.cancel_color_range_selection()
+            return False
+        layer = self._document.layers[index]
+        if layer.source is None:
+            self.cancel_color_range_selection()
+            return False
+        self._color_range_preview = None
+        task = self._next_selection_task(
+            "color_range", base,
+            (
+                layer.source.rgba, target, int(tolerance), int(softness),
+                layer.transform, operation,
+            ),
+        )
+        return self._dispatch_selection_task(task)
+
+    def update_color_range_selection(self, tolerance: int, softness: int) -> bool:
+        if self._color_range_session is None:
+            return False
+        layer_id, base, operation, target, _old_tolerance, _old_softness = (
+            self._color_range_session)
+        self._color_range_session = (
+            layer_id, base, operation, target, int(tolerance), int(softness))
+        return self._preview_color_range()
+
+    def confirm_color_range_selection(self) -> bool:
+        if self._color_range_session is None or self._document is None:
+            return False
+        layer_id, base, operation, target, tolerance, softness = self._color_range_session
+        index = self.active_index
+        if index is None or self._document.layers[index].id != layer_id:
+            return self.cancel_color_range_selection()
+        if self._color_range_preview is None:
+            if self.selection_work_pending:
+                self._color_range_confirm_pending = True
+                self.panel.set_status("Confirming exact Color Range…")
+                return True
+            return self._preview_color_range()
+        self._selection = self._color_range_preview
+        self._color_range_session = None
+        self._color_range_preview = None
+        self._color_range_confirm_pending = False
+        self._selection_overlay_sink(self._selection.pixels)
+        log_action("selection.color_range_confirmed", operation=operation.value)
+        return True
+
+    def cancel_color_range_selection(self) -> bool:
+        if self._color_range_session is None:
+            return False
+        _layer_id, base, _operation, _target, _tolerance, _softness = (
+            self._color_range_session)
+        self.cancel_pending_selection_work()
+        self._color_range_session = None
+        self._color_range_preview = None
+        if base is None:
+            self._selection_overlay_clear()
+        else:
+            self._selection_overlay_sink(base.pixels)
+        log_action("selection.color_range_cancelled")
+        return True
 
     def update_temporary_selection(
         self,
@@ -1028,15 +1553,60 @@ class LayersController(QObject):
         bounds: tuple[float, float, float, float],
         operation: SelectionOperation = SelectionOperation.REPLACE,
     ) -> bool:
+        self.cancel_color_range_selection()
         if self._document is None or self._closing:
             return False
-        pixels = rasterize_selection(
-            (self._document.canvas.height, self._document.canvas.width),
-            shape,
-            bounds,
+        task = self._next_selection_task(
+            "shape", self._selection, (shape, bounds, operation))
+        accepted = self._dispatch_selection_task(task)
+        if not accepted:
+            return False
+        log_action(
+            "selection.updated",
+            shape=shape.value,
+            operation=operation.value,
+            width=int(abs(bounds[2] - bounds[0])),
+            height=int(abs(bounds[3] - bounds[1])),
         )
-        self._selection = combine_selection(self._selection, pixels, operation)
-        self._selection_overlay_sink(self._selection.pixels)
+        return True
+
+    def update_path_selection(
+        self,
+        kind: str,
+        points,
+        operation: SelectionOperation = SelectionOperation.REPLACE,
+        *,
+        diameter: float = 8.0,
+    ) -> bool:
+        self.cancel_color_range_selection()
+        if self._document is None or self._closing:
+            return False
+        if kind not in {"polygon", "freehand"}:
+            raise ValueError("selection path must be polygon or freehand")
+        task = self._next_selection_task(
+            "path", self._selection,
+            (kind, tuple(points), operation, float(diameter)))
+        if not self._dispatch_selection_task(task):
+            return False
+        log_action(
+            "selection.updated", shape=kind, operation=operation.value,
+            points=len(points),
+        )
+        return True
+
+    def refine_temporary_selection(self, operation: str, radius: int = 0) -> bool:
+        self.cancel_color_range_selection()
+        if self._document is None or self._closing:
+            return False
+        if operation != "all" and self._selection is None:
+            return False
+        if operation not in {"all", "invert", "grow", "shrink", "feather"}:
+            raise ValueError("unknown selection refinement")
+        task = self._next_selection_task(
+            "refine", self._selection, (operation, int(radius)))
+        if not self._dispatch_selection_task(task):
+            return False
+        log_action("selection.refined", operation=operation, radius=radius)
         return True
 
     def selection_coverage_for_active_source(self) -> np.ndarray | None:
@@ -1239,6 +1809,7 @@ class LayersController(QObject):
         before = self._document
         if before is document:
             return False
+        self._invalidate_selection_for_document_change()
         self._document = document
         self._cancel_mask_proposal()
         admitted = False
@@ -1275,6 +1846,7 @@ class LayersController(QObject):
 
     def _publish_history_move(self, document: LayerDocument) -> None:
         self._cancel_mask_proposal()
+        self._invalidate_selection_for_document_change()
         self._document = document
         self._generation += 1
         self._pending_request = None
@@ -1282,6 +1854,7 @@ class LayersController(QObject):
             worker.cancel()
         self._thumbnail_cache.clear()
         self._latest_proxy = None
+        self._latest_proxy_lower_key = None
         self._proxy_clear()
         index = self.active_index
         self._refresh_panel(index)
@@ -1302,7 +1875,9 @@ class LayersController(QObject):
             or not self.can_undo
         ):
             return False
+        label = self._history.undo_label
         self._publish_history_move(self._history.undo(self._document))
+        log_action("history.undo", label=label)
         return True
 
     @Slot()
@@ -1313,7 +1888,9 @@ class LayersController(QObject):
             or not self.can_redo
         ):
             return False
+        label = self._history.redo_label
         self._publish_history_move(self._history.redo(self._document))
+        log_action("history.redo", label=label)
         return True
 
     def begin_transform_transaction(self) -> bool:
@@ -1346,6 +1923,16 @@ class LayersController(QObject):
         self.history_changed.emit()
         if restore is not None:
             self.set_inspection_mode(restore)
+        index = self.active_index
+        if recorded and index is not None:
+            layer = self._document.layers[index]
+            self._log_layer_action(
+                "transform_confirmed", layer,
+                x=int(round(layer.transform.x)),
+                y=int(round(layer.transform.y)),
+                width=self.active_geometry()[2],
+                height=self.active_geometry()[3],
+            )
         return recorded
 
     def cancel_transform_transaction(self) -> bool:
@@ -1367,6 +1954,10 @@ class LayersController(QObject):
         self._publish_history_move(restored)
         if restore is not None:
             self.set_inspection_mode(restore)
+        index = self.active_index
+        if index is not None:
+            self._log_layer_action(
+                "transform_cancelled", restored.layers[index])
         return True
 
     def _commit_raster_mask(
@@ -1400,6 +1991,9 @@ class LayersController(QObject):
         if existing is None:
             self._commit_raster_mask(
                 index, RasterLayerMask(candidate, enabled=True, density=100))
+            log_action(
+                "mask.created", layer_id=layer.id, source=label,
+                width=int(candidate.shape[1]), height=int(candidate.shape[0]))
             return True
         if (
             existing.enabled
@@ -1577,6 +2171,11 @@ class LayersController(QObject):
             return False
         self._commit_raster_mask(
             index, mask.evolve(pixels=exact, enabled=True, density=100))
+        log_action(
+            "mask.combination_confirmed", layer_id=layer.id,
+            mode=authority.mode.value,
+            origin=authority.candidate.origin.value,
+        )
         return True
 
     def cancel_mask_combination(self, token: str) -> bool:
@@ -1586,6 +2185,11 @@ class LayersController(QObject):
         self._mask_combination = None
         self._refinement_preview_clear()
         self.request_preview()
+        log_action(
+            "mask.combination_cancelled", layer_id=authority.layer_id,
+            mode=authority.mode.value,
+            origin=authority.candidate.origin.value,
+        )
         return True
 
     def _panel_mask_combination_mode(self) -> MaskCombinationMode:
@@ -1760,6 +2364,12 @@ class LayersController(QObject):
         self._commit_raster_mask(
             index, mask.evolve(
                 pixels=proposal.pixels, enabled=True, density=100))
+        log_action(
+            "mask.replacement_confirmed", layer_id=layer.id,
+            source=proposal.label,
+            width=int(proposal.pixels.shape[1]),
+            height=int(proposal.pixels.shape[0]),
+        )
         return True
 
     @Slot(str)
@@ -1774,6 +2384,10 @@ class LayersController(QObject):
         proposal = self._mask_replacement
         if proposal is None or token != proposal.token:
             return False
+        log_action(
+            "mask.replacement_cancelled", layer_id=proposal.layer_id,
+            source=proposal.label,
+        )
         self._cancel_mask_proposal()
         return True
 
@@ -1827,7 +2441,13 @@ class LayersController(QObject):
     def set_active_raster_mask_enabled(self, enabled: bool) -> bool:
         if type(enabled) is not bool:
             raise ValueError("enabled must be a bool")
-        return self._evolve_active_raster_mask(enabled=enabled)
+        changed = self._evolve_active_raster_mask(enabled=enabled)
+        if changed:
+            layer = self._document.layers[self.active_index]
+            log_action(
+                "mask.enabled_changed", layer_id=layer.id,
+                enabled=enabled)
+        return changed
 
     def set_active_raster_mask_density(self, density: int) -> bool:
         if (
@@ -1836,7 +2456,13 @@ class LayersController(QObject):
             or not 0 <= density <= 100
         ):
             raise ValueError("density must be an integer within 0..100")
-        return self._evolve_active_raster_mask(density=density)
+        changed = self._evolve_active_raster_mask(density=density)
+        if changed:
+            layer = self._document.layers[self.active_index]
+            log_action(
+                "mask.density_changed", layer_id=layer.id,
+                density=density)
+        return changed
 
     def _evolve_active_raster_mask(self, **changes) -> bool:
         if not self._graph_mutation_allowed():
@@ -1846,6 +2472,8 @@ class LayersController(QObject):
             return False
         mask = self._document.layers[index].raster_mask
         if mask is None:
+            return False
+        if all(getattr(mask, key) == value for key, value in changes.items()):
             return False
         self._commit_raster_mask(index, mask.evolve(**changes))
         return True
@@ -1866,6 +2494,11 @@ class LayersController(QObject):
         if coverage is not None:
             pixels = restrict_mask_edit(mask.pixels, pixels, coverage)
         self._commit_raster_mask(index, mask.evolve(pixels=pixels))
+        log_action(
+            "mask.inverted",
+            layer_id=self._document.layers[index].id,
+            selection_limited=coverage is not None,
+        )
         return True
 
     def fill_active_raster_mask(self, value: int) -> bool:
@@ -1888,6 +2521,9 @@ class LayersController(QObject):
         if coverage is not None:
             pixels = restrict_mask_edit(mask.pixels, pixels, coverage)
         self._commit_raster_mask(index, mask.evolve(pixels=pixels))
+        log_action(
+            "mask.filled", layer_id=self._document.layers[index].id,
+            value=value, selection_limited=coverage is not None)
         return True
 
     def reset_active_raster_mask(self) -> bool:
@@ -1904,7 +2540,9 @@ class LayersController(QObject):
             self.panel.set_status("No raster mask to delete.", True)
             return False
         self._cancel_mask_proposal()
+        layer_id = self._document.layers[index].id
         self._commit_raster_mask(index, None)
+        log_action("mask.deleted", layer_id=layer_id)
         return True
 
     def raster_mask_from_smart(self) -> bool:
@@ -1986,6 +2624,13 @@ class LayersController(QObject):
             self.panel.set_status(str(exc), True)
             return False
         self.panel.set_status("Raster mask exported.")
+        log_action(
+            "mask.exported",
+            layer_id=self._document.layers[index].id,
+            format=Path(path).suffix.lower().lstrip("."),
+            width=int(mask.pixels.shape[1]),
+            height=int(mask.pixels.shape[0]),
+        )
         return True
 
     @Slot(int, bool)
@@ -2107,8 +2752,10 @@ class LayersController(QObject):
         except Exception as exc:  # noqa: BLE001 - provider/UI boundary
             self.panel.set_status(str(exc), error=True)
             return
+        self._invalidate_selection_for_document_change()
         self._document = document
         self._selection = None
+        self._color_range_session = None
         self._selection_overlay_clear()
         self._history.clear()
         self.history_changed.emit()
@@ -2127,8 +2774,17 @@ class LayersController(QObject):
             self.activate_layer(0)
         else:
             self.request_preview()
+        self._log_layer_action(
+            "document_opened", layer,
+            canvas_width=document.canvas.width,
+            canvas_height=document.canvas.height,
+            layer_count=1,
+        )
 
-    def place_source(self, gray, rgba, probability=None, name=None) -> None:
+    def place_source(
+        self, gray, rgba, probability=None, name=None, *,
+        _action: str = "placed",
+    ) -> None:
         if not self._graph_mutation_allowed():
             return
         if self._document is None:
@@ -2160,6 +2816,9 @@ class LayersController(QObject):
         selected = len(self._document.layers) - 1
         self._refresh_panel(selected)
         self.panel.set_status(f"Placed {layer.name}.")
+        self._log_layer_action(
+            _action, layer, index=selected,
+            layer_count=len(self._document.layers))
         self.activate_layer(selected)
 
     @Slot()
@@ -2176,6 +2835,7 @@ class LayersController(QObject):
         self.place_source(
             np.zeros((height, width), dtype=np.float32),
             np.zeros((height, width, 4), dtype=np.uint8),
+            _action="blank_added",
         )
 
     @Slot(int)
@@ -2192,6 +2852,10 @@ class LayersController(QObject):
         )
         self._refresh_panel(index + 1)
         self.panel.set_status(f"Duplicated {original.name}.")
+        duplicate = self._document.layers[index + 1]
+        self._log_layer_action(
+            "duplicated", duplicate, source_layer_id=original.id,
+            index=index + 1, layer_count=len(self._document.layers))
         self.request_preview()
 
     @Slot(int)
@@ -2215,6 +2879,9 @@ class LayersController(QObject):
         self._commit_document(document, "Delete Layer")
         self._refresh_panel(selected)
         self.panel.set_status(f"Deleted {removed.name}.")
+        self._log_layer_action(
+            "deleted", removed, index=index,
+            layer_count=len(self._document.layers))
         if selected is None:
             self.request_preview()
         else:
@@ -2235,6 +2902,10 @@ class LayersController(QObject):
             "Move Layer",
         )
         self._refresh_panel(new_index)
+        self._log_layer_action(
+            "reordered", self._document.layers[new_index],
+            from_index=index, to_index=new_index,
+            layer_count=len(self._document.layers))
         self.request_preview()
 
     @Slot(int, bool)
@@ -2242,10 +2913,16 @@ class LayersController(QObject):
         if not self._graph_mutation_allowed() or not self._valid_index(index):
             return
         assert self._document is not None
+        layer = self._document.layers[index]
+        if layer.visible == bool(visible):
+            return
         self._replace(
-            index, replace(self._document.layers[index], visible=bool(visible)),
+            index, replace(layer, visible=bool(visible)),
             "Show Layer" if visible else "Hide Layer",
         )
+        self._log_layer_action(
+            "visibility_changed", self._document.layers[index],
+            visible=bool(visible))
 
     @Slot(int, str)
     def set_name(self, index: int, name: str) -> None:
@@ -2265,11 +2942,15 @@ class LayersController(QObject):
             return
         try:
             assert self._document is not None
+            if self._document.layers[index].blend_mode == mode:
+                return
             layer = replace(self._document.layers[index], blend_mode=mode)
         except ValueError as exc:
             self.panel.set_status(str(exc), error=True)
             return
         self._replace(index, layer, "Change Blend Mode")
+        self._log_layer_action(
+            "blend_changed", layer, blend_mode=layer.blend_mode)
 
     @Slot(int, int)
     def set_opacity(self, index: int, opacity: int) -> None:
@@ -2277,11 +2958,15 @@ class LayersController(QObject):
             return
         try:
             assert self._document is not None
+            if self._document.layers[index].opacity == opacity:
+                return
             layer = replace(self._document.layers[index], opacity=opacity)
         except ValueError as exc:
             self.panel.set_status(str(exc), error=True)
             return
         self._replace(index, layer, "Change Layer Opacity")
+        self._log_layer_action(
+            "opacity_changed", layer, opacity=int(layer.opacity))
 
     @Slot(int, int, int, int, int)
     def set_transform(
@@ -2418,6 +3103,9 @@ class LayersController(QObject):
             self.cancel_smart_refinement(self._smart_refinement[0])
         if not self._graph_mutation_allowed() or not self._valid_index(index):
             return
+        if index != self.active_index:
+            self.cancel_color_range_selection()
+            self.cancel_pending_selection_work()
         self._cancel_mask_proposal()
         try:
             assert self._document is not None
@@ -2433,9 +3121,15 @@ class LayersController(QObject):
             return
         self._refresh_panel(index)
         self.panel.set_status(f"Editing {layer.name}.")
+        self._log_layer_action(
+            "selected", layer, index=index,
+            layer_count=len(self._document.layers))
         self.request_preview()
 
-    def update_active_from_editor(self) -> bool:
+    def update_active_from_editor(
+        self, target_max_side: int | None = None, *,
+        request_preview: bool = True,
+    ) -> bool:
         if not self._graph_mutation_allowed():
             return False
         index = self.active_index
@@ -2475,16 +3169,25 @@ class LayersController(QObject):
             ),
         ).select(index)
         self._refresh_panel(index)
-        self.request_preview()
+        if not request_preview:
+            return True
+        if target_max_side is None:
+            self.request_preview()
+        else:
+            self.request_preview(target_max_side)
         return True
 
-    def _freeze_request(self):
+    def _freeze_request(self, target_max_side: int | None = None):
         if self._document is None:
             raise ValueError("Open an image before previewing layers.")
-        cap = self._cap_provider()
+        cap = (
+            self._cap_provider()
+            if target_max_side is None else target_max_side
+        )
         if isinstance(cap, bool) or not isinstance(cap, int) or cap <= 0:
             raise ValueError("Preview cap must be a positive integer.")
         self._generation += 1
+        generation = self._generation
         missing_thumbnail_keys = tuple(
             key
             for layer in self._document.layers
@@ -2496,23 +3199,23 @@ class LayersController(QObject):
             if key not in self._thumbnail_cache
         )
         return (
-            self._generation,
+            generation,
             self._document,
             cap,
             missing_thumbnail_keys,
             tuple(
                 _publication_key(
-                    layer, self._document, cap, self._generation)
+                    layer, self._document, cap, generation)
                 for layer in self._document.layers
             ),
         )
 
     @Slot()
-    def request_preview(self) -> None:
+    def request_preview(self, target_max_side: int | None = None) -> None:
         if self._closing:
             return
         try:
-            request = self._freeze_request()
+            request = self._freeze_request(target_max_side)
         except Exception as exc:  # noqa: BLE001 - provider/UI boundary
             self.panel.set_status(str(exc), error=True)
             return
@@ -2542,6 +3245,13 @@ class LayersController(QObject):
         worker.signals.finished.connect(release)
         worker.signals.failed.connect(release)
         worker.signals.cancelled.connect(release)
+
+        def release_shutdown_retention(*_args) -> None:
+            _SHUTDOWN_LAYER_WORKERS.discard(worker)
+
+        worker.signals.finished.connect(release_shutdown_retention)
+        worker.signals.failed.connect(release_shutdown_retention)
+        worker.signals.cancelled.connect(release_shutdown_retention)
         self.panel.set_status("Rendering layers…")
         self._pool.start(worker)
 
@@ -2570,7 +3280,12 @@ class LayersController(QObject):
             live_publication_keys = (
                 None if self._document is None else tuple(
                     _publication_key(
-                        layer, self._document, self._cap_provider(), generation)
+                        layer, self._document,
+                        (
+                            publication_keys[0].target[2]
+                            if publication_keys else self._cap_provider()
+                        ),
+                        generation)
                     for layer in self._document.layers
                 )
             )
@@ -2592,6 +3307,12 @@ class LayersController(QObject):
                 self._thumbnail_cache[key] = pixmap
                 self.panel.set_layer_thumbnail(key[0], pixmap)
             self._latest_proxy = proxy
+            selected_index = self.active_index
+            self._latest_proxy_lower_key = (
+                None
+                if proxy is None or self._document is None or selected_index is None
+                else _lower_preview_key(self._document, selected_index)
+            )
             accepted = np.array(
                 composite, dtype=np.uint8, order="C", copy=True)
             accepted.flags.writeable = False
@@ -2644,6 +3365,9 @@ class LayersController(QObject):
             self.cancel_smart_refinement(self._smart_refinement[0])
         for refinement_worker in tuple(self._refinement_workers.values()):
             refinement_worker.cancel()
+        self.cancel_pending_selection_work()
+        for selection_worker in tuple(self._selection_workers.values()):
+            _SHUTDOWN_SELECTION_WORKERS.add(selection_worker)
         self._closing = True
         self._cancel_mask_proposal()
         self._transform_gesture = None
@@ -2651,10 +3375,14 @@ class LayersController(QObject):
         self._history.clear()
         self.history_changed.emit()
         self._latest_proxy = None
+        self._latest_proxy_lower_key = None
+        self._interactive_lower_key = None
+        self._interactive_lower_context = None
         self._accepted_composite = None
         self._proxy_clear()
         self._generation += 1
         self._pending_request = None
         for worker in tuple(self._workers):
+            _SHUTDOWN_LAYER_WORKERS.add(worker)
             worker.cancel()
         self._look_cache.clear()

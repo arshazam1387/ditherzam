@@ -132,3 +132,40 @@ def test_from_image_no_image_is_noop(qapp_fixture):
     win = _win(qapp_fixture)
     win._base_rgb = None
     win._on_from_image_requested()      # must not raise
+
+
+def test_from_image_distinct_respects_minimum_coverage(qapp_fixture):
+    win = _win(qapp_fixture)
+    rgb = np.zeros((100, 100, 3), np.uint8)
+    rgb[:60] = [230, 20, 20]
+    rgb[60:90] = [20, 210, 30]
+    rgb[90:99] = [20, 40, 230]
+    rgb[99:] = [250, 240, 20]
+    win.load_array(rgb.mean(axis=2).astype(np.float32), rgb)
+    win.panel.extract_algorithm_combo.setCurrentText("Distinct Colors")
+    win.panel.extract_slider.setValue(5)
+    win.panel.extract_min_coverage_slider.setValue(100)  # 10%
+
+    win._on_from_image_requested()
+
+    assert win.panel.working_palette.colors.shape == (2, 3)
+    assert win.panel.working_palette.coverages is not None
+    assert "2 of 5" in win.panel.extract_result_label.text()
+    assert win.panel.state["color_mode"] == "source"
+
+
+def test_from_image_distinct_keeps_current_palette_when_none_qualify(qapp_fixture):
+    win = _win(qapp_fixture)
+    colors = np.random.default_rng(8).integers(
+        0, 256, (20, 3), dtype=np.uint8)
+    rgb = np.repeat(colors[:, None, :], 20, axis=1)
+    win.load_array(rgb.mean(axis=2).astype(np.float32), rgb)
+    original = win.panel.working_palette.colors.copy()
+    win.panel.extract_algorithm_combo.setCurrentText("Distinct Colors")
+    win.panel.extract_slider.setValue(5)
+    win.panel.extract_min_coverage_slider.setValue(100)  # 10%
+
+    win._on_from_image_requested()
+
+    np.testing.assert_array_equal(win.panel.working_palette.colors, original)
+    assert "0 of 5" in win.panel.extract_result_label.text()

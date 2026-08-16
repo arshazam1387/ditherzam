@@ -33,6 +33,9 @@ def test_new_state_defaults(qapp_fixture, tmp_path):
     panel = _panel(tmp_path)
     assert panel.state["palette_autosave"] is False
     assert panel.state["extract_unit"] == "k"
+    assert panel.state["extract_algorithm"] == "balanced"
+    assert panel.state["extract_min_coverage"] == 5
+    assert panel.state["extract_diversity"] == 100
 
 
 def test_selecting_palette_sets_working_copy(qapp_fixture, tmp_path):
@@ -111,6 +114,33 @@ def test_extract_unit_widget_switches_range(qapp_fixture, tmp_path):
     panel.extract_unit_combo.setCurrentText("k")
     assert panel.state["extract_unit"] == "k"
     assert panel.extract_slider.maximum() == 64
+
+
+def test_distinct_algorithm_reveals_controls_and_uses_exact_count(qapp_fixture, tmp_path):
+    panel = _panel(tmp_path)
+    panel.extract_unit_combo.setCurrentText("%")
+
+    panel.extract_algorithm_combo.setCurrentText("Distinct Colors")
+
+    assert panel.state["extract_algorithm"] == "distinct"
+    assert panel.state["extract_unit"] == "k"
+    assert panel.extract_min_coverage_row.isVisibleTo(panel)
+    assert panel.extract_diversity_row.isVisibleTo(panel)
+    assert not panel.extract_unit_row.isVisibleTo(panel)
+
+
+def test_distinct_control_values_are_reported_honestly(qapp_fixture, tmp_path):
+    panel = _panel(tmp_path)
+    panel.extract_algorithm_combo.setCurrentText("Distinct Colors")
+    panel.extract_min_coverage_slider.setValue(27)
+    panel.extract_diversity_slider.setValue(65)
+    panel.set_extraction_result(requested=5, returned=3)
+
+    assert panel.state["extract_min_coverage"] == 27
+    assert panel.state["extract_diversity"] == 65
+    assert panel.extract_min_coverage_value.text() == "2.7%"
+    assert "3 of 5" in panel.extract_result_label.text()
+    assert "2.7%" in panel.extract_result_label.text()
 
 
 def test_source_dither_control_only_shows_for_source_mode(qapp_fixture, tmp_path):

@@ -219,6 +219,36 @@ def test_transform_exposes_eight_device_stable_handle_targets(qapp_fixture):
         assert screen_rect.height() * dpr >= 16
 
 
+def test_visible_transform_handles_scale_with_selected_image(qapp_fixture):
+    from PySide6.QtCore import QRectF
+
+    view = _transform_view(qapp_fixture)
+    view.set_layer_drag_target(QRectF(20, 20, 20, 20))
+    small = view._layer_visible_handle_rects()["nw"].width()
+
+    view.set_layer_drag_target(QRectF(10, 10, 80, 80))
+    large = view._layer_visible_handle_rects()["nw"].width()
+
+    assert large > small
+    assert large == pytest.approx(small * 4.0)
+
+
+def test_visible_transform_handle_is_fully_inside_click_target_when_zoomed(
+    qapp_fixture,
+):
+    from PySide6.QtCore import QRectF
+
+    view = _transform_view(qapp_fixture)
+    view.set_layer_drag_target(QRectF(10, 10, 80, 80))
+    view.scale(3.0, 3.0)
+
+    visible = view._layer_visible_handle_rects()
+    targets = view._layer_handle_rects()
+
+    for name, visible_rect in visible.items():
+        assert targets[name].contains(visible_rect)
+
+
 @pytest.mark.parametrize(
     ("handle", "cursor"),
     [
@@ -271,6 +301,64 @@ def test_transform_selection_uses_contrast_halo_pens(qapp_fixture):
     ]
     assert [pen.width() for pen in pens] == [6, 4, 2]
     assert all(pen.isCosmetic() for pen in pens)
+
+
+def test_canvas_tools_are_mutually_exclusive_and_cursor_tracks_enter_leave(
+    qapp_fixture,
+):
+    from PySide6.QtCore import QEvent, QPointF, Qt
+    from PySide6.QtGui import QEnterEvent
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView()
+    view.show()
+    view.set_mask_brush_mode(True)
+    assert view._mask_brush_mode
+    assert view._selection_tool is None
+    assert view._gradient_tool is None
+    assert view.cursor().shape() == Qt.CursorShape.BlankCursor
+
+    qapp_fixture.sendEvent(view.viewport(), QEvent(QEvent.Type.Leave))
+    assert view.cursor().shape() == Qt.CursorShape.ArrowCursor
+    qapp_fixture.sendEvent(
+        view.viewport(), QEnterEvent(QPointF(), QPointF(), QPointF()))
+    assert view.cursor().shape() == Qt.CursorShape.BlankCursor
+
+    view.set_selection_tool("rectangle")
+    assert not view._mask_brush_mode
+    assert view._gradient_tool is None
+    assert view.cursor().shape() == Qt.CursorShape.CrossCursor
+
+    view.set_gradient_tool("linear")
+    assert view._selection_tool is None
+    assert not view._mask_brush_mode
+    assert view._gradient_tool == "linear"
+    view.close()
+
+
+def test_rectangle_selection_disarms_before_publishing_completion(qapp_fixture):
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtTest import QTest
+    from ditherzam.ui.viewport import CustomGraphicsView
+
+    view = CustomGraphicsView(enable_inertia=False)
+    view.resize(200, 200)
+    view.set_pixmap(QPixmap(100, 100), logical_size=(100, 100))
+    view.show()
+    seen = []
+    view.selection_dragged.connect(
+        lambda *_args: seen.append(
+            (view._selection_tool, view.cursor().shape())))
+    view.set_selection_tool("rectangle")
+
+    QTest.mousePress(
+        view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(40, 40))
+    QTest.mouseRelease(
+        view.viewport(), Qt.MouseButton.LeftButton, pos=QPoint(120, 120))
+
+    assert seen == [(None, Qt.CursorShape.ArrowCursor)]
+    view.close()
 
 
 @pytest.mark.parametrize(

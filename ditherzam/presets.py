@@ -23,7 +23,7 @@ _ADJ_RANGE: dict[str, tuple[int, int]] = {
     "blur": (0, 100),
     "saturation": (0, 100),
 }
-_SCALE_RANGE: tuple[int, int] = (1, 20)
+_SCALE_RANGE: tuple[int, int] = (1, 50)
 _DEPTH_RANGE: tuple[int, int] = (1, 64)
 
 

@@ -38,7 +38,7 @@ def test_roundtrip_clamps_out_of_range():
     s2, pal, fx = preset_to_settings(d)
     assert 0 <= s2.contrast <= 100 and s2.contrast == 100
     assert 0 <= s2.blur <= 100 and s2.blur == 0
-    assert 1 <= s2.scale <= 20 and s2.scale == 1
+    assert 1 <= s2.scale <= 50 and s2.scale == 1
     assert s2.style == "Atkinson"
 
 

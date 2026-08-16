@@ -77,28 +77,105 @@ def test_drag_target_is_min_of_proxy_and_policy_cap(qapp_fixture):
 def test_full_preview_flag_makes_settle_tick_build_full_request(qapp_fixture, monkeypatch):
     editor = _editor(resolution="1080")
     editor._full_preview_requested = True
-    launched = []
-    monkeypatch.setattr(editor, "_launch_worker", launched.append)
+    caps = []
+    monkeypatch.setattr(
+        editor.layers_controller, "request_preview", caps.append)
 
     editor._do_full_render()  # the settle-timer tick
 
-    assert len(launched) == 1
-    assert launched[0].kind is RenderKind.FULL
-    assert launched[0].target_max_side == 4000
-    assert launched[0].mode == "full"
+    assert caps == [4000]
+
+
+def test_layer_settle_keeps_inflight_proxy_publishable_until_composite_arrives(
+    qapp_fixture, monkeypatch
+):
+    """A slow proxy remains useful while the layer renderer catches up.
+
+    The settle timer can fire before the proxy worker finishes.  Starting the
+    settled layer render must not immediately make that only-ready frame stale;
+    ``_show_layer_frame`` retires it when the replacement is actually ready.
+    """
+    editor = _editor(resolution="1080")
+    editor._debounce.stop()
+    editor._settle.stop()
+    editor._scheduler.invalidate()
+    editor._scheduler.on_finished()
+    request = editor._scheduler.request(editor._build_request(RenderKind.DRAG))
+    assert request is not None
+    monkeypatch.setattr(editor.layers_controller, "request_preview", lambda _cap: None)
+
+    editor._do_full_render()
+
+    assert editor._scheduler.is_current(request)
+
+
+def test_published_layer_composite_retires_inflight_editor_proxy(
+    qapp_fixture, monkeypatch
+):
+    editor = _editor(resolution="1080")
+    editor._debounce.stop()
+    editor._settle.stop()
+    editor._scheduler.invalidate()
+    editor._scheduler.on_finished()
+    request = editor._scheduler.request(editor._build_request(RenderKind.DRAG))
+    assert request is not None
+    monkeypatch.setattr(editor.viewport, "set_pixmap", lambda *_args, **_kwargs: None)
+
+    editor._show_layer_frame(np.zeros((1, 1, 4), dtype=np.uint8))
+
+    assert not editor._scheduler.is_current(request)
+
+
+def test_close_defers_nonblocking_until_editor_preview_worker_is_terminal(
+    qapp_fixture, monkeypatch
+):
+    editor = _editor(resolution="1080")
+    editor._debounce.stop()
+    editor._settle.stop()
+    captured = []
+    monkeypatch.setattr(editor._pool, "start", captured.append)
+    monkeypatch.setattr(editor.layers_controller, "shutdown", lambda: None)
+    monkeypatch.setattr(editor.composition_controller, "shutdown", lambda: None)
+
+    request = editor._scheduler.request(editor._build_request(RenderKind.DRAG))
+    assert request is not None
+    editor._launch_worker(request)
+    worker = captured.pop()
+    assert worker in editor._render_workers
+
+    class CloseEvent:
+        ignored = False
+
+        def ignore(self):
+            self.ignored = True
+
+    event = CloseEvent()
+    editor.closeEvent(event)
+
+    assert event.ignored is True
+    assert editor._render_closing is True
+    assert worker in editor._render_workers
+
+    worker.signals.cancelled.emit(request)
+
+    assert worker not in editor._render_workers
+    closed = []
+    monkeypatch.setattr(editor, "close", lambda: closed.append(True))
+    editor._poll_mask_pool_close()
+    assert closed == [True]
 
 
 def test_full_quality_preview_action_sets_flag_and_schedules_full(qapp_fixture, monkeypatch):
     editor = _editor(resolution="1080")
     assert editor._full_preview_requested is False
-    launched = []
-    monkeypatch.setattr(editor, "_launch_worker", launched.append)
+    caps = []
+    monkeypatch.setattr(
+        editor.layers_controller, "request_preview", caps.append)
 
     editor._actions["full_quality_preview"].trigger()
 
     assert editor._full_preview_requested is True
-    assert len(launched) == 1
-    assert launched[0].kind is RenderKind.FULL
+    assert caps == [4000]
 
 
 def test_full_quality_preview_action_is_in_view_menu(qapp_fixture):

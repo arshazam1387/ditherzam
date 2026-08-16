@@ -255,6 +255,53 @@ def selection_to_source(
     return _selection_to_source_native(selection, source_shape, **kwargs)
 
 
+def source_selection_to_document(
+    selection: TemporarySelection,
+    document_shape: tuple[int, int],
+    *,
+    layer_x: float,
+    layer_y: float,
+    scale_x: float,
+    scale_y: float,
+) -> TemporarySelection:
+    """Map source coverage into document coordinates through x/y/scale."""
+    height, width = _document_shape(document_shape)
+    if not isinstance(selection, TemporarySelection):
+        raise SelectionError("selection is required")
+    values = (layer_x, layer_y, scale_x, scale_y)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        for value in values
+    ) or scale_x <= 0 or scale_y <= 0:
+        raise SelectionError("layer mapping must use finite positive scales")
+
+    source = selection.pixels
+    dx = np.arange(width, dtype=np.float64) + 0.5
+    dy = np.arange(height, dtype=np.float64) + 0.5
+    inside_x = (dx >= layer_x) & (dx < layer_x + source.shape[1] * scale_x)
+    inside_y = (dy >= layer_y) & (dy < layer_y + source.shape[0] * scale_y)
+    sx = (dx - float(layer_x)) / float(scale_x) - 0.5
+    sy = (dy - float(layer_y)) / float(scale_y) - 0.5
+    x0 = np.floor(sx).astype(np.int64)
+    y0 = np.floor(sy).astype(np.int64)
+    fx = sx - x0
+    fy = sy - y0
+    result = np.zeros((height, width), dtype=np.float64)
+    for yy, wy in ((y0, 1.0 - fy), (y0 + 1, fy)):
+        clipped_y = np.clip(yy, 0, source.shape[0] - 1)
+        for xx, wx in ((x0, 1.0 - fx), (x0 + 1, fx)):
+            clipped_x = np.clip(xx, 0, source.shape[1] - 1)
+            result += (
+                source[np.ix_(clipped_y, clipped_x)]
+                * wy[:, None]
+                * wx[None, :]
+            )
+    result *= inside_y[:, None] & inside_x[None, :]
+    return TemporarySelection(np.floor(result + 0.5).astype(np.uint8))
+
+
 def restrict_mask_edit(
     before: np.ndarray, edited: np.ndarray, selection_coverage: np.ndarray
 ) -> np.ndarray:
@@ -274,3 +321,178 @@ def restrict_mask_edit(
         + 127
     )
     return (total // 255).astype(np.uint8)
+
+# Creative selection primitives intentionally live in the Qt-free core.
+def _document_shape(value: object) -> tuple[int, int]:
+    if (
+        not isinstance(value, tuple) or len(value) != 2
+        or any(type(item) is not int or item <= 0 for item in value)
+    ):
+        raise SelectionError("document shape must be positive (height, width)")
+    return value
+
+
+def _points(value: object, *, minimum: int) -> tuple[tuple[float, float], ...]:
+    if not isinstance(value, (tuple, list)) or len(value) < minimum:
+        raise SelectionError(f"selection requires at least {minimum} point(s)")
+    result = []
+    for point in value:
+        if not isinstance(point, (tuple, list)) or len(point) != 2:
+            raise SelectionError("each point must be (x, y)")
+        x, y = point
+        if any(isinstance(item, bool) or not isinstance(item, (int, float))
+               or not math.isfinite(float(item)) for item in point):
+            raise SelectionError("selection points must be finite numbers")
+        result.append((float(x), float(y)))
+    return tuple(result)
+
+
+def _supersampled(document_shape, samples: int):
+    height, width = _document_shape(document_shape)
+    if type(samples) is not int or not 1 <= samples <= 16:
+        raise SelectionError("samples must be an integer within 1..16")
+    return height, width, samples
+
+
+def rasterize_polygon_selection(
+    document_shape: tuple[int, int],
+    points,
+    *,
+    samples: int = 4,
+) -> np.ndarray:
+    """Rasterize a closed polygon with deterministic supersampled coverage."""
+    from PIL import Image, ImageDraw
+
+    height, width, scale = _supersampled(document_shape, samples)
+    vertices = _points(points, minimum=3)
+    image = Image.new("L", (width * scale, height * scale), 0)
+    # Pixel centres at the supersampled resolution approximate area coverage.
+    scaled = [(int(round(x * scale)), int(round(y * scale)))
+              for x, y in vertices]
+    ImageDraw.Draw(image).polygon(scaled, fill=255)
+    values = np.asarray(image, dtype=np.uint16).reshape(
+        height, scale, width, scale).sum(axis=(1, 3))
+    divisor = scale * scale
+    return ((values + divisor // 2) // divisor).astype(np.uint8)
+
+
+def rasterize_freehand_selection(
+    document_shape: tuple[int, int],
+    points,
+    *,
+    diameter: float,
+    samples: int = 4,
+) -> np.ndarray:
+    """Rasterize a round-capped freehand/lasso stroke into soft coverage."""
+    from PIL import Image, ImageDraw
+
+    height, width, scale = _supersampled(document_shape, samples)
+    vertices = _points(points, minimum=1)
+    if (isinstance(diameter, bool) or not isinstance(diameter, (int, float))
+            or not math.isfinite(float(diameter)) or diameter <= 0):
+        raise SelectionError("diameter must be a finite positive number")
+    image = Image.new("L", (width * scale, height * scale), 0)
+    draw = ImageDraw.Draw(image)
+    scaled = [(int(round(x * scale)), int(round(y * scale)))
+              for x, y in vertices]
+    line_width = max(1, int(round(float(diameter) * scale)))
+    radius = line_width / 2.0
+    if len(scaled) > 1:
+        draw.line(scaled, fill=255, width=line_width, joint="curve")
+    for x, y in (scaled if len(scaled) == 1 else (scaled[0], scaled[-1])):
+        draw.ellipse((int(x - radius), int(y - radius),
+                      int(x + radius), int(y + radius)), fill=255)
+    values = np.asarray(image, dtype=np.uint16).reshape(
+        height, scale, width, scale).sum(axis=(1, 3))
+    divisor = scale * scale
+    return ((values + divisor // 2) // divisor).astype(np.uint8)
+
+
+def select_all(document_shape: tuple[int, int]) -> TemporarySelection:
+    """Create full document coverage."""
+    height, width = _document_shape(document_shape)
+    return TemporarySelection(np.full((height, width), 255, dtype=np.uint8))
+
+
+def invert_selection(selection: TemporarySelection) -> TemporarySelection:
+    if not isinstance(selection, TemporarySelection):
+        raise SelectionError("selection is required")
+    return TemporarySelection(255 - selection.pixels)
+
+
+def _selection_radius(selection, radius):
+    if not isinstance(selection, TemporarySelection):
+        raise SelectionError("selection is required")
+    if isinstance(radius, bool) or not isinstance(radius, int) or not 0 <= radius <= 64:
+        raise SelectionError("radius must be an integer within 0..64")
+    return selection, radius
+
+
+def grow_selection(selection: TemporarySelection, radius: int) -> TemporarySelection:
+    """Grow coverage from its >=50% contour by a square pixel radius."""
+    selection, radius = _selection_radius(selection, radius)
+    if radius == 0:
+        return TemporarySelection(selection.pixels)
+    from ditherzam.masking.geometry import expand_contract
+    result = expand_contract(selection.pixels.astype(np.float32) / 255.0, radius)
+    return TemporarySelection(np.floor(result * 255.0 + 0.5).astype(np.uint8))
+
+
+def shrink_selection(selection: TemporarySelection, radius: int) -> TemporarySelection:
+    """Shrink coverage from its >=50% contour by a square pixel radius."""
+    selection, radius = _selection_radius(selection, radius)
+    if radius == 0:
+        return TemporarySelection(selection.pixels)
+    from ditherzam.masking.geometry import expand_contract
+    result = expand_contract(selection.pixels.astype(np.float32) / 255.0, -radius)
+    return TemporarySelection(np.floor(result * 255.0 + 0.5).astype(np.uint8))
+
+
+def feather_selection(selection: TemporarySelection, radius: int) -> TemporarySelection:
+    """Gaussian-feather current soft coverage without hardening radius zero."""
+    selection, radius = _selection_radius(selection, radius)
+    if radius == 0:
+        return TemporarySelection(selection.pixels)
+    from PIL import Image, ImageFilter
+    image = Image.fromarray(selection.pixels, mode="L")
+    return TemporarySelection(np.asarray(
+        image.filter(ImageFilter.GaussianBlur(radius=radius)), dtype=np.uint8))
+
+
+def select_color_range(
+    source: np.ndarray,
+    target_rgb,
+    *,
+    tolerance: float = 0,
+    softness: float = 0,
+    respect_alpha: bool = True,
+) -> TemporarySelection:
+    """Select pixels by Euclidean RGB distance, with an optional soft falloff."""
+    if (not isinstance(source, np.ndarray) or source.dtype != np.uint8
+            or source.ndim != 3 or source.shape[2] not in (3, 4) or not source.size):
+        raise SelectionError("source must be a non-empty uint8 RGB or RGBA array")
+    target = np.asarray(target_rgb)
+    if (target.shape != (3,) or not np.issubdtype(target.dtype, np.number)
+            or np.any(~np.isfinite(target.astype(np.float64)))
+            or np.any(target < 0) or np.any(target > 255)):
+        raise SelectionError("target_rgb must contain three values within 0..255")
+    for name, value in (("tolerance", tolerance), ("softness", softness)):
+        if (isinstance(value, bool) or not isinstance(value, (int, float))
+                or not math.isfinite(float(value)) or not 0 <= value <= 441.673):
+            raise SelectionError(f"{name} must be finite within 0..441.673")
+    if not isinstance(respect_alpha, bool):
+        raise SelectionError("respect_alpha must be a bool")
+    delta = source[..., :3].astype(np.float32) - target.astype(np.float32)
+    distance = np.sqrt(np.sum(delta * delta, axis=2))
+    tolerance = float(tolerance)
+    softness = float(softness)
+    if softness == 0:
+        coverage = np.where(distance <= tolerance, 255, 0).astype(np.uint8)
+    else:
+        coverage = np.floor(np.clip(
+            (tolerance + softness - distance) / softness, 0.0, 1.0
+        ) * 255.0 + 0.5).astype(np.uint8)
+    if respect_alpha and source.shape[2] == 4:
+        coverage = ((coverage.astype(np.uint16) * source[..., 3].astype(np.uint16)
+                     + 127) // 255).astype(np.uint8)
+    return TemporarySelection(coverage)

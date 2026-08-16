@@ -80,9 +80,10 @@ def test_slider_updates_its_number_display(qapp_fixture):
     # saturation spin is a plain 0..100 display
     p.saturation_slider.setValue(80)
     assert p.saturation_spin.text() == "80"
-    # scale slider (1..20) shows its own value
-    p.scale_slider.setValue(12)
-    assert p.scale_spin.text() == "12"
+    # scale slider (1..50) shows its own value
+    assert p.scale_slider.maximum() == 50
+    p.scale_slider.setValue(50)
+    assert p.scale_spin.text() == "50"
     p._sliders["luminance_threshold"].setValue(63)
     assert p.state["luminance_threshold"] == 63
     assert p._spins["luminance_threshold"].text() == "63"
