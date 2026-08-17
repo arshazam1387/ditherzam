@@ -2,6 +2,40 @@
 
 ## Unreleased
 
+### Added
+
+- Exact Cython acceleration for five-mode layer compositing, alpha-aware
+  transitions, transformed selection-to-source mapping, and Round mask-brush
+  stamping, with tested Python fallbacks and a bounded native thread policy.
+- Reproducible native benchmarks, pinned Windows build inputs, standard
+  PyInstaller packaging, and frozen native smoke coverage.
+- Square, Diamond, and deterministic Texture mask brushes, adjustable spacing,
+  polygon/freehand selections, non-destructive selection refinement, and a
+  reversible alpha-aware Color Range workflow.
+- Persistent bounded program diagnostics and semantic action logs for startup,
+  rendering, layers, masks, palettes, media, and export operations.
+- A source-backed subsystem/change-impact map and a complete masking user guide.
+
+### Improved
+
+- Reorganized the masking workspace into compact Layer and Mask tabs with
+  explicit Pointer/Paint/Select modes and immediate cursor changes.
+- Moved large selection refinement and Color Range work onto bounded latest-wins
+  background execution while preserving exact authoritative coverage.
+- Hardened layer-preview publication, render-worker teardown, and native/Qt
+  lifecycle behavior under accumulated suite load.
+- Expanded distinct-color extraction with OKLab diversity and honest percentage
+  reporting, raised the Dither Scale ceiling to 50, and made zoomed Transform
+  handles fully clickable.
+
+### Compatibility
+
+- Native acceleration is byte-exact with the reference implementation and does
+  not change dither kernels, render order, palettes, effects, or exported pixels.
+- Creative Square, Diamond, and Texture brush tips deliberately bypass the
+  Round-only native brush seam.
+- GitHub `main` now contains the tested native integration at `3a302c7`.
+
 ## 0.3.0-alpha — 2026-07-26
 
 ### Added

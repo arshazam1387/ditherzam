@@ -6,8 +6,9 @@ One job: route a cold agent to the smallest source-backed context for a safe cha
 - `leftover`: present but not the primary path; touch only when in scope.
 - `ghost`: planned or stubbed, not wired; never call it shipped.
 
-The public release and original development histories are distinct. Read memory
-before branch, release, native-code, or packaging work.
+Local and GitHub `main` contain the approved native integration as of `3a302c7`.
+The previous public-main tip is retained only as a local recovery branch. Read
+memory before branch, release, native-code, or packaging work.
 
 ## Walk
 

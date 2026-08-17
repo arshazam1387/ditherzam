@@ -17,5 +17,8 @@ layers, masks, animation, video, and exact export.
 
 - Memory owns project state; code and tests own as-built behavior.
 - Preserve clean-room and Qt-free-core constraints (memory 001 and 002).
-- Do not promote the native rewrite without explicit approval (memory 093).
+- The approved native rewrite is on `main`; preserve exact fallbacks, thread
+  budgeting, and the Round-only brush boundary (memory 093, 101, and 102).
+- Treat force-pushes, releases, and remote branch deletion as separately
+  authorized operations even when local changes are already approved.
 - Inspect `git status` and preserve unrelated user edits.

@@ -17,7 +17,8 @@
 - Render order is frozen at `ditherzam/render.py:135`.
 - Core stays Qt-free per `docs/memory/002-qt-free-core.md`.
 - Clean-room/offline constraints are in memory 001.
-- Native promotion is user-gated by memory 093.
+- Native code is live on `main`; preserve byte-exact fallbacks, the two-thread
+  default, and the Round-only brush boundary (memory 093 and 101).
 - Multi-layer File export uses the full compositor (memory 082).
 
 ## Human check
