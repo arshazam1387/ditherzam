@@ -325,3 +325,34 @@ def test_mt08_smart_freeze_obeys_explicit_live_readiness(qapp_fixture):
         assert controller.raster_mask_from_smart() is False
         assert panel.status_label.text() == reason
         assert controller.document.layers[0].raster_mask is None
+
+
+def test_native_brush_candidate_replacement_is_one_undoable_lifecycle_mutation(
+    qapp_fixture, monkeypatch
+):
+    from ditherzam.layers.mask_brush import (
+        BrushMode, BrushSettings, DirtyRect, stamp_mask_brush,
+    )
+    from ditherzam.ui.layers_panel import LayersPanel
+
+    controller = _controller(LayersPanel())
+    controller.initialize_source_layer()
+    monkeypatch.setattr(controller, "request_preview", lambda: None)
+    assert controller.hide_all_raster_mask(replace_existing=True)
+    original = controller.document.layers[0].raster_mask
+    candidate = original.pixels.copy()
+    assert stamp_mask_brush(
+        candidate, 1.5, 1.5,
+        BrushSettings(2, 100, 100, BrushMode.REVEAL),
+    ) == DirtyRect(0, 0, 3, 3)
+    assert controller.replace_active_raster_mask(
+        candidate, replace_existing=True
+    ) is False
+    _confirm_proposal(controller)
+    replaced = controller.document.layers[0].raster_mask
+    assert replaced.revision == original.revision + 1
+    assert replaced.pixels[1, 1] == 255
+    assert controller.undo()
+    np.testing.assert_array_equal(
+        controller.document.layers[0].raster_mask.pixels, original.pixels
+    )

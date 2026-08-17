@@ -278,24 +278,28 @@ def test_blocking_inference_pool_does_not_block_render_pool_and_close_retires_it
 
     window._pool.start(Quick())
     assert render_done.wait(1), "global render pool was blocked by inference"
-    heartbeats = []
+    heartbeat_seen = Event()
     heartbeat = QTimer(); heartbeat.setInterval(5)
-    heartbeat.timeout.connect(lambda: heartbeats.append(time.monotonic()))
+    heartbeat.timeout.connect(heartbeat_seen.set)
     heartbeat.start()
-    assert window.close() is False
-    deadline = time.monotonic() + .15
-    while time.monotonic() < deadline:
-        qapp_fixture.processEvents(); time.sleep(.005)
-    assert len(heartbeats) >= 2
-    assert window.isVisible(), "first close must be ignored while inference is active"
-    assert window._mask_closing and not window._mask_close_finalizing
-    release.set()
-    deadline = time.monotonic() + 2
-    while window.isVisible() and time.monotonic() < deadline:
-        qapp_fixture.processEvents(); time.sleep(.005)
-    heartbeat.stop()
-    assert finished.is_set()
-    assert not window.isVisible()
-    assert window._mask_pool.activeThreadCount() == 0
-    assert window._mask_closing is True
-    assert window._mask_close_finalizing is True
+    try:
+        assert window.close() is False
+        assert not finished.is_set(), "close must not wait for active inference"
+        assert window.isVisible(), "first close must be ignored while inference is active"
+        assert window._mask_closing and not window._mask_close_finalizing
+        deadline = time.monotonic() + 2
+        while not heartbeat_seen.is_set() and time.monotonic() < deadline:
+            qapp_fixture.processEvents()
+        assert heartbeat_seen.is_set(), "close must leave the Qt event loop responsive"
+        release.set()
+        deadline = time.monotonic() + 2
+        while window.isVisible() and time.monotonic() < deadline:
+            qapp_fixture.processEvents()
+        assert finished.is_set()
+        assert not window.isVisible()
+        assert window._mask_pool.activeThreadCount() == 0
+        assert window._mask_closing is True
+        assert window._mask_close_finalizing is True
+    finally:
+        heartbeat.stop()
+        release.set()

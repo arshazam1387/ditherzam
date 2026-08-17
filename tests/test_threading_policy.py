@@ -42,6 +42,7 @@ def test_budgets_default_to_detected_cpu(monkeypatch):
     monkeypatch.setattr(tp, "cpu_threads", lambda: 8)
     assert tp.interactive_budget() == 4
     assert tp.export_budget() == 4
+    assert tp.native_budget() == 2
 
 
 def test_numba_threads_sets_and_restores(monkeypatch):
@@ -83,8 +84,12 @@ def test_install_interactive_budget_sets_process_default(monkeypatch):
         set_num_threads=lambda v: state.__setitem__("n", v))
     monkeypatch.setattr(tp, "_numba", lambda: fake)
     monkeypatch.setattr(tp, "cpu_threads", lambda: 8)
+    native = {"n": 7}
+    monkeypatch.setattr(tp, "get_native_threads", lambda: native["n"])
+    monkeypatch.setattr(tp, "set_native_threads", lambda n: native.__setitem__("n", n))
     assert tp.install_interactive_budget() == 4
     assert state["n"] == 4
+    assert native["n"] == 2
 
 
 def test_video_dither_worker_runs_under_export_budget(monkeypatch):

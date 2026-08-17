@@ -4,8 +4,20 @@ _internal/
 __pycache__/
 *.pyc
 
+# Cython outputs are rebuilt from the adjacent .pyx sources. Handwritten native
+# C belongs in a subdirectory (for example _native/handwritten/) and is not masked.
+/ditherzam/_native/*.c
+/ditherzam/_native/*.pyd
+/ditherzam/_native/*.so
+
 # local build environment / caches
 .venv/
+.wheel-smoke/
+build/
+dist/
+wheelhouse/
+wheelhouse-v2/
+native-thread-results*.json
 .pytest_cache/
 *.egg-info/
 .numba_cache/

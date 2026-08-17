@@ -265,15 +265,28 @@ def test_visible_transform_handle_is_fully_inside_click_target_when_zoomed(
 def test_transform_handle_cursor_changes_before_press(
     qapp_fixture, handle, cursor
 ):
-    from PySide6.QtCore import Qt
-    from PySide6.QtTest import QTest
+    from PySide6.QtCore import QCoreApplication, QEvent, QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
 
     view = _transform_view(qapp_fixture)
-    point = view.mapFromScene(view._layer_handle_rects()[handle].center())
+    try:
+        point = view.mapFromScene(view._layer_handle_rects()[handle].center())
+        event = QMouseEvent(
+            QEvent.Type.MouseMove,
+            QPointF(point),
+            QPointF(view.viewport().mapToGlobal(point)),
+            Qt.MouseButton.NoButton,
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+        )
+        assert QCoreApplication.sendEvent(view.viewport(), event)
+        qapp_fixture.processEvents()
 
-    QTest.mouseMove(view.viewport(), point)
-
-    assert view.cursor().shape() == getattr(Qt.CursorShape, cursor)
+        assert view.cursor().shape() == getattr(Qt.CursorShape, cursor)
+    finally:
+        view.close()
+        view.deleteLater()
+        qapp_fixture.processEvents()
 
 
 def test_transform_selection_uses_contrast_halo_pens(qapp_fixture):

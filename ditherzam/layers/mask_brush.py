@@ -5,10 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import math
+import os
 
 import numpy as np
 
 from .mask_contracts import document_to_mask_point
+
+try:
+    from ditherzam._native import _brush
+except ImportError:
+    _brush = None
 
 
 class BrushMode(Enum):
@@ -130,7 +136,7 @@ def _half_up(values: np.ndarray) -> np.ndarray:
     return np.floor(values + 0.5).astype(np.int32)
 
 
-def stamp_mask_brush(
+def _stamp_mask_brush_reference(
     buffer: np.ndarray,
     document_x: float,
     document_y: float,
@@ -235,6 +241,89 @@ def stamp_mask_brush(
     if changed_x1 == 0:
         return None
     return DirtyRect(changed_x0, changed_y0, changed_x1, changed_y1)
+
+
+def _stamp_mask_brush_native(
+    buffer: np.ndarray,
+    document_x: float,
+    document_y: float,
+    settings: BrushSettings,
+    *,
+    layer_x: float = 0.0,
+    layer_y: float = 0.0,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    rotation_degrees: float = 0.0,
+    flip_x: bool = False,
+    flip_y: bool = False,
+) -> DirtyRect | None:
+    """Validated native-only seam used by differential tests."""
+    work = _validate_buffer(buffer)
+    if not isinstance(settings, BrushSettings):
+        raise ValueError("settings must be BrushSettings")
+    if settings.tip is not BrushTip.ROUND:
+        raise ValueError("native brush supports only the round tip")
+    document_to_mask_point(
+        document_x, document_y, layer_x=layer_x, layer_y=layer_y,
+        scale_x=scale_x, scale_y=scale_y,
+        rotation_degrees=rotation_degrees, flip_x=flip_x, flip_y=flip_y,
+    )
+    if settings.strength == 0 or work.size == 0:
+        return None
+    if _brush is None:
+        raise RuntimeError("native brush extension is unavailable")
+
+    cx = float(document_x)
+    cy = float(document_y)
+    lx = float(layer_x)
+    ly = float(layer_y)
+    sx = float(scale_x)
+    sy = float(scale_y)
+    radius = settings.size * 0.5
+    height, width = work.shape
+    x0 = max(0, math.ceil((cx - radius - lx) / sx - 0.5))
+    x1 = min(width, math.floor((cx + radius - lx) / sx - 0.5) + 1)
+    y0 = max(0, math.ceil((cy - radius - ly) / sy - 0.5))
+    y1 = min(height, math.floor((cy + radius - ly) / sy - 0.5) + 1)
+    if x0 >= x1 or y0 >= y1:
+        return None
+    bounds = _brush.stamp_mask_brush_u8(
+        work, x0, x1, y0, y1, cx, cy, lx, ly, sx, sy, radius,
+        settings.hardness, settings.strength,
+        0 if settings.mode is BrushMode.REVEAL else 1,
+    )
+    return None if bounds is None else DirtyRect(*bounds)
+
+
+def stamp_mask_brush(
+    buffer: np.ndarray,
+    document_x: float,
+    document_y: float,
+    settings: BrushSettings,
+    *,
+    layer_x: float = 0.0,
+    layer_y: float = 0.0,
+    scale_x: float = 1.0,
+    scale_y: float = 1.0,
+    rotation_degrees: float = 0.0,
+    flip_x: bool = False,
+    flip_y: bool = False,
+) -> DirtyRect | None:
+    """Apply one shaped stamp, using the exact native backend for round tips."""
+    kwargs = dict(
+        layer_x=layer_x, layer_y=layer_y, scale_x=scale_x, scale_y=scale_y,
+        rotation_degrees=rotation_degrees, flip_x=flip_x, flip_y=flip_y,
+    )
+    use_native = (
+        _brush is not None
+        and os.environ.get("DITHERZAM_DISABLE_NATIVE") != "1"
+        and isinstance(settings, BrushSettings)
+        and settings.tip is BrushTip.ROUND
+    )
+    implementation = _stamp_mask_brush_native if use_native else _stamp_mask_brush_reference
+    return implementation(
+        buffer, document_x, document_y, settings, **kwargs
+    )
 
 
 # A concise alternate name for callers that already know they are editing a mask.
