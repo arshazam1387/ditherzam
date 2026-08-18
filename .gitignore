@@ -28,6 +28,9 @@ native-thread-results*.json
 # local demo renders (not committed)
 demo_output/
 
+# Hash-pinned FFmpeg release binaries are staged locally by the build script.
+assets/ffmpeg/
+
 # Smart Mask model weights/binaries: never committed. Staged locally by
 # tools/stage_smart_mask_model.py and verified by ditherzam/masking, per the
 # provenance policy in assets/models/smart_mask/README.md.
