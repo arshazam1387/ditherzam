@@ -24,17 +24,31 @@ Python implementation because the native brush contract is Round-only.
 
 ## Standard Windows release
 
-Create a Python 3.12 virtual environment, then run:
+Create a 64-bit CPython 3.12.13 virtual environment, install Inno Setup 6, then
+run:
 
 ```powershell
 .\tools\build_windows_release.ps1 -PythonPath .\.venv\Scripts\python.exe
 ```
 
+Close any source-launched ditherzam process using that virtual environment first;
+Windows keeps imported native `.pyd` files locked until the process exits.
+
 This installs the pinned build requirements, performs an editable native build,
-runs the native smoke test, and creates the ordinary no-model PyInstaller
-directory at `dist\ditherzam`. The standard build does not contain ONNX Runtime
-or model weights; application startup therefore leaves Smart Mask unavailable,
-while every non-model feature remains usable.
+runs the full JIT-disabled gate plus the JIT-enabled native checks, downloads and
+hash-verifies the fixed FFmpeg 8.1.2 archive, creates the ordinary no-model
+PyInstaller directory, and packages both public artifacts:
+
+```text
+release\ditherzam-0.3.0-windows-x64-portable.zip
+release\ditherzam-0.3.0-windows-x64-setup.exe
+release\SHA256SUMS.txt
+```
+
+The standard build does not contain ONNX Runtime or model weights; application
+startup therefore leaves Smart Mask unavailable, while every non-model feature
+remains usable. FFmpeg, FFprobe, configuration, themes, palettes, project license,
+third-party notices, and installed Python distribution metadata are included.
 
 Run the frozen native smoke with:
 
@@ -45,7 +59,12 @@ Run the frozen native smoke with:
 Exit code zero proves the frozen process imported and executed compositor,
 transition, selection, and brush native paths. `_composite`, `_selection`,
 `_brush`, and `_smoke` `.pyd` files must all be present beneath
-`dist\ditherzam\ditherzam\_native`.
+`dist\ditherzam\_internal\ditherzam\_native`.
+
+The build is unsigned. Verify both distributables against `SHA256SUMS.txt`
+before uploading them to a GitHub release. `-SkipTests` is only for rebuilding
+artifacts after the same source tree has already passed the complete release
+gate; the native exactness and frozen smoke checks still run.
 
 ## Verification
 

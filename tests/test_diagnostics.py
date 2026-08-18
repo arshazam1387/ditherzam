@@ -23,7 +23,7 @@ def test_diagnostic_report_includes_runtime_and_log_tail(tmp_path):
     report = build_diagnostic_report(log_path, tail_chars=32)
 
     assert "ditherzam diagnostic report" in report
-    assert "Version: 0.3.0a1" in report
+    assert "Version: 0.3.0" in report
     assert "Python:" in report
     assert "Platform:" in report
     assert "last useful line" in report

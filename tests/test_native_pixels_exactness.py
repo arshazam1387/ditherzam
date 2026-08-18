@@ -100,7 +100,10 @@ def test_windows_build_script_checks_every_external_exit_and_pins_pytest():
     assert script.count("& $FilePath @ArgumentList") == 1
     assert "& $Python" not in script
     assert "if ($LASTEXITCODE -ne 0)" in script
-    assert script.count("Invoke-External $Python") == 7
-    assert "dist\\ditherzam\\ditherzam.exe" in script
-    assert '@("--native-smoke")' in script
+    assert script.count("Invoke-External $Python") >= 7
+    assert '"dist\\ditherzam"' in script
+    assert '"ditherzam.exe"' in script
+    assert '"--native-smoke"' in script
+    assert "FFmpeg archive hash mismatch" in script
+    assert "Standard release unexpectedly contains Smart Mask" in script
     assert "pytest==9.1.1" in requirements

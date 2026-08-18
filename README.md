@@ -10,9 +10,9 @@ telemetry.
 
 ## Current status
 
-The current package version is **0.3.0 alpha 1**. The application is implemented
-and usable from source; it is no longer in a design-only phase. GitHub `main`
-contains the tested native integration as of commit `3a302c7`.
+The current package version is **0.3.0**. The application is implemented and
+usable from source or as an unsigned Windows x64 release. GitHub `main`
+contains the tested native integration and its exact Python fallbacks.
 
 The 2026-08-16 promotion gate passed 2,519 tests with 310 asset- or
 environment-gated skips. Native-enabled, forced-fallback, JIT-enabled, and

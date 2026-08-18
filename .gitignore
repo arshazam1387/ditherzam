@@ -12,9 +12,12 @@ __pycache__/
 
 # local build environment / caches
 .venv/
+.venv-release/
+.build-cache/
 .wheel-smoke/
 build/
 dist/
+release/
 wheelhouse/
 wheelhouse-v2/
 native-thread-results*.json

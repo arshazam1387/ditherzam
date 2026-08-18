@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.3.0 — 2026-08-18
+
 ### Added
 
 - Exact Cython acceleration for five-mode layer compositing, alpha-aware
@@ -34,7 +36,7 @@
   not change dither kernels, render order, palettes, effects, or exported pixels.
 - Creative Square, Diamond, and Texture brush tips deliberately bypass the
   Round-only native brush seam.
-- GitHub `main` now contains the tested native integration at `3a302c7`.
+- GitHub `main` contains the tested native integration.
 
 ## 0.3.0-alpha — 2026-07-26
 

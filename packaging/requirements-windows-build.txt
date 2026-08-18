@@ -3,5 +3,13 @@ setuptools==80.9.0
 wheel==0.45.1
 Cython==3.1.6
 numpy==2.4.6
+numba==0.66.0
+llvmlite==0.48.0
+Pillow==12.3.0
+PyYAML==6.0.3
+platformdirs==4.10.0
+PySide6==6.11.1
+shiboken6==6.11.1
 pyinstaller==6.21.0
+pyinstaller-hooks-contrib==2026.6
 pytest==9.1.1
