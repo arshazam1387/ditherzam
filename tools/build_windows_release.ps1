@@ -57,8 +57,8 @@ if ($RunningSourceApp) {
 
 $Pyproject = Get-Content -LiteralPath (Join-Path $ProjectRoot "pyproject.toml") -Raw
 $PackageInit = Get-Content -LiteralPath (Join-Path $ProjectRoot "ditherzam\__init__.py") -Raw
-$VersionMatch = [regex]::Match($Pyproject, '(?m)^version = "([^"]+)"$')
-$InitMatch = [regex]::Match($PackageInit, '(?m)^__version__ = "([^"]+)"$')
+$VersionMatch = [regex]::Match($Pyproject, '(?m)^version = "([^"]+)"\r?$')
+$InitMatch = [regex]::Match($PackageInit, '(?m)^__version__ = "([^"]+)"\r?$')
 if (-not $VersionMatch.Success -or -not $InitMatch.Success) {
     throw "Could not read the release version from project metadata"
 }

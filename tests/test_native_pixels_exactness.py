@@ -106,4 +106,5 @@ def test_windows_build_script_checks_every_external_exit_and_pins_pytest():
     assert '"--native-smoke"' in script
     assert "FFmpeg archive hash mismatch" in script
     assert "Standard release unexpectedly contains Smart Mask" in script
+    assert "\\r?$" in script
     assert "pytest==9.1.1" in requirements
