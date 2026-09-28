@@ -72,7 +72,8 @@ def _color_sig(engine):
         source_sig = ((source.shape, source.dtype.str,
                        hashlib.sha256(np.ascontiguousarray(source).tobytes()).hexdigest(),
                        getattr(engine, "source_dither", None),
-                       getattr(engine, "source_dither_brighten", None))
+                       getattr(engine, "source_dither_brighten", None),
+                       getattr(engine, "source_scale", None))
                       if source is not None else None)
         return context.key, source_sig
     colors = np.asarray(engine.palette.colors)
@@ -86,6 +87,8 @@ def _engine_for_settings(engine, settings):
         return engine.with_settings(
             depth=settings.depth, mapping=settings.color_mapping
         )
+    if engine is not None and getattr(engine, "mode", None) == "source":
+        return engine.with_settings(source_scale=settings.scale)
     return engine
 
 

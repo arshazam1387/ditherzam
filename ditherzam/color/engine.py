@@ -5,7 +5,7 @@ import os
 import numpy as np
 from numba import njit, prange
 
-from ..imaging import clamp_u8
+from ..imaging import clamp_u8, nearest_downscale, nearest_upscale_to
 from .palette import Palette
 from .context import DEFAULT_COLOR_CONTEXT_CACHE, ColorContextCache
 
@@ -233,7 +233,8 @@ class ColorEngine:
                  context_cache: ColorContextCache | None = None,
                  source_rgb: np.ndarray | None = None,
                  source_dither: float = 100.0,
-                 source_dither_brighten: bool = False) -> None:
+                 source_dither_brighten: bool = False,
+                 source_scale: int = 1) -> None:
         self.palette = palette
         self.mode = mode
         self.depth = depth
@@ -246,6 +247,7 @@ class ColorEngine:
         # When True, Colored Dither marks screen (lift toward white) instead of
         # multiply (sink toward black), so they brighten the image, not darken it.
         self.source_dither_brighten = bool(source_dither_brighten)
+        self.source_scale = max(1, int(source_scale))
 
     @property
     def context(self):
@@ -263,7 +265,7 @@ class ColorEngine:
     def with_settings(self, **changes) -> "ColorEngine":
         """Return an engine derived from this one without mutating shared state."""
         allowed = {"palette", "mode", "depth", "mapping", "phase", "source_rgb",
-                   "source_dither", "source_dither_brighten"}
+                   "source_dither", "source_dither_brighten", "source_scale"}
         unknown = changes.keys() - allowed
         if unknown:
             raise TypeError(f"unknown color settings: {sorted(unknown)!r}")
@@ -278,6 +280,7 @@ class ColorEngine:
             source_dither=changes.get("source_dither", self.source_dither),
             source_dither_brighten=changes.get(
                 "source_dither_brighten", self.source_dither_brighten),
+            source_scale=changes.get("source_scale", self.source_scale),
         )
 
     def map(self, gray_or_rgb_f32: np.ndarray) -> np.ndarray:
@@ -293,6 +296,11 @@ class ColorEngine:
                     ys = np.minimum((np.arange(th) * sh) // max(th, 1), sh - 1)
                     xs = np.minimum((np.arange(tw) * sw) // max(tw, 1), sw - 1)
                     rgb = rgb[ys][:, xs]
+            if self.source_scale > 1:
+                th, tw = np.asarray(gray_or_rgb_f32).shape[:2]
+                rgb = nearest_upscale_to(
+                    nearest_downscale(rgb, self.source_scale), (tw, th)
+                )
             pal = self.context.palette_colors
             simplified = pal[nearest_indices(rgb, pal)]
             influence = np.float32(self.source_dither / 100.0)
